@@ -480,3 +480,8 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Local dev database (SQLite) — never commit data
+diamond.db
+diamond.db-shm
+diamond.db-wal

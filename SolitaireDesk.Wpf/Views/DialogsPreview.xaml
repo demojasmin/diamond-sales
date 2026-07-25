@@ -1,0 +1,69 @@
+<UserControl x:Class="SolitaireDesk.Views.DialogsPreview"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             TextElement.Foreground="{DynamicResource TextBrush}"
+             TextElement.FontFamily="{StaticResource UiFont}"
+             TextElement.FontSize="13.5"
+             TextOptions.TextFormattingMode="Ideal">
+    <!-- Reference for the modal dialog + toast components (scrim, card, footer, snackbar). -->
+    <Grid Background="{DynamicResource BgBrush}">
+
+        <!-- Scrim -->
+        <Border Background="{DynamicResource OverlayBrush}"/>
+
+        <!-- Dialog card (example: Record receipt) -->
+        <Border Style="{StaticResource Card}" Width="520" Effect="{DynamicResource PopupShadow}"
+                HorizontalAlignment="Center" VerticalAlignment="Center" Padding="0">
+            <StackPanel>
+                <StackPanel Margin="18,16">
+                    <TextBlock Text="Record receipt" Style="{StaticResource H3Text}" FontSize="15"/>
+                    <TextBlock Text="SB/26-27/157 · outstanding ₹59,54,923" Style="{StaticResource MutedText}" FontSize="12.5" Margin="0,3,0,0"/>
+                </StackPanel>
+                <Border Style="{StaticResource Divider}"/>
+                <StackPanel Margin="18">
+                    <UniformGrid Columns="2">
+                        <StackPanel Margin="0,0,6,0">
+                            <TextBlock Text="AMOUNT ₹" Style="{StaticResource LabelCaps}" Margin="0,0,0,6"/>
+                            <TextBox Style="{StaticResource NumericTextBox}" Height="34" Text="59,54,923.00"/>
+                        </StackPanel>
+                        <StackPanel Margin="6,0,0,0">
+                            <TextBlock Text="DATE" Style="{StaticResource LabelCaps}" Margin="0,0,0,6"/>
+                            <DatePicker Height="34"/>
+                        </StackPanel>
+                        <StackPanel Margin="0,12,6,0">
+                            <TextBlock Text="METHOD" Style="{StaticResource LabelCaps}" Margin="0,0,0,6"/>
+                            <ComboBox Style="{StaticResource FieldComboBox}" ItemContainerStyle="{StaticResource FieldComboBoxItem}" Height="34" SelectedIndex="0">
+                                <ComboBoxItem Content="RTGS"/><ComboBoxItem Content="NEFT"/><ComboBoxItem Content="Cheque"/><ComboBoxItem Content="Cash"/>
+                            </ComboBox>
+                        </StackPanel>
+                        <StackPanel Margin="6,12,0,0">
+                            <TextBlock Text="REFERENCE" Style="{StaticResource LabelCaps}" Margin="0,0,0,6"/>
+                            <TextBox Style="{StaticResource FieldTextBox}" FontFamily="{StaticResource MonoFont}" Height="34" Text="UTR552108"/>
+                        </StackPanel>
+                    </UniformGrid>
+                    <Border Style="{StaticResource Divider}" Margin="0,14,0,12"/>
+                    <Grid>
+                        <TextBlock Text="Outstanding after receipt" Style="{StaticResource MutedText}" FontSize="13"/>
+                        <TextBlock Text="₹0.00" Style="{StaticResource MonoText}" FontWeight="SemiBold" HorizontalAlignment="Right"/>
+                    </Grid>
+                </StackPanel>
+                <Border Style="{StaticResource Divider}"/>
+                <Border Background="{DynamicResource Surface2Brush}" Padding="18,14" CornerRadius="0,0,8,8">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="Cancel" Style="{StaticResource SecondaryButton}" Margin="0,0,9,0"/>
+                        <Button Content="Save receipt" Style="{StaticResource PrimaryButton}" Padding="18,0"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Border>
+
+        <!-- Toast / snackbar -->
+        <Border Style="{StaticResource Card}" Effect="{DynamicResource PopupShadow}" Padding="16,11"
+                HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,22">
+            <StackPanel Orientation="Horizontal">
+                <Ellipse Width="8" Height="8" Fill="{DynamicResource SuccessBrush}" VerticalAlignment="Center" Margin="0,0,11,0"/>
+                <TextBlock Text="Invoice posted · stock deducted" FontSize="13" FontWeight="SemiBold"/>
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

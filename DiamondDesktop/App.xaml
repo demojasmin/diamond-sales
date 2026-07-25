@@ -1,0 +1,20 @@
+<Application x:Class="DiamondDesktop.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- Solitaire Desk design system. Colours are index 0 so ThemeManager can swap
+                     Light/Dark by replacing exactly one dictionary. -->
+                <ResourceDictionary Source="Themes/LightTheme.xaml"/>
+                <ResourceDictionary Source="Themes/Typography.xaml"/>
+                <ResourceDictionary Source="Styles/Buttons.xaml"/>
+                <ResourceDictionary Source="Styles/Inputs.xaml"/>
+                <ResourceDictionary Source="Styles/Widgets.xaml"/>
+                <ResourceDictionary Source="Styles/DataGridStyles.xaml"/>
+                <!-- App refinements last so they win -->
+                <ResourceDictionary Source="Styles/AppOverrides.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

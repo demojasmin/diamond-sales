@@ -1,0 +1,53 @@
+<UserControl x:Class="SolitaireDesk.Views.MastersView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:design="clr-namespace:SolitaireDesk.Design"
+             Background="{DynamicResource BgBrush}"
+             TextElement.Foreground="{DynamicResource TextBrush}"
+             TextElement.FontFamily="{StaticResource UiFont}"
+             TextElement.FontSize="13.5"
+             TextOptions.TextFormattingMode="Ideal">
+    <DockPanel>
+        <!-- Tab bar -->
+        <Border DockPanel.Dock="Top" Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
+            <Grid Margin="24,0">
+                <StackPanel Orientation="Horizontal">
+                    <RadioButton GroupName="MTab" Style="{StaticResource TabButton}" Content="Grades" IsChecked="True"/>
+                    <RadioButton GroupName="MTab" Style="{StaticResource TabButton}" Content="Buyers"/>
+                    <RadioButton GroupName="MTab" Style="{StaticResource TabButton}" Content="Brokers"/>
+                    <RadioButton GroupName="MTab" Style="{StaticResource TabButton}" Content="Price list"/>
+                </StackPanel>
+                <Button Content="+ New grade" Style="{StaticResource SecondaryButton}" Height="32"
+                        HorizontalAlignment="Right" VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+
+        <!-- Grades grid (active tab) -->
+        <DataGrid Style="{StaticResource DataGridStyle}" ItemsSource="{x:Static design:SampleData.Grades}" Margin="8,0">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="#" Binding="{Binding Index}" Width="64" ElementStyle="{StaticResource MutedCellText}"/>
+                <DataGridTextColumn Header="Code" Binding="{Binding Code}" Width="130" ElementStyle="{StaticResource MonoCellText}"/>
+                <DataGridTextColumn Header="Display name" Binding="{Binding Name}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                <DataGridTemplateColumn Header="Aliases" Width="230">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Border Background="{DynamicResource Surface2Brush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="999" Padding="8,2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Aliases}" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{DynamicResource TextMutedBrush}"/>
+                            </Border>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="Stock ct" Binding="{Binding Stock}" Width="110" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource DataGridNumericHeaderStyle}"/>
+                <DataGridTemplateColumn Header="Active" Width="96">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <ToggleButton Style="{StaticResource ToggleSwitchSmall}" IsChecked="{Binding Active}" HorizontalAlignment="Left"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</UserControl>

@@ -1,0 +1,144 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================================
+         DATAGRID · the workhorse table
+         Apply Style="{StaticResource DataGridStyle}" — it wires the
+         header / row / cell sub-styles automatically.
+         For right-aligned numeric columns, set the column's ElementStyle
+         to NumericCellText (below).
+         ============================================================ -->
+
+    <!-- Column header: Surface2, uppercase muted micro-label, bottom border -->
+    <Style x:Key="DataGridColumnHeaderStyle" TargetType="DataGridColumnHeader">
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+        <Setter Property="FontSize" Value="10.5"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+        <Setter Property="Background" Value="{DynamicResource Surface2Brush}"/>
+        <Setter Property="Padding" Value="12,9"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="SeparatorVisibility" Value="Collapsed"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="DataGridColumnHeader">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter VerticalAlignment="Center"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Right-aligned numeric header -->
+    <Style x:Key="DataGridNumericHeaderStyle" TargetType="DataGridColumnHeader"
+           BasedOn="{StaticResource DataGridColumnHeaderStyle}">
+        <Setter Property="HorizontalContentAlignment" Value="Right"/>
+    </Style>
+
+    <!-- Row: hover → surface2, selected → accent-soft -->
+    <Style x:Key="DataGridRowStyle" TargetType="DataGridRow">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource Surface2Brush}"/>
+            </Trigger>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Cell: no default focus/selection chrome; bottom hairline via row presenter -->
+    <Style x:Key="DataGridCellStyle" TargetType="DataGridCell">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="BorderBrush" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="12,6"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="DataGridCell">
+                    <Border Background="Transparent"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter VerticalAlignment="Center"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- The DataGrid itself -->
+    <Style x:Key="DataGridStyle" TargetType="DataGrid">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="RowBackground" Value="Transparent"/>
+        <Setter Property="GridLinesVisibility" Value="None"/>
+        <Setter Property="HeadersVisibility" Value="Column"/>
+        <Setter Property="AutoGenerateColumns" Value="False"/>
+        <Setter Property="CanUserAddRows" Value="False"/>
+        <Setter Property="CanUserResizeRows" Value="False"/>
+        <Setter Property="SelectionMode" Value="Single"/>
+        <Setter Property="SelectionUnit" Value="FullRow"/>
+        <Setter Property="EnableRowVirtualization" Value="True"/>
+        <Setter Property="RowHeight" Value="34"/>
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+        <Setter Property="ColumnHeaderStyle" Value="{StaticResource DataGridColumnHeaderStyle}"/>
+        <Setter Property="RowStyle" Value="{StaticResource DataGridRowStyle}"/>
+        <Setter Property="CellStyle" Value="{StaticResource DataGridCellStyle}"/>
+        <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+        <Setter Property="HorizontalScrollBarVisibility" Value="Auto"/>
+    </Style>
+
+    <!-- Cell text helpers (set as a column's ElementStyle) -->
+    <Style x:Key="CellText" TargetType="TextBlock">
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+        <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+    </Style>
+
+    <Style x:Key="MutedCellText" TargetType="TextBlock" BasedOn="{StaticResource CellText}">
+        <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    </Style>
+
+    <Style x:Key="NumericCellText" TargetType="TextBlock" BasedOn="{StaticResource CellText}">
+        <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+        <Setter Property="FontSize" Value="12.5"/>
+        <Setter Property="HorizontalAlignment" Value="Right"/>
+        <Setter Property="TextAlignment" Value="Right"/>
+        <Setter Property="Typography.NumeralAlignment" Value="Tabular"/>
+    </Style>
+
+    <Style x:Key="MonoCellText" TargetType="TextBlock" BasedOn="{StaticResource CellText}">
+        <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+        <Setter Property="FontSize" Value="12"/>
+    </Style>
+
+    <!-- ScrollBar — slim, rounded, matches the HTML custom scrollbar -->
+    <Style TargetType="ScrollBar">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Width" Value="11"/>
+        <Style.Triggers>
+            <Trigger Property="Orientation" Value="Horizontal">
+                <Setter Property="Height" Value="11"/>
+                <Setter Property="Width" Value="Auto"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+</ResourceDictionary>

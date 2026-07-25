@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- ponytail: windows-targeted only so this one command also checks the desktop entry logic,
+         which lives in a WPF project. DiamondCalc itself stays plain net10.0 and dependency-free. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DiamondCalc\DiamondCalc.csproj" />
+    <ProjectReference Include="..\DiamondDesktop\DiamondDesktop.csproj" />
+    <ProjectReference Include="..\DiamondApi\DiamondApi.csproj" />
+  </ItemGroup>
+
+</Project>

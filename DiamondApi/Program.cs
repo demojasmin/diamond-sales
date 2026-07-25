@@ -1,41 +1,26 @@
+using DiamondApi;
+using Microsoft.EntityFrameworkCore;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+builder.Services.AddDbContext<DiamondDb>(options =>
+    options.UseSqlite(builder.Configuration.GetConnectionString("Db") ?? "Data Source=diamond.db"));
+
+// ponytail: SQLite + EnsureCreated, not PostgreSQL + migrations. The schema is docs/03 either way;
+// swap the provider and generate the first migration once a real server exists (D5).
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
+using (var scope = app.Services.CreateScope())
+    Seed.Run(scope.ServiceProvider.GetRequiredService<DiamondDb>());
 
-app.UseHttpsRedirection();
+Endpoints.MapAll(app);
 
-var summaries = new[]
+app.MapGet("/", () => Results.Ok(new
 {
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
+    service = "Diamond Sales & Inventory API",
+    contract = "docs/07-api-contract.md",
+    firstRun = "POST /api/v1/auth/login { \"username\": \"owner\", \"password\": \"owner\" }",
+}));
 
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
