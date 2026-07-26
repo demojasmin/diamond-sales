@@ -123,16 +123,16 @@
         <Border x:Name="pill" CornerRadius="999" Padding="10,3" HorizontalAlignment="Left"
                 Background="{DynamicResource DangerSoftBrush}"
                 BorderBrush="{DynamicResource DangerBorderBrush}" BorderThickness="1">
-            <TextBlock x:Name="label" Text="{Binding Bucket}" FontSize="11" FontWeight="SemiBold"
+            <TextBlock x:Name="label" Text="{Binding AgeBucket}" FontSize="11" FontWeight="SemiBold"
                        Foreground="{DynamicResource DangerBrush}"/>
         </Border>
         <DataTemplate.Triggers>
-            <DataTrigger Binding="{Binding Bucket}" Value="current">
+            <DataTrigger Binding="{Binding AgeBucket}" Value="current">
                 <Setter TargetName="pill" Property="Background" Value="{DynamicResource SuccessSoftBrush}"/>
                 <Setter TargetName="pill" Property="BorderBrush" Value="{DynamicResource SuccessBorderBrush}"/>
                 <Setter TargetName="label" Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
             </DataTrigger>
-            <DataTrigger Binding="{Binding Bucket}" Value="0-30">
+            <DataTrigger Binding="{Binding AgeBucket}" Value="0-30">
                 <Setter TargetName="pill" Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
                 <Setter TargetName="pill" Property="BorderBrush" Value="{DynamicResource WarningBorderBrush}"/>
                 <Setter TargetName="label" Property="Foreground" Value="{DynamicResource WarningBrush}"/>

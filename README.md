@@ -4,6 +4,10 @@ Replacing a two-workbook Excel sales & inventory process with a Windows desktop 
 (sales entry), an Android app (owner dashboard), and a shared backend holding one
 calculation engine and an append-only stock ledger.
 
+> **Start here if you are new: [docs/12-wpf-supabase-handoff.md](docs/12-wpf-supabase-handoff.md)** —
+> the desktop app now writes to Supabase, not to `DiamondApi`. That file says what is verified,
+> what is not, and what was deliberately dropped.
+
 - Spec overview: [docs/00-overview.md](docs/00-overview.md)
 - Phase 1 workbook forensics: [docs/01-workbook-forensics.md](docs/01-workbook-forensics.md) - verified 2026-07-25
 - **Verification report: [docs/04-workbook-verification.md](docs/04-workbook-verification.md)** - 24 verified, 6 incorrect, 12 missed

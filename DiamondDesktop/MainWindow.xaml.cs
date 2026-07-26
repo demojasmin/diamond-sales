@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using DiamondDesktop.Data;
 
 namespace DiamondDesktop;
 
@@ -16,35 +17,37 @@ public sealed class DispositionRow
 
 public partial class MainWindow : Window
 {
-    private readonly Api _api;
     private InvoiceEntry _invoice = new();
     private readonly ObservableCollection<DispositionRow> _dispositions = [];
-    private string? _pendingOverrideToken;
+    private bool _saving;
 
-    public MainWindow(Api api)
+    public MainWindow()
     {
         InitializeComponent();
-        _api = api;
         DataContext = _invoice;
 
         InputBindings.Add(new KeyBinding(new RelayCommand(async () => await SaveDraftAsync()), Key.S, ModifierKeys.Control));
         DispositionGrid.ItemsSource = _dispositions;
-        WhoAmI.Text = api.User?.DisplayName ?? "";
-        Initials.Text = Initialise(api.User?.DisplayName);
-        UsersTab.Visibility = api.IsOwner ? Visibility.Visible : Visibility.Collapsed;
+        WhoAmI.Text = Db.CurrentUser?.FullName ?? "";
+        Initials.Text = Initialise(Db.CurrentUser?.FullName);
+        UsersTab.Visibility = Db.IsOwner ? Visibility.Visible : Visibility.Collapsed;
 
+        // DisplayMemberPath, not ToString on the model: Grade and SizeBucket are wire types shared
+        // with the database layer and have no business knowing how a combo renders them.
         foreach (var box in new[] { IntakeGrade, ConvFromGrade, ConvToGrade, RejGrade, AdjGrade,
                                     FilterGrade, PriceGradePicker })
+        {
             box.ItemsSource = Catalogue.Grades;
+            box.DisplayMemberPath = nameof(Grade.DisplayName);
+        }
 
-        // Size lists used to fill only once a grade was chosen, so opening one first showed an
-        // empty popup. They start with all four and narrow to that grade's sizes on selection.
+        // Size lists start with every bucket and narrow to that grade's sizes on selection —
+        // opening one before picking a grade used to show an empty popup.
         foreach (var box in new[] { IntakeSize, ConvFromSize, ConvToSize, RejSize, AdjSize, PriceSizePicker })
+        {
             box.ItemsSource = Catalogue.AllSizes;
-
-        // Sales staff propose changes; managers decide. Each sees only their own button.
-        ChangeRequestButton.Visibility = api.IsManager ? Visibility.Collapsed : Visibility.Visible;
-        ReviewRequestsButton.Visibility = api.IsManager ? Visibility.Visible : Visibility.Collapsed;
+            box.DisplayMemberPath = nameof(SizeBucket.Code);
+        }
 
         _ = LoadPartiesAsync();
     }
@@ -53,27 +56,30 @@ public partial class MainWindow : Window
 
     private async Task LoadPartiesAsync()
     {
-        // The top-bar pill reports the real connection, not a hard-coded "Connected".
-        var (ok, message) = await _api.PingAsync();
-        SyncText.Text = message;
-        SyncText.Foreground = ok
-            ? (System.Windows.Media.Brush)FindResource("TextMutedBrush")
-            : (System.Windows.Media.Brush)FindResource("DangerBrush");
-        if (!ok) { Say(message); return; }
+        try
+        {
+            await Catalogue.LoadAsync();
+            var buyers = await Repo.BuyersAsync();
+            var brokers = await Repo.BrokersAsync();
 
-        var buyers = await _api.GetAsync<List<BuyerDto>>("/api/v1/buyers") ?? [];
-        var brokers = await _api.GetAsync<List<BrokerDto>>("/api/v1/brokers") ?? [];
+            _invoice.Buyers.Clear();
+            foreach (var b in buyers) _invoice.Buyers.Add(new PartyRef(b.BuyerId, b.Name, b.DefaultTermsDays));
 
-        _invoice.Buyers.Clear();
-        foreach (var b in buyers) _invoice.Buyers.Add(new PartyRef(b.BuyerId, b.Name, b.DefaultTermsDays));
+            _invoice.Brokers.Clear();
+            foreach (var b in brokers) _invoice.Brokers.Add(new PartyRef(b.BrokerId, b.Name, null, b.DefaultBrokerPct));
 
-        _invoice.Brokers.Clear();
-        foreach (var b in brokers) _invoice.Brokers.Add(new PartyRef(b.BrokerId, b.Name, null, b.DefaultBrokerPct));
+            FilterBuyer.ItemsSource = buyers;                  // the dashboard's buyer filter
 
-        FilterBuyer.ItemsSource = buyers;                  // the dashboard's buyer filter
+            Pill(true, $"Connected · {Catalogue.Grades.Count} grades · {buyers.Count} buyers");
 
-        // An empty picker looks like a broken screen. Say which it is.
-        if (buyers.Count == 0) Say("No buyers came back from the server — add one on the Master data tab");
+            // An empty picker looks like a broken screen. Say which it is.
+            if (buyers.Count == 0) Say("No buyers came back from Supabase — add one on the Master data tab");
+        }
+        catch (Exception ex)
+        {
+            Pill(false, Db.IsOnline ? "Server refused the request" : "Offline");
+            Say(ex.Message);
+        }
     }
 
     /// AC 1: "fill header + one line, press Enter, then a new blank line appears with the header retained".
@@ -139,7 +145,6 @@ public partial class MainWindow : Window
         foreach (var b in brokers) _invoice.Brokers.Add(b);
 
         DataContext = _invoice;
-        _pendingOverrideToken = null;
         Status.Text = "";
     }
 
@@ -147,93 +152,83 @@ public partial class MainWindow : Window
 
     private async Task<bool> SaveDraftAsync()
     {
+        // Every save route — the button, Ctrl+S and Post — comes through here, so one guard closes
+        // the hole for all three: the buttons stay live across the round trip, and a second click
+        // arriving while the first insert is still in flight sees InvoiceId still null and books a
+        // SECOND invoice for the same parcels.
+        if (_saving) return false;
+
         Grid.CommitEdit();
 
         if (_invoice.Validate() is { } error) { Say(error); return false; }
-        if (_invoice.BuyerId is null) { Say("Pick a buyer from the list"); return false; }
+        if (_invoice.BuyerId is not { } buyerId) { Say("Pick a buyer from the list"); return false; }
+        if (Catalogue.BaseCurrencyId == 0) { Say("No INR row in the currency table — an invoice cannot be priced without it"); return false; }
 
-        var payload = new
+        var draft = new DraftInvoice(
+            _invoice.InvoiceId, _invoice.ClientRef, DateOnly.FromDateTime(_invoice.InvoiceDate),
+            buyerId, _invoice.BrokerId, _invoice.BrokerPct, _invoice.TermsDays, _invoice.DocType,
+            Catalogue.BaseCurrencyId,
+            _invoice.RealLines.Select(l => new DraftLine(
+                l.Grade!.GradeId, l.Size!.SizeId, l.GrossWeightCt, l.SelectionCt,
+                l.PricePerCt, l.ExRate, l.Less1Pct, l.Less2Pct, l.Remark)).ToList());
+
+        try
         {
-            invoiceId = _invoice.InvoiceId,
-            invoiceDate = DateOnly.FromDateTime(_invoice.InvoiceDate),
-            buyerId = _invoice.BuyerId,
-            brokerId = _invoice.BrokerId,
-            brokerPct = _invoice.BrokerPct,
-            termsDays = _invoice.TermsDays,
-            docType = _invoice.DocType,
-            lines = _invoice.RealLines.Select(l => new
-            {
-                gradeId = l.Grade!.Id,
-                sizeId = l.Size!.Id,
-                grossWeightCt = l.GrossWeightCt,
-                selectionCt = l.SelectionCt,
-                pricePerCt = l.PricePerCt,
-                exRate = l.ExRate,
-                less1Pct = l.Less1Pct,
-                less2Pct = l.Less2Pct,
-                remark = l.Remark,
-            }).ToList(),
-        };
+            _saving = true;
+            // Keeping the returned id makes the next save an update instead of a second invoice.
+            _invoice.InvoiceId = await Repo.SaveDraftAsync(draft);
+        }
+        catch (Exception ex) { Say(ex.Message); return false; }
+        finally { _saving = false; }
 
-        // Same id on create and update: the client owns the id, so re-saving is not a second invoice.
-        string? failure = _invoice.Status == "DRAFT" && !_invoice.Saved
-            ? await _api.PostAsync("/api/v1/invoices", payload)
-            : await _api.PutAsync($"/api/v1/invoices/{_invoice.InvoiceId}", payload);
-
-        if (failure is not null) { Say(failure); return false; }
-
-        _invoice.Saved = true;
-        Say($"Draft saved · {_invoice.TotalAmount:N2}", ok: true);
+        // No amount here on purpose: the saved invoice's total is Postgres', and it is shown on the
+        // Invoices tab where it comes from v_invoice.
+        Say($"Draft saved · {_invoice.RealLines.Count} line(s)", ok: true);
         return true;
     }
 
     private async void Post_Click(object sender, RoutedEventArgs e)
     {
-        if (!await SaveDraftAsync()) return;
+        if (!await SaveDraftAsync() || _invoice.InvoiceId is not { } id) return;
 
-        var (ok, message, warnings, token) = await _api.PostInvoiceAsync(_invoice.InvoiceId, _pendingOverrideToken);
-        _pendingOverrideToken = null;
+        var outcome = await Repo.PostAsync(id);
 
-        if (ok)
+        if (outcome.NeedsOverride)
         {
-            Say($"Posted · stock deducted · {_invoice.TotalAmount:N2}", ok: true);
-            MessageBox.Show($"Posted.\n\nCarats out {_invoice.TotalCarats:N2}\nAmount {_invoice.TotalAmount:N2}",
-                            "Invoice posted", MessageBoxButton.OK, MessageBoxImage.Information);
-            NewInvoice_Click(sender, e);
-            return;
-        }
+            string shortfalls = string.Join("\n", outcome.Shortfalls.Select(s =>
+                $"{s.GradeCode} × {s.SizeCode} — balance {s.BalanceCt:N4} ct, needs {s.NeededCt:N4} ct"));
 
-        if (token is not null)
-        {
-            var answer = MessageBox.Show(
-                string.Join("\n", warnings) + "\n\nPost anyway?",
+            var answer = MessageBox.Show($"{outcome.Message}\n\n{shortfalls}\n\nPost anyway?",
                 "Negative stock", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (answer != MessageBoxResult.Yes) { Say(outcome.Message ?? "Not posted"); return; }
 
-            if (answer == MessageBoxResult.Yes)
-            {
-                _pendingOverrideToken = token;
-                Post_Click(sender, e);
-                return;
-            }
+            outcome = await Repo.PostAsync(id, over: true);
         }
 
-        Say(message ?? "Post failed");
+        if (!outcome.Ok) { Say(outcome.Message ?? "Post failed"); return; }
+
+        // The invoice number is assigned at post, by post_invoice() — never by this app.
+        Say($"Posted as {outcome.InvoiceNo} · stock deducted", ok: true);
+        MessageBox.Show($"Posted as {outcome.InvoiceNo}.", "Invoice posted",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+        NewInvoice_Click(sender, e);
     }
 
     // ── Invoices, receipts, receivables ─────────────────────────────────────
 
     private async void LoadInvoices_Click(object sender, RoutedEventArgs e)
-        => InvoiceGrid.ItemsSource = await _api.GetAsync<List<InvoiceRow>>("/api/v1/invoices");
+        => InvoiceGrid.ItemsSource = await Read(Repo.InvoicesAsync);
 
     private async void Receipt_Click(object sender, RoutedEventArgs e)
     {
-        if (InvoiceGrid.SelectedItem is not InvoiceRow invoice) { Say("Select an invoice first"); return; }
+        if (InvoiceGrid.SelectedItem is not VInvoice invoice) { Say("Select an invoice first"); return; }
+        // A cancelled invoice has had its stock returned and owes nothing. Cash booked against it
+        // lands in the receipt ledger against a document that no longer exists.
+        if (invoice.Status == InvoiceStatus.CANCELLED) { Say("That invoice is cancelled — nothing can be received against it"); return; }
         if (!decimal.TryParse(ReceiptAmount.Text, out decimal amount) || amount <= 0) { Say("Enter a receipt amount"); return; }
 
         string method = (ReceiptMethod.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "CASH";
-        string? failure = await _api.PostAsync($"/api/v1/invoices/{invoice.InvoiceId}/receipts",
-            new { receiptDate = DateOnly.FromDateTime(DateTime.Today), amount, method });
-
+        string? failure = await Repo.ReceiptAsync(invoice.InvoiceId, amount, method);
         if (failure is not null) { Say(failure); return; }
 
         ReceiptAmount.Text = "";
@@ -243,24 +238,25 @@ public partial class MainWindow : Window
 
     private async void CancelInvoice_Click(object sender, RoutedEventArgs e)
     {
-        if (InvoiceGrid.SelectedItem is not InvoiceRow invoice) { Say("Select an invoice first"); return; }
+        if (InvoiceGrid.SelectedItem is not VInvoice invoice) { Say("Select an invoice first"); return; }
 
+        // The RPC rejects a blank reason, so there is no point sending one.
         var reason = Prompt.Ask("Why is this invoice being cancelled?", "Cancel invoice");
-        if (string.IsNullOrWhiteSpace(reason)) return;
+        if (string.IsNullOrWhiteSpace(reason)) { Say("A cancellation reason is required"); return; }
 
-        string? failure = await _api.PostAsync($"/api/v1/invoices/{invoice.InvoiceId}/cancel", new { reason });
+        string? failure = await Repo.CancelAsync(invoice.InvoiceId, reason);
         Say(failure ?? "Cancelled · stock returned", ok: failure is null);
         LoadInvoices_Click(sender, e);
     }
 
     private async void LoadReceivables_Click(object sender, RoutedEventArgs e)
     {
-        var data = await _api.GetAsync<ReceivablesDto>("/api/v1/receivables");
-        if (data is null) return;
+        var rows = await Read(Repo.ReceivablesAsync);
+        if (rows is null) return;
 
-        ReceivablesGrid.ItemsSource = data.Invoices;
-        ReceivablesSummary.Text = $"Total {data.Total:N2}   ·   " +
-            string.Join("   ", data.Buckets.Select(b => $"{b.Key} {b.Value:N2}"));
+        ReceivablesGrid.ItemsSource = rows;
+        ReceivablesSummary.Text = $"Total {rows.Sum(r => r.Outstanding):N2}   ·   " + string.Join("   ",
+            rows.GroupBy(r => r.AgeBucket).OrderBy(g => g.Key).Select(g => $"{g.Key} {g.Sum(r => r.Outstanding):N2}"));
     }
 
     // ── RPT-001 · export · RPT-002 · print ──────────────────────────────────
@@ -276,84 +272,44 @@ public partial class MainWindow : Window
 
     private async void PrintInvoice_Click(object sender, RoutedEventArgs e)
     {
-        if (InvoiceGrid.SelectedItem is not InvoiceRow row) { Say("Select an invoice first"); return; }
+        if (InvoiceGrid.SelectedItem is not VInvoice invoice) { Say("Select an invoice first"); return; }
 
-        var detail = await _api.GetAsync<InvoiceDetail>($"/api/v1/invoices/{row.InvoiceId}");
-        if (detail is null) { Say(_api.LastError ?? "Could not load the invoice"); return; }
+        var lines = await Read(() => Repo.LinesAsync(invoice.InvoiceId));
+        if (lines is null) return;
 
-        // The bill prints grade and size names, which the invoice payload carries as ids.
-        var grades = Catalogue.Grades.ToDictionary(g => g.Id, g => g.DisplayName);
-        var sizes = Catalogue.AllSizes.ToDictionary(s => s.Id, s => s.Code);
-        foreach (var line in detail.Lines)
-        {
-            line.GradeCode = grades.GetValueOrDefault(line.GradeId, "?");
-            line.SizeCode = sizes.GetValueOrDefault(line.SizeId, "?");
-        }
-
-        Say(Reports.PrintInvoice(detail, "Diamond Sales & Inventory") ?? "", ok: true);
-    }
-
-    // ── SALES-002 · change requests ─────────────────────────────────────────
-
-    private async void ChangeRequest_Click(object sender, RoutedEventArgs e)
-    {
-        if (InvoiceGrid.SelectedItem is not InvoiceRow row) { Say("Select an invoice first"); return; }
-
-        string? what = Prompt.Ask($"What should change on {row.InvoiceNo}?", "Request a change");
-        if (string.IsNullOrWhiteSpace(what)) return;
-
-        // A sales person cannot edit a posted invoice — they propose, a manager decides.
-        string? failure = await _api.PostAsync($"/api/v1/invoices/{row.InvoiceId}/change-requests",
-            new { requested = what });
-        Say(failure ?? "Change request raised — a manager will review it", ok: failure is null);
-    }
-
-    private async void ReviewRequests_Click(object sender, RoutedEventArgs e)
-    {
-        var requests = await _api.GetAsync<List<ChangeRequestRow>>("/api/v1/change-requests");
-        if (requests is null) { Say(_api.LastError ?? "Manager or Owner only"); return; }
-        if (requests.Count == 0) { Say("No open change requests", ok: true); return; }
-
-        var first = requests[0];
-        var answer = MessageBox.Show(
-            $"{requests.Count} open request(s).\n\nOldest:\n{first.Proposed}\n\nApprove it?",
-            "Change requests", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
-        if (answer == MessageBoxResult.Cancel) return;
-
-        string decision = answer == MessageBoxResult.Yes ? "APPROVE" : "REJECT";
-        string? failure = await _api.PostAsync(
-            $"/api/v1/change-requests/{first.RequestId}/decide?decision={decision}");
-        Say(failure ?? $"Request {decision.ToLowerInvariant()}d", ok: failure is null);
+        Say(Reports.PrintInvoice(invoice, lines, "Diamond Sales & Inventory") ?? "", ok: true);
     }
 
     // ── Stock ───────────────────────────────────────────────────────────────
 
     private async void LoadStock_Click(object sender, RoutedEventArgs e)
     {
-        var data = await _api.GetAsync<StockDto>("/api/v1/stock");
-        if (data is null) { Say("Manager or Owner only"); return; }
+        var rows = await Read(Repo.StockAsync);
+        if (rows is null) return;
 
-        StockGrid.ItemsSource = data.Rows;
-        StockSummary.Text = $"{data.TotalCarats:N4} ct   ·   value {data.TotalValue:N2}";
+        StockGrid.ItemsSource = rows;
+        StockSummary.Text = $"{rows.Sum(r => r.BalanceCt):N4} ct   ·   value {rows.Sum(r => r.StockValue):N2}";
     }
 
     private async void Movements_Click(object sender, RoutedEventArgs e)
     {
-        if (StockGrid.SelectedItem is not StockRowDto row) { Say("Select a grade × size row"); return; }
-        MovementGrid.ItemsSource = await _api.GetAsync<List<MovementDto>>(
-            $"/api/v1/stock/{row.GradeId}/{row.SizeId}/movements");
+        if (StockGrid.SelectedItem is not VStockPosition row) { Say("Select a grade × size row"); return; }
+        MovementGrid.ItemsSource = await Read(() => Repo.MovementsAsync(row.GradeCode, row.SizeCode));
     }
 
     private async void Invariants_Click(object sender, RoutedEventArgs e)
     {
-        var result = await _api.GetAsync<System.Text.Json.JsonElement>("/api/v1/invariants");
-        var failures = result.TryGetProperty("failures", out var list)
-            ? list.EnumerateArray().Select(f => f.GetString()).ToList()
-            : [];
+        var rows = await Read(Repo.ReconciliationAsync);
+        if (rows is null) return;
 
-        MessageBox.Show(failures.Count == 0 ? "All invariants hold (INV-1…INV-6)." : string.Join("\n", failures),
-                        "Ledger integrity", MessageBoxButton.OK,
-                        failures.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        var broken = rows.Where(r => !r.Reconciles).ToList();
+        MessageBox.Show(
+            broken.Count == 0
+                ? "Stock moved out matches stock invoiced, on every grade × size."
+                : string.Join("\n", broken.Select(r =>
+                    $"{r.GradeCode} × {r.SizeCode} — moved {r.MovedOutCt:N4} ct, invoiced {r.SoldOnInvoicesCt:N4} ct, off by {r.DiffCt:N4}")),
+            "Ledger integrity", MessageBoxButton.OK,
+            broken.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
     }
 
     // ── Intake, conversion, rejection, adjustment ───────────────────────────
@@ -375,14 +331,13 @@ public partial class MainWindow : Window
         var (grade, size) = Pick(IntakeGrade, IntakeSize);
         if (grade is null || size is null) { Say("Pick a grade and size"); return; }
         if (!decimal.TryParse(IntakeWeight.Text, out decimal weight) || weight <= 0) { Say("Weight must be positive"); return; }
-        decimal.TryParse(IntakePrice.Text, out decimal price);
+        // rough_intake.price_per_ct is not nullable and feeds v_stock_position's avg_cost and
+        // stock_value. A blank box parsed to 0 booked the parcel at zero value and dragged the
+        // grade's average cost down with it, silently. Zero is fine — but it has to be typed.
+        if (!decimal.TryParse(IntakePrice.Text, out decimal price) || price < 0)
+        { Say("Enter the price per carat — it sets this parcel's cost basis"); return; }
 
-        string? failure = await _api.PostAsync("/api/v1/intake", new
-        {
-            intakeDate = DateOnly.FromDateTime(DateTime.Today),
-            rows = new[] { new { gradeId = grade.Id, sizeId = size.Id, weightCt = weight, pricePerCt = price } },
-        });
-
+        string? failure = await Repo.IntakeAsync(grade.GradeId, size.SizeId, weight, price);
         Say(failure ?? $"Intake recorded · {weight:N4} ct", ok: failure is null);
     }
 
@@ -392,42 +347,36 @@ public partial class MainWindow : Window
         var (toGrade, toSize) = Pick(ConvToGrade, ConvToSize);
         if (fromGrade is null || fromSize is null || toGrade is null || toSize is null) { Say("Pick both sides"); return; }
         if (!decimal.TryParse(ConvWeight.Text, out decimal weight) || weight <= 0) { Say("Weight must be positive"); return; }
-        decimal.TryParse(ConvPrice.Text, out decimal price);
+        if (!TypedPrice(ConvPrice, out decimal? price)) { Say("Price/ct must be a number, or left blank"); return; }
 
-        string? failure = await _api.PostAsync("/api/v1/conversions", new
-        {
-            fromGradeId = fromGrade.Id, fromSizeId = fromSize.Id,
-            toGradeId = toGrade.Id, toSizeId = toSize.Id,
-            weightCt = weight, pricePerCt = price,
-        });
-
+        string? failure = await Repo.ConvertAsync(fromGrade.GradeId, fromSize.SizeId,
+                                                  toGrade.GradeId, toSize.SizeId, weight, price);
         Say(failure ?? $"Converted {weight:N4} ct · total carats unchanged", ok: failure is null);
     }
 
     private async void Reject_Click(object sender, RoutedEventArgs e)
     {
+        // The row the user is still typing holds its weight in the cell editor, not on the object.
+        // Without this the count below reads 0 and the "N were NOT saved" warning never appears —
+        // which is the one thing this screen must not do.
+        DispositionGrid.CommitEdit(DataGridEditingUnit.Row, true);
+
         var (grade, size) = Pick(RejGrade, RejSize);
         if (grade is null || size is null) { Say("Pick a grade and size"); return; }
         if (!decimal.TryParse(RejWeight.Text, out decimal weight) || weight <= 0) { Say("Weight must be positive"); return; }
-        decimal.TryParse(RejPrice.Text, out decimal price);
+        if (!TypedPrice(RejPrice, out decimal? price)) { Say("Price/ct must be a number, or left blank"); return; }
 
-        var byCode = Catalogue.Grades.ToDictionary(g => g.DisplayName, g => g.Id);
-        var dispositions = _dispositions.Where(d => d.WeightCt > 0).Select(d => new
-        {
-            weightCt = d.WeightCt,
-            outcome = d.Outcome,
-            toGradeId = d.ToGradeCode is not null && byCode.TryGetValue(d.ToGradeCode, out var id) ? id : (Guid?)null,
-            note = d.Note,
-        }).ToList();
+        string? failure = await Repo.RejectionAsync(grade.GradeId, size.SizeId, weight, price);
+        if (failure is not null) { Say(failure); return; }
 
-        string? failure = await _api.PostAsync("/api/v1/rejections", new
-        {
-            gradeId = grade.Id, sizeId = size.Id, weightCt = weight, pricePerCt = price,
-            reason = (string?)null, dispositions,
-        });
-
-        if (failure is null) _dispositions.Clear();
-        Say(failure ?? $"Rejection recorded · {dispositions.Count} disposition(s)", ok: failure is null);
+        // ponytail: dispositions have no Supabase table yet, so they are typed and not stored.
+        // Say so rather than swallow them; wire them up when the table exists.
+        int typed = _dispositions.Count(d => d.WeightCt > 0);
+        _dispositions.Clear();
+        Say(typed == 0
+            ? $"Rejection recorded · {weight:N4} ct"
+            : $"Rejection recorded · {weight:N4} ct — {typed} disposition(s) were NOT saved, there is no table for them yet",
+            ok: typed == 0);
     }
 
     private async void Adjust_Click(object sender, RoutedEventArgs e)
@@ -437,69 +386,109 @@ public partial class MainWindow : Window
         if (!decimal.TryParse(AdjWeight.Text, out decimal weight) || weight == 0) { Say("Adjust by a non-zero weight"); return; }
         if (string.IsNullOrWhiteSpace(AdjReason.Text)) { Say("An adjustment needs a reason"); return; }
 
-        string? failure = await _api.PostAsync("/api/v1/adjustments", new
-        {
-            gradeId = grade.Id, sizeId = size.Id, weightCt = weight, pricePerCt = 0m, reason = AdjReason.Text,
-        });
-
+        string? failure = await Repo.AdjustAsync(grade.GradeId, size.SizeId, weight, AdjReason.Text.Trim());
         Say(failure ?? "Adjustment recorded — it stays visible in the ledger forever", ok: failure is null);
     }
 
-    // ── Master data, dashboard, audit, users, settings ──────────────────────
+    // ── Master data ─────────────────────────────────────────────────────────
 
-    private async void LoadMaster()
+    private async Task LoadMasterAsync()
     {
-        var grades = await _api.GetAsync<List<GradeDto>>("/api/v1/grades") ?? [];
-        GradeGrid.ItemsSource = grades.Select(g => new
-        {
-            g.Code, g.DisplayName,
-            SizeList = string.Join("  ", g.Sizes.OrderBy(s => s.SortOrder).Select(s => s.Code)),
-            AliasList = string.Join(", ", g.Aliases),
-        }).ToList();
-
-        BuyerGrid.ItemsSource = await _api.GetAsync<List<BuyerDto>>("/api/v1/buyers");
-        BrokerGrid.ItemsSource = await _api.GetAsync<List<BrokerDto>>("/api/v1/brokers");
-        if (_api.IsManager) await LoadPricesAsync();
+        GradeGrid.ItemsSource = await Read(Repo.GradesAsync);
+        BuyerGrid.ItemsSource = await Read(Repo.BuyersAsync);
+        BrokerGrid.ItemsSource = await Read(Repo.BrokersAsync);
+        if (Db.IsManagerOrOwner) await LoadPricesAsync();
     }
 
     private async void AddBuyer_Click(object sender, RoutedEventArgs e)
     {
         int.TryParse(NewBuyerTerms.Text, out int terms);
-        string? failure = await _api.PostAsync("/api/v1/buyers",
-            new { name = NewBuyerName.Text.Trim(), defaultTermsDays = terms, active = true });
+        string? failure = await Repo.AddBuyerAsync(NewBuyerName.Text.Trim(), terms);
 
         Say(failure ?? "Buyer added", ok: failure is null);
-        if (failure is null) { NewBuyerName.Text = ""; LoadMaster(); await LoadPartiesAsync(); }
+        if (failure is null) { NewBuyerName.Text = ""; await LoadMasterAsync(); await LoadPartiesAsync(); }
     }
 
     private async void AddBroker_Click(object sender, RoutedEventArgs e)
     {
         decimal.TryParse(NewBrokerPct.Text, out decimal pct);
-        string? failure = await _api.PostAsync("/api/v1/brokers",
-            new { name = NewBrokerName.Text.Trim(), defaultBrokerPct = pct, active = true });
+        string? failure = await Repo.AddBrokerAsync(NewBrokerName.Text.Trim(), pct);
 
         Say(failure ?? "Broker added", ok: failure is null);
-        if (failure is null) { NewBrokerName.Text = ""; LoadMaster(); await LoadPartiesAsync(); }
+        if (failure is null) { NewBrokerName.Text = ""; await LoadMasterAsync(); await LoadPartiesAsync(); }
     }
 
-    // ── Phase 4 · owner dashboard ───────────────────────────────────────────
+    // ── MDM-003 · price list ────────────────────────────────────────────────
 
-    /// The global filter bar, turned into the query string every widget shares.
-    private string Filters()
+    private void PriceGrade_Changed(object sender, SelectionChangedEventArgs e)
     {
-        var parts = new List<string>();
-        string range = (RangePicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "MONTH";
-        parts.Add($"range={range}");
+        if (PriceSizePicker is null) return;
+        FillSizes(PriceGradePicker, PriceSizePicker);
+    }
 
-        if (range == "CUSTOM")
+    private async Task LoadPricesAsync()
+    {
+        var prices = await Read(Repo.PricesAsync);
+        if (prices is null) return;
+
+        var grades = Catalogue.Grades.ToDictionary(g => g.GradeId, g => g.DisplayName ?? g.Code);
+        var sizes = Catalogue.AllSizes.ToDictionary(s => s.SizeId, s => s.Code);
+
+        PriceGrid.ItemsSource = prices.Select(p => new
         {
-            if (FromDate.SelectedDate is { } from) parts.Add($"from={from:yyyy-MM-dd}");
-            if (ToDate.SelectedDate is { } to) parts.Add($"to={to:yyyy-MM-dd}");
-        }
-        if (FilterBuyer.SelectedItem is BuyerDto buyer) parts.Add($"buyerId={buyer.BuyerId}");
-        if (FilterGrade.SelectedItem is Grade grade && grade.Id != Guid.Empty) parts.Add($"gradeId={grade.Id}");
+            GradeCode = grades.GetValueOrDefault(p.GradeId, "?"),
+            SizeCode = sizes.GetValueOrDefault(p.SizeId, "?"),
+            p.Context, p.PricePerCt, p.EffectiveFrom,
+        }).ToList();
+    }
 
-        return "?" + string.Join("&", parts);
+    private async void AddPrice_Click(object sender, RoutedEventArgs e)
+    {
+        var (grade, size) = Pick(PriceGradePicker, PriceSizePicker);
+        if (grade is null || size is null) { Say("Pick a grade and size"); return; }
+        if (!decimal.TryParse(PriceValue.Text, out decimal price) || price < 0) { Say("Enter a price"); return; }
+
+        string context = (PriceContext.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "SALE";
+
+        // Repo closes the previous open price and opens a new one — prices are never edited in place,
+        // so a valuation as of any past date still finds the price that applied then.
+        string? failure = await Repo.SetPriceAsync(grade.GradeId, size.SizeId, context, price);
+
+        Say(failure ?? $"{grade.DisplayName} {size.Code} {context} = {price:N2} from today", ok: failure is null);
+        if (failure is null) await LoadPricesAsync();
+    }
+
+    // ── PHASE 4 · owner dashboard ───────────────────────────────────────────
+
+    /// The filter bar as a date window. Postgres does the KPI arithmetic; the window is all it needs.
+    private (DateOnly From, DateOnly To) Period()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        return (RangePicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() switch
+        {
+            "TODAY" => (today, today),
+            "WEEK" => (today.AddDays(-(int)DateTime.Today.DayOfWeek), today),
+            "MONTH" => (new DateOnly(today.Year, today.Month, 1), today),
+            "QUARTER" => (new DateOnly(today.Year, (today.Month - 1) / 3 * 3 + 1, 1), today),
+            "FY" => (new DateOnly(today.Month >= 4 ? today.Year : today.Year - 1, 4, 1), today),  // India: FY starts 1 April
+            "CUSTOM" => (Day(FromDate.SelectedDate) ?? today.AddMonths(-1), Day(ToDate.SelectedDate) ?? today),
+            _ => (new DateOnly(2000, 1, 1), today),           // All time
+        };
+
+        static DateOnly? Day(DateTime? d) => d is null ? null : DateOnly.FromDateTime(d.Value);
+    }
+
+    /// The invoices the filter bar selects. Every breakdown groups over this list — client-side
+    /// grouping of server-computed amounts, which is what the golden rule allows.
+    private async Task<List<VInvoice>> FilteredInvoicesAsync()
+    {
+        var (from, to) = Period();
+        var all = await Read(Repo.InvoicesAsync) ?? [];
+
+        var rows = all.Where(i => i.Status == InvoiceStatus.POSTED
+                               && i.InvoiceDate >= from && i.InvoiceDate <= to);
+        if (FilterBuyer.SelectedItem is Buyer buyer) rows = rows.Where(i => i.BuyerId == buyer.BuyerId);
+        return rows.ToList();
     }
 
     private void Range_Changed(object sender, SelectionChangedEventArgs e)
@@ -520,50 +509,59 @@ public partial class MainWindow : Window
 
     private async void LoadDashboard_Click(object sender, RoutedEventArgs e)
     {
-        string query = Filters();
+        var (from, to) = Period();
 
-        var data = await _api.GetAsync<DashboardDto>($"/api/v1/dashboard/summary{query}");
-        if (data is null) { Say("Manager or Owner only"); return; }
+        DashboardSummary summary;
+        try { summary = await Repo.DashboardAsync(from, to); }
+        catch (Exception ex) { Say(ex.Message); return; }
 
-        KpiSales.Text = data.TotalSales.ToString("N2");
-        KpiCarats.Text = data.CaratsSold.ToString("N2");
-        KpiRate.Text = data.BlendedRate.ToString("N2");
-        KpiOutstanding.Text = data.Outstanding.ToString("N2");
-        KpiInventory.Text = data.InventoryValue.ToString("N2");
-        KpiInventoryCt.Text = $"{data.InventoryCarats:N2} ct";
-        KpiBroker.Text = data.BrokerCost.ToString("N2");
-        KpiCount.Text = data.InvoiceCount.ToString();
+        KpiSales.Text = summary.SalesAmount.ToString("N2");
+        KpiCarats.Text = summary.CaratsSold.ToString("N2");
+        KpiRate.Text = summary.BlendedRate.ToString("N2");
+        KpiOutstanding.Text = summary.OutstandingTotal.ToString("N2");
+        KpiInventory.Text = summary.StockValue.ToString("N2");
+        KpiInventoryCt.Text = $"{summary.StockCarats:N2} ct";
+        KpiCount.Text = summary.InvoiceCount.ToString();
 
-        // W1's vs-prior: same number of days, immediately before this window.
-        KpiSalesDelta.Text = data.PriorSales == 0
-            ? "no prior period"
-            : $"{(data.TotalSales - data.PriorSales) / data.PriorSales * 100m:+0.0;-0.0}% vs prior {data.PriorSales:N0}";
+        // W7 · margin needs a cost basis per sold parcel, which no view exposes yet.
+        KpiMargin.Text = "—";
+        KpiMarginBasis.Text = "no cost basis in the database yet";
 
-        // W7 · margin is Owner-only unless manager_sees_margin is on, so a 403 here is correct behaviour.
-        var margin = await _api.GetAsync<MarginDto>($"/api/v1/dashboard/margin{query}");
-        KpiMargin.Text = margin is null ? "—" : margin.Total.ToString("N2");
-        KpiMarginBasis.Text = margin is null ? "Owner only" : "weighted-avg cost (Q3)";
+        // W1's vs-prior: the same number of days, immediately before this window.
+        int days = to.DayNumber - from.DayNumber + 1;
+        try
+        {
+            var prior = await Repo.DashboardAsync(from.AddDays(-days), from.AddDays(-1));
+            KpiSalesDelta.Text = prior.SalesAmount == 0
+                ? "no prior period"
+                : $"{(summary.SalesAmount - prior.SalesAmount) / prior.SalesAmount * 100m:+0.0;-0.0}% vs prior {prior.SalesAmount:N0}";
+        }
+        catch (Exception) { KpiSalesDelta.Text = "no prior period"; }
 
-        await LoadAlertsAsync();
+        var invoices = await FilteredInvoicesAsync();
+        KpiBroker.Text = invoices.Sum(i => i.BrokerPayable).ToString("N2");
+
+        DrillGrid.ItemsSource = invoices;
+
+        await LoadAlertsAsync(summary);
         await LoadBreakdownAsync();
-
-        DrillGrid.ItemsSource = await _api.GetAsync<List<InvoiceRow>>($"/api/v1/dashboard/invoices{query}");
     }
 
     /// W15 · the alerts strip. Hidden entirely when there is nothing wrong.
-    private async Task LoadAlertsAsync()
+    private async Task LoadAlertsAsync(DashboardSummary summary)
     {
-        var alerts = await _api.GetAsync<AlertsDto>("/api/v1/dashboard/alerts");
-        if (alerts is null || (alerts.OverdueCount == 0 && alerts.LowStockCount == 0))
+        var stock = await Read(Repo.StockAsync) ?? [];
+        int negative = stock.Count(s => s.BalanceCt < 0);
+
+        if (summary.OverdueCount == 0 && negative == 0)
         {
             AlertStrip.Visibility = Visibility.Collapsed;
             return;
         }
 
         var parts = new List<string>();
-        if (alerts.OverdueCount > 0) parts.Add($"{alerts.OverdueCount} overdue invoice(s) worth {alerts.OverdueValue:N2}");
-        if (alerts.LowStockCount > 0) parts.Add($"{alerts.LowStockCount} grade/size below the low-stock threshold");
-        if (alerts.NegativeCount > 0) parts.Add($"{alerts.NegativeCount} of them NEGATIVE");
+        if (summary.OverdueCount > 0) parts.Add($"{summary.OverdueCount} overdue invoice(s) worth {summary.OverdueTotal:N2}");
+        if (negative > 0) parts.Add($"{negative} grade/size showing NEGATIVE stock");
 
         AlertText.Text = string.Join("   ·   ", parts);
         AlertStrip.Visibility = Visibility.Visible;
@@ -575,139 +573,168 @@ public partial class MainWindow : Window
         _ = LoadBreakdownAsync();
     }
 
-    /// One list renders every breakdown — the server returns the same Bar shape for all of them.
+    /// One list renders every breakdown. Each is a LINQ grouping over figures the database computed.
     private async Task LoadBreakdownAsync()
     {
-        string query = Filters();
         string which = (BreakdownPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "period";
         string bucket = (PeriodBucket.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "day";
         PeriodBucket.Visibility = which == "period" ? Visibility.Visible : Visibility.Hidden;
 
-        List<BarDto> bars = which switch
+        List<(string Label, decimal Value, string? Secondary)> bars;
+        bool money = true;
+
+        switch (which)
         {
-            "period" or "salesperson" or "buyer" or "grade" =>
-                await _api.GetAsync<List<BarDto>>($"/api/v1/dashboard/sales-by{query}&dimension={which}&bucket={bucket}") ?? [],
-            "margin" => (await _api.GetAsync<MarginDto>($"/api/v1/dashboard/margin{query}"))?.Rows ?? [],
-            _ => await _api.GetAsync<List<BarDto>>($"/api/v1/dashboard/{which}{query}") ?? [],
-        };
+            case "salesperson":
+            case "buyer":
+            case "broker-cost":
+            {
+                var invoices = await FilteredInvoicesAsync();
+                bars = which switch
+                {
+                    "salesperson" => Group(invoices, i => i.Salesperson ?? "unattributed", i => i.AmountTotal),
+                    "buyer" => Group(invoices, i => i.BuyerName, i => i.AmountTotal),
+                    _ => Group(invoices, i => i.BrokerName ?? "no broker", i => i.BrokerPayable),
+                };
+                break;
+            }
+
+            case "period":
+            {
+                var invoices = await FilteredInvoicesAsync();
+                bars = Group(invoices, i => Bucket(i.InvoiceDate, bucket), i => i.AmountTotal)
+                    .OrderBy(b => b.Label).ToList();
+                break;
+            }
+
+            case "ageing":
+            {
+                var rows = await Read(Repo.ReceivablesAsync) ?? [];
+                bars = Group(rows, r => r.AgeBucket, r => r.Outstanding);
+                break;
+            }
+
+            case "inventory":
+            case "inventory-aging":
+            {
+                var stock = await Read(Repo.StockAsync) ?? [];
+                if (FilterGrade.SelectedItem is Grade grade)
+                    stock = stock.Where(s => s.GradeCode == grade.Code).ToList();
+
+                if (which == "inventory")
+                    bars = Group(stock, s => s.GradeCode, s => s.StockValue);
+                else
+                {
+                    money = false;
+                    bars = Group(stock, s => AgeBand(s.AgeDays), s => s.BalanceCt);
+                }
+                break;
+            }
+
+            default:
+                bars = [];
+                break;
+        }
 
         // Bar widths are computed here, not bound through a converter — one less moving part.
         decimal max = bars.Count == 0 ? 0 : bars.Max(b => Math.Abs(b.Value));
-        bool money = which is not ("inventory-aging" or "top-movers");
 
         BarList.ItemsSource = bars.Select(b => new
         {
             b.Label,
             b.Secondary,
             ValueText = money ? b.Value.ToString("N2") : $"{b.Value:N2} ct",
-            DeltaText = b.Delta is null or 0 ? "" : $"{b.Delta:+0.00;-0.00} vs prior",
+            DeltaText = "",
             BarWidth = max == 0 ? 0 : (double)(Math.Abs(b.Value) / max) * 420,
         }).ToList();
 
         if (bars.Count == 0) Say("Nothing in this period — widen the range or clear the filters");
     }
 
+    private static List<(string Label, decimal Value, string? Secondary)> Group<T>(
+        IEnumerable<T> rows, Func<T, string> label, Func<T, decimal> value)
+        => rows.GroupBy(label)
+               .Select(g => (g.Key, g.Sum(value), (string?)$"{g.Count()} row(s)"))
+               .OrderByDescending(b => Math.Abs(b.Item2))
+               .ToList();
+
+    private static string Bucket(DateOnly date, string bucket) => bucket switch
+    {
+        "month" => date.ToString("yyyy-MM"),
+        "week" => date.AddDays(-(int)date.DayOfWeek).ToString("yyyy-MM-dd"),
+        _ => date.ToString("yyyy-MM-dd"),
+    };
+
+    private static string AgeBand(int? days) => days switch
+    {
+        null => "unknown",
+        < 31 => "0-30 days",
+        < 91 => "31-90 days",
+        < 181 => "91-180 days",
+        _ => "over 180 days",
+    };
+
+    // ── Audit, users, settings ──────────────────────────────────────────────
+
     private async void LoadAudit_Click(object sender, RoutedEventArgs e)
-        => AuditGrid.ItemsSource = await _api.GetAsync<List<AuditRow>>("/api/v1/audit");
+    {
+        var rows = await Read(() => Repo.AuditAsync());
+        if (rows is null) return;
+
+        AuditGrid.ItemsSource = rows.Select(r => new
+        {
+            r.ChangedAt,
+            // AuditedTable, not TableName: TableName is BaseModel's own and reads "audit_log" on
+            // every row, so the Entity column would name the audit table instead of the audited one.
+            Entity = r.AuditedTable,
+            r.Action,
+            Before = Flatten(r.OldValues),
+            After = Flatten(r.NewValues),
+        }).ToList();
+
+        static string Flatten(Dictionary<string, object>? values)
+            => values is null ? "" : string.Join(", ", values.Select(v => $"{v.Key}={v.Value}"));
+    }
 
     private async void LoadUsers_Click(object sender, RoutedEventArgs e)
-        => UserGrid.ItemsSource = await _api.GetAsync<List<UserDto>>("/api/v1/users");
-
-    private async void AddUser_Click(object sender, RoutedEventArgs e)
     {
-        string role = (NewUserRole.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "SALES";
-        string? failure = await _api.PostAsync("/api/v1/users", new
-        {
-            username = NewUserName.Text.Trim(),
-            displayName = NewUserDisplay.Text.Trim(),
-            password = NewUserPassword.Password,
-            role,
-        });
+        UserGrid.ItemsSource = await Read(Repo.UsersAsync);
 
-        Say(failure ?? "User created", ok: failure is null);
-        if (failure is null) LoadUsers_Click(sender, e);
+        // Creating an account needs the service_role key, which must never ship in a desktop binary.
+        Say("Read-only — accounts are created and deactivated in the Supabase dashboard", ok: true);
     }
-
-    private async void DeactivateUser_Click(object sender, RoutedEventArgs e)
-    {
-        if (UserGrid.SelectedItem is not UserDto user) { Say("Select a user"); return; }
-
-        // Deactivation, not deletion — the account stays on every record it ever touched.
-        string? failure = await _api.DeleteAsync($"/api/v1/users/{user.UserId}");
-        Say(failure ?? "User deactivated · their sessions are dead", ok: failure is null);
-        LoadUsers_Click(sender, e);
-    }
-
-    // ── MDM-003 · price list ────────────────────────────────────────────────
-
-    private void PriceGrade_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (PriceSizePicker is null) return;
-        FillSizes(PriceGradePicker, PriceSizePicker);
-    }
-
-    private async Task LoadPricesAsync()
-    {
-        var prices = await _api.GetAsync<List<PriceRow>>("/api/v1/prices") ?? [];
-        var grades = Catalogue.Grades.ToDictionary(g => g.Id, g => g.DisplayName);
-        var sizes = Catalogue.AllSizes.ToDictionary(s => s.Id, s => s.Code);
-
-        PriceGrid.ItemsSource = prices.Select(p => new
-        {
-            GradeCode = grades.GetValueOrDefault(p.GradeId, "?"),
-            SizeCode = sizes.GetValueOrDefault(p.SizeId, "?"),
-            p.Context, p.PricePerCt, p.EffectiveFrom,
-        }).ToList();
-    }
-
-    private async void AddPrice_Click(object sender, RoutedEventArgs e)
-    {
-        var (grade, size) = Pick(PriceGradePicker, PriceSizePicker);
-        if (grade is null || size is null) { Say("Pick a grade and size"); return; }
-        if (!decimal.TryParse(PriceValue.Text, out decimal price) || price < 0) { Say("Enter a price"); return; }
-
-        string context = (PriceContext.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "SALE";
-
-        // The server closes the previous open price and opens a new one — prices are never edited
-        // in place, so a valuation as of any past date still finds the price that applied then.
-        string? failure = await _api.PostAsync("/api/v1/prices", new
-        {
-            gradeId = grade.Id, sizeId = size.Id, context,
-            pricePerCt = price, effectiveFrom = DateOnly.FromDateTime(DateTime.Today),
-        });
-
-        Say(failure ?? $"{grade.DisplayName} {size.Code} {context} = {price:N2} from today", ok: failure is null);
-        if (failure is null) await LoadPricesAsync();
-    }
-
-    // ── OPS-001 · backup ────────────────────────────────────────────────────
-
-    private async void Backup_Click(object sender, RoutedEventArgs e)
-    {
-        string? failure = await _api.PostAsync("/api/v1/admin/backup");
-        Say(failure ?? "Backup taken", ok: failure is null);
-        await LoadBackupsAsync();
-    }
-
-    private async Task LoadBackupsAsync()
-        => BackupGrid.ItemsSource = await _api.GetAsync<List<BackupRow>>("/api/v1/admin/backups");
 
     private async void LoadSettings_Click(object sender, RoutedEventArgs e)
     {
-        SettingGrid.ItemsSource = await _api.GetAsync<List<SettingRow>>("/api/v1/settings");
-        if (_api.IsOwner) await LoadBackupsAsync();
+        var config = await Read(Repo.ConfigAsync);
+        if (config is null) return;
+
+        SettingGrid.ItemsSource = config.OrderBy(c => c.Key).ToList();
     }
 
     private async void SaveSetting_Click(object sender, RoutedEventArgs e)
     {
-        if (SettingGrid.SelectedItem is not SettingRow setting) { Say("Select a setting"); return; }
+        if (SettingGrid.SelectedItem is not KeyValuePair<string, string> setting) { Say("Select a setting"); return; }
 
-        string? failure = await _api.PutAsync("/api/v1/settings", new { key = setting.Key, value = SettingValue.Text });
+        string? failure = await Repo.SetConfigAsync(setting.Key, SettingValue.Text);
         Say(failure ?? $"{setting.Key} = {SettingValue.Text}", ok: failure is null);
         if (failure is null) LoadSettings_Click(sender, e);
     }
 
     // ── plumbing ────────────────────────────────────────────────────────────
+
+    /// Reads throw; a screen shows the reason instead of an unexplained empty grid.
+    private async Task<T?> Read<T>(Func<Task<T>> read) where T : class
+    {
+        try { return await read(); }
+        catch (Exception ex) { Say(ex.Message); return null; }
+    }
+
+    private void Pill(bool ok, string message)
+    {
+        SyncText.Text = message;
+        SyncText.Foreground = (Brush)FindResource(ok ? "TextMutedBrush" : "DangerBrush");
+    }
 
     /// Initials for the avatar chip — "Asha Patel" → "AP".
     private static string Initialise(string? name)
@@ -742,12 +769,12 @@ public partial class MainWindow : Window
         ScreenSub.Text = ScreenSubtitles.GetValueOrDefault(header, "");
         Status.Text = "";                      // a message belongs to the screen that raised it
 
-        switch (tab.Header?.ToString())
+        switch (header)
         {
             case "Invoices": LoadInvoices_Click(sender, e); break;
             case "Receivables": LoadReceivables_Click(sender, e); break;
             case "Stock": LoadStock_Click(sender, e); break;
-            case "Master data": LoadMaster(); break;
+            case "Master data": _ = LoadMasterAsync(); break;
             case "Dashboard": LoadDashboard_Click(sender, e); break;
             case "Audit": LoadAudit_Click(sender, e); break;
             case "Users": LoadUsers_Click(sender, e); break;
@@ -757,6 +784,21 @@ public partial class MainWindow : Window
 
     private static (Grade?, SizeBucket?) Pick(ComboBox gradeBox, ComboBox sizeBox)
         => (gradeBox.SelectedItem as Grade, sizeBox.SelectedItem as SizeBucket);
+
+    /// <summary>
+    /// An optional price box. Blank means NULL — "no price given" — not zero: a persisted 0 is a
+    /// real price per carat to every view that reads it, and nothing afterwards can tell the two
+    /// apart. False means the box holds something that is not a price at all.
+    /// </summary>
+    private static bool TypedPrice(TextBox box, out decimal? price)
+    {
+        price = null;
+        if (string.IsNullOrWhiteSpace(box.Text)) return true;
+        if (!decimal.TryParse(box.Text, out decimal typed) || typed < 0) return false;
+
+        price = typed;
+        return true;
+    }
 
     private void Say(string message, bool ok = false)
     {

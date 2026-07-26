@@ -21,9 +21,6 @@ public static class Outbox
     private static readonly SemaphoreSlim ReplayLock = new(1, 1);
     private static readonly Task Ready = InitAsync();
 
-    /// Set after login. RLS is the boundary, so a replayed write must carry the user's token.
-    public static string? AccessToken { get; set; }
-
     /// Raised off the UI thread — subscribers must marshal.
     public static event Action<int>? PendingChanged;
 
@@ -31,7 +28,8 @@ public static class Outbox
     {
         await using var db = await OpenAsync();
 
-        // OR IGNORE: the unique client_ref makes a double-queue a no-op instead of an error the caller must handle.
+        // OR IGNORE: the unique (operation, client_ref) makes a double-queue a no-op instead of an error
+        // the caller must handle.
         var cmd = db.CreateCommand();
         cmd.CommandText = "insert or ignore into outbox(operation,payload,client_ref,queued_at) values($o,$p,$c,$t)";
         cmd.Parameters.AddWithValue("$o", operation);
@@ -63,6 +61,9 @@ public static class Outbox
                 if (error is not null)
                 {
                     // Stop dead: later rows may depend on this one (an invoice must exist before its post).
+                    // ponytail: a permanently-refused row (RLS denial, needs_override) therefore blocks the
+                    // queue forever. `attempts` is recorded but never acted on — add a dead-letter view over
+                    // attempts > N when the first row actually wedges.
                     var fail = db.CreateCommand();
                     fail.CommandText = "update outbox set attempts=attempts+1, last_error=$e where id=$id";
                     fail.Parameters.AddWithValue("$e", error);
@@ -93,7 +94,9 @@ public static class Outbox
                 Content = new StringContent(payload, Encoding.UTF8, "application/json")
             };
             request.Headers.Add("apikey", AnonKey);
-            request.Headers.Add("Authorization", $"Bearer {AccessToken ?? AnonKey}");
+            // Read the live session, never a copy taken at login: a replay can land hours later, well past
+            // a token refresh, and an expired JWT would stall the whole queue on a 401.
+            request.Headers.Add("Authorization", $"Bearer {Db.Client.Auth.CurrentSession?.AccessToken ?? AnonKey}");
 
             var response = await Http.SendAsync(request);
             string body = await response.Content.ReadAsStringAsync();
@@ -102,11 +105,15 @@ public static class Outbox
             if (response.IsSuccessStatusCode)
                 return Field(body, "ok") == "false" ? body : null;
 
-            // 23505 means the row already landed on an attempt whose response we never saw. That is the
-            // entire point of client_ref — the duplicate is proof of success, not a failure.
-            return Field(body, "code") == "23505" ? null : $"{(int)response.StatusCode} {body}";
+            // 23505 *on client_ref* means the row already landed on an attempt whose response we never saw —
+            // that is the entire point of client_ref, so the duplicate is proof of success. Any other unique
+            // violation (invoice_no, currency.code, app_config.key) is a real failure and must not be dropped.
+            return Field(body, "code") == "23505" && body.Contains("client_ref", StringComparison.Ordinal)
+                ? null
+                : $"{(int)response.StatusCode} {body}";
         }
-        catch (HttpRequestException ex) { return ex.Message; }   // still offline; try again next reconnect
+        // TaskCanceledException is what a timed-out HttpClient throws; it is offline, not a crash.
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException) { return ex.Message; }
     }
 
     private static string? Field(string json, string name)
@@ -160,10 +167,13 @@ public static class Outbox
               id integer primary key autoincrement,
               operation text not null,
               payload text not null,
-              client_ref text unique,
+              client_ref text not null,
               queued_at text not null,
               attempts int default 0,
-              last_error text)
+              last_error text,
+              -- Scoped to the operation: one business entity legitimately queues an insert AND a later RPC
+              -- under the same client_ref. A bare unique(client_ref) would silently swallow the second.
+              unique(operation, client_ref))
             """;
         await cmd.ExecuteNonQueryAsync();
     }

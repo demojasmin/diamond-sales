@@ -1,3 +1,4 @@
+using Newtonsoft.Json;
 using Supabase.Postgrest.Attributes;
 using Supabase.Postgrest.Models;
 
@@ -80,8 +81,10 @@ public class PriceList : BaseModel
 public class SalesInvoice : BaseModel
 {
     [PrimaryKey("invoice_id", false)] public long InvoiceId { get; set; }
-    // Null until post_invoice() assigns it. Never set client-side.
-    [Column("invoice_no")] public string? InvoiceNo { get; set; }
+    // NULL until post_invoice() assigns it, and CHECK (status <> 'POSTED' or invoice_no is not null)
+    // once it has. Never written by the client: a read-modify-write that started before someone else
+    // posted would otherwise PATCH the number back to NULL and un-post the invoice.
+    [Column("invoice_no", ignoreOnInsert: true, ignoreOnUpdate: true)] public string? InvoiceNo { get; set; }
     [Column("invoice_date")] public DateOnly InvoiceDate { get; set; }
     [Column("buyer_id")] public long BuyerId { get; set; }
     [Column("broker_id")] public long? BrokerId { get; set; }
@@ -89,7 +92,8 @@ public class SalesInvoice : BaseModel
     [Column("terms_days")] public int TermsDays { get; set; }
     [Column("doc_type")] public string DocType { get; set; } = "BILL";
     [Column("currency_id")] public long CurrencyId { get; set; }
-    [Column("status")] public string Status { get; set; } = InvoiceStatus.DRAFT;
+    // Set once, at insert. Only post_invoice()/cancel_invoice() may move it after that.
+    [Column("status", ignoreOnUpdate: true)] public string Status { get; set; } = InvoiceStatus.DRAFT;
     [Column("created_by")] public Guid? CreatedBy { get; set; }
     [Column("updated_by")] public Guid? UpdatedBy { get; set; }
     [Column("client_ref")] public Guid? ClientRef { get; set; }
@@ -172,7 +176,9 @@ public class AppConfig : BaseModel
 public class AuditLog : BaseModel
 {
     [Column("audit_id")] public long AuditId { get; set; }
-    [Column("table_name")] public string TableName { get; set; } = "";
+    // Not TableName: that is BaseModel's own, and shadowing it makes an audit row read back as
+    // "audit_log" through any BaseModel-typed reference. The column mapping is unaffected.
+    [Column("table_name")] public string AuditedTable { get; set; } = "";
     [Column("record_id")] public long? RecordId { get; set; }
     [Column("action")] public string Action { get; set; } = "";
     [Column("changed_by")] public Guid? ChangedBy { get; set; }
@@ -296,6 +302,25 @@ public class VReconciliation : BaseModel
     [Column("sold_on_invoices_ct")] public decimal SoldOnInvoicesCt { get; set; }
     [Column("diff_ct")] public decimal DiffCt { get; set; }
     [Column("reconciles")] public bool Reconciles { get; set; }
+}
+
+/// The one shape that is neither a table nor a view: dashboard_summary() returns a row set, so it
+/// arrives as plain JSON from Rpc rather than through a BaseModel. Rpc&lt;T&gt; hydrates through
+/// JSON.NET, so these must be Newtonsoft attributes — System.Text.Json ones are invisible to it and
+/// every field would silently read back as zero.
+/// A date range with no invoices makes each sum() NULL, which is zero here, not a crash.
+[JsonObject(ItemNullValueHandling = NullValueHandling.Ignore)]
+public sealed class DashboardSummary
+{
+    [JsonProperty("sales_amount")]      public decimal SalesAmount { get; set; }
+    [JsonProperty("carats_sold")]       public decimal CaratsSold { get; set; }
+    [JsonProperty("blended_rate")]      public decimal BlendedRate { get; set; }
+    [JsonProperty("invoice_count")]     public long InvoiceCount { get; set; }
+    [JsonProperty("outstanding_total")] public decimal OutstandingTotal { get; set; }
+    [JsonProperty("overdue_total")]     public decimal OverdueTotal { get; set; }
+    [JsonProperty("overdue_count")]     public long OverdueCount { get; set; }
+    [JsonProperty("stock_value")]       public decimal StockValue { get; set; }
+    [JsonProperty("stock_carats")]      public decimal StockCarats { get; set; }
 }
 
 // Check constraint values. Wrong case = rejected insert, so never hand-type these strings.

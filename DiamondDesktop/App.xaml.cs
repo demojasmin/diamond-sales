@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Markup;
+using DiamondDesktop.Data;
 
 namespace DiamondDesktop;
 
@@ -17,10 +18,11 @@ public partial class App : Application
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
         // Sign in first: nothing in this app happens un-attributed (AUTH-001).
+        // Db.CurrentUser, not login.SignedIn — a session restored from disk skips the sign-in click.
         var login = new LoginWindow();
-        if (login.ShowDialog() != true || login.Api is null) { Shutdown(); return; }
+        if (login.ShowDialog() != true || Db.CurrentUser is null) { Shutdown(); return; }
 
-        var main = new MainWindow(login.Api);
+        var main = new MainWindow();
         MainWindow = main;
         ShutdownMode = ShutdownMode.OnMainWindowClose;
         main.Show();

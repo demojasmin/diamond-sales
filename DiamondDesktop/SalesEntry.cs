@@ -3,66 +3,55 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using DiamondCalc;
+using DiamondDesktop.Data;
 
 namespace DiamondDesktop;
 
-public sealed record Grade(string Code, string DisplayName, Guid Id = default)
-{
-    public override string ToString() => DisplayName;
-}
-
-public sealed record SizeBucket(string Code, Guid Id = default)
-{
-    public override string ToString() => Code;
-}
-
 /// <summary>
-/// Seed lists, verbatim from the workbook (docs/08 §2). In-memory until MDM-001/002/004 exist —
-/// this screen is being built before its master-data screens on purpose (docs/05 §3 block 5).
+/// Grades and sieve sizes, straight from Supabase. The collections are filled in place rather than
+/// replaced, so the XAML bindings that captured them at load time keep showing the live list.
 /// </summary>
 public static class Catalogue
 {
-    public static readonly SizeBucket Minus2 = new("-2");
-    public static readonly SizeBucket Minus65 = new("-6.5");
-    public static readonly SizeBucket Plus65 = new("+6.5");
-    public static readonly SizeBucket Plus11 = new("+11");
-
-    public static IReadOnlyList<SizeBucket> AllSizes { get; private set; } = [Minus2, Minus65, Plus65, Plus11];
-
-    public static IReadOnlyList<Grade> Grades { get; private set; } =
-    [
-        new("NO_1", "NO 1"), new("NO_1_BB", "NO 1 BB"), new("NO_II", "NO II"), new("EX_1", "EX 1"),
-        new("NO_2", "NO 2"), new("NO_DX", "NO DX"), new("NO_3", "NO 3"), new("NO_4", "NO 4"),
-        new("NO_5", "NO 5"), new("NO_6", "NO 6"), new("NO_7", "NO 7"), new("TOP_COL", "TOP-COL"),
-        new("COL", "COL"), new("OW", "OW"), new("LC_1", "LC-1"), new("LC_2", "LC-2"),
-        new("LC_3", "LC-3"), new("GH", "GH"), new("LB_1", "LB-1"), new("LB_2", "LB-2"),
-        new("PLUS_14", "+14"), new("EXTRA", "EXTRA"),
-    ];
-
-    private static Dictionary<string, IReadOnlyList<SizeBucket>>? _sizesByGrade;
-
-    /// docs/04 §3.4: only NO 1 and NO 1 BB carry the smallest bucket. The other 20 use three sizes.
-    /// Once the server has spoken (grade_size), its answer wins over this hard-coded rule.
-    public static IReadOnlyList<SizeBucket> SizesFor(Grade? grade) =>
-        grade is null ? AllSizes
-        : _sizesByGrade is not null && _sizesByGrade.TryGetValue(grade.Code, out var sizes) ? sizes
-        : grade.Code is "NO_1" or "NO_1_BB" ? AllSizes
-        : [Minus65, Plus65, Plus11];
-
-    /// Called once after login. Until then the screen runs on the seed above — which matches the server's.
-    public static void Load(IEnumerable<Grade> grades, IEnumerable<SizeBucket> sizes,
-                            Dictionary<string, IReadOnlyList<SizeBucket>> sizesByGrade)
-    {
-        Grades = grades.ToList();
-        AllSizes = sizes.ToList();
-        _sizesByGrade = sizesByGrade;
-    }
+    public static ObservableCollection<Grade> Grades { get; } = [];
+    public static ObservableCollection<SizeBucket> AllSizes { get; } = [];
 
     public static readonly IReadOnlyList<string> DocTypes = ["BILL"];
+
+    /// Every invoice is billed in INR — there is no currency picker on the entry screen, but
+    /// sales_invoice still needs the id. Zero means the catalogue has not loaded, or INR is not
+    /// in the currency table; either way no invoice may be saved.
+    public static long BaseCurrencyId { get; private set; }
+
+    public static async Task LoadAsync()
+    {
+        var grades = await Repo.GradesAsync();
+        var sizes = await Repo.SizesAsync();
+        var currencies = await Repo.CurrenciesAsync();
+
+        Grades.Clear();
+        foreach (var g in grades) Grades.Add(g);
+
+        AllSizes.Clear();
+        foreach (var s in sizes) AllSizes.Add(s);
+
+        // INR or nothing. Falling back to whatever sorted first stamped every invoice with an
+        // arbitrary currency_id, which changes what each amount on it MEANS — and silently, since
+        // the entry screen has no currency to show. Refusing the save is the honest failure.
+        BaseCurrencyId = currencies.FirstOrDefault(c => c.Code.Equals("INR", StringComparison.OrdinalIgnoreCase))?.CurrencyId ?? 0;
+    }
+
+    /// docs/04 §3.4: only NO 1 and NO 1 BB carry the smallest bucket.
+    /// CLIENT-SIDE ONLY — Supabase has no grade_size table yet (MDM-004), so the Android app cannot
+    /// enforce this and neither can the database. It belongs on the server.
+    public static IReadOnlyList<SizeBucket> SizesFor(Grade? grade) =>
+        grade is null || grade.Code is "NO 1" or "NO 1 BB"
+            ? AllSizes
+            : AllSizes.Where(s => s.Code != "-2").ToList();
 }
 
 /// A buyer or broker as the entry screen needs it: an id, a name, and its default.
-public sealed record PartyRef(Guid Id, string Name, int? DefaultTermsDays = null, decimal? DefaultBrokerPct = null)
+public sealed record PartyRef(long Id, string Name, int? DefaultTermsDays = null, decimal? DefaultBrokerPct = null)
 {
     public override string ToString() => Name;
 }
@@ -81,7 +70,10 @@ public abstract class Notifier : INotifyPropertyChanged
     protected void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
-/// <summary>One parcel line. Every derived value here comes from DiamondCalc — never from arithmetic typed twice.</summary>
+/// <summary>
+/// One parcel line being typed. DiamondCalc drives the figures shown here so the user sees numbers
+/// as they type — none of them is ever persisted. Postgres recomputes every amount on save.
+/// </summary>
 public sealed class SaleLine : Notifier
 {
     private Grade? _grade;
@@ -167,7 +159,7 @@ public sealed class SaleLine : Notifier
     {
         if (Grade is null) return "Grade is required";
         if (Size is null) return "Size is required";
-        if (!AllowedSizes.Contains(Size)) return $"{Grade.DisplayName} does not use size {Size.Code}";
+        if (!AllowedSizes.Contains(Size)) return $"{Grade.DisplayName ?? Grade.Code} does not use size {Size.Code}";
         if (GrossWeightCt <= 0) return "Weight must be greater than 0";
         if (PricePerCt < 0) return "Price cannot be negative";
         return null;
@@ -194,7 +186,6 @@ public sealed class InvoiceEntry : Notifier
     public IReadOnlyList<Grade> Grades => Catalogue.Grades;
     public IReadOnlyList<string> DocTypes => Catalogue.DocTypes;
 
-    /// Filled from the API after login (MDM-002). Picking one sets Buyer and BuyerId together.
     public ObservableCollection<PartyRef> Buyers { get; } = [];
     public ObservableCollection<PartyRef> Brokers { get; } = [];
 
@@ -226,11 +217,16 @@ public sealed class InvoiceEntry : Notifier
         }
     }
 
-    public Guid? BuyerId { get; private set; }
-    public Guid? BrokerId { get; private set; }
-    public Guid InvoiceId { get; set; } = Guid.CreateVersion7();   // client-generated, offline-safe
-    public string Status { get; set; } = "DRAFT";
-    public bool Saved { get; set; }                                 // has the server seen this id yet?
+    public long? BuyerId { get; private set; }
+    public long? BrokerId { get; private set; }
+
+    /// Client-generated and offline-safe: it survives a retry whose response never arrived.
+    public Guid ClientRef { get; } = Guid.CreateVersion7();
+
+    /// The real primary key. Null until the first save comes back from Postgres.
+    public long? InvoiceId { get; set; }
+
+    public string Status { get; set; } = InvoiceStatus.DRAFT;
 
     public DateTime InvoiceDate { get => _invoiceDate; set { Set(ref _invoiceDate, value); Recalculate(); } }
     public string? Buyer { get => _buyer; set => Set(ref _buyer, value); }

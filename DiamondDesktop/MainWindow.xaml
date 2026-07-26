@@ -292,7 +292,7 @@
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <ComboBox ItemsSource="{Binding AllowedSizes}" SelectedItem="{Binding Size, UpdateSourceTrigger=PropertyChanged}"
-                              BorderThickness="0" Background="Transparent"
+                              DisplayMemberPath="Code" BorderThickness="0" Background="Transparent"
                               PreviewMouseLeftButtonDown="CellCombo_Down"/>
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
@@ -302,7 +302,7 @@
                   <DataTemplate>
                     <ComboBox ItemsSource="{Binding Source={x:Static local:Catalogue.Grades}}"
                               SelectedItem="{Binding Grade, UpdateSourceTrigger=PropertyChanged}"
-                              BorderThickness="0" Background="Transparent"
+                              DisplayMemberPath="DisplayName" BorderThickness="0" Background="Transparent"
                               PreviewMouseLeftButtonDown="CellCombo_Down"/>
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
@@ -343,16 +343,14 @@
             <Button Content="Cancel invoice" Click="CancelInvoice_Click"/>
             <Button Content="Print bill" Click="PrintInvoice_Click"/>
             <Button Content="Export CSV" Click="ExportInvoices_Click"/>
-            <Button x:Name="ChangeRequestButton" Content="Request change" Click="ChangeRequest_Click"/>
-            <Button x:Name="ReviewRequestsButton" Content="Review requests" Click="ReviewRequests_Click"/>
           </StackPanel>
           <DataGrid x:Name="InvoiceGrid">
             <DataGrid.Columns>
               <DataGridTextColumn Header="No" Binding="{Binding InvoiceNo}" Width="100"/>
               <DataGridTextColumn Header="Date" Binding="{Binding InvoiceDate, StringFormat=dd-MM-yyyy}" Width="100"/>
-              <DataGridTextColumn Header="Buyer" Binding="{Binding Buyer}" Width="200"/>
+              <DataGridTextColumn Header="Buyer" Binding="{Binding BuyerName}" Width="200"/>
               <DataGridTemplateColumn Header="Status" Width="120" CellTemplate="{StaticResource StatusChip}"/>
-              <DataGridTextColumn Header="Amount" Binding="{Binding Total, StringFormat=N2}" Width="130" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+              <DataGridTextColumn Header="Amount" Binding="{Binding AmountTotal, StringFormat=N2}" Width="130" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
               <DataGridTextColumn Header="Outstanding" Binding="{Binding Outstanding, StringFormat=N2}" Width="130" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
               <DataGridTextColumn Header="Due" Binding="{Binding DueDate, StringFormat=dd-MM-yyyy}" Width="*"/>
             </DataGrid.Columns>
@@ -371,8 +369,7 @@
           <DataGrid x:Name="ReceivablesGrid">
             <DataGrid.Columns>
               <DataGridTextColumn Header="No" Binding="{Binding InvoiceNo}" Width="100"/>
-              <DataGridTextColumn Header="Buyer" Binding="{Binding Buyer}" Width="200"/>
-              <DataGridTextColumn Header="Invoiced" Binding="{Binding InvoiceDate, StringFormat=dd-MM-yyyy}" Width="100"/>
+              <DataGridTextColumn Header="Buyer" Binding="{Binding BuyerName}" Width="200"/>
               <DataGridTextColumn Header="Due" Binding="{Binding DueDate, StringFormat=dd-MM-yyyy}" Width="100"/>
               <DataGridTextColumn Header="Outstanding" Binding="{Binding Outstanding, StringFormat=N2}" Width="130" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
               <DataGridTextColumn Header="Days overdue" Binding="{Binding DaysOverdue}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
@@ -401,8 +398,8 @@
                 <DataGridTextColumn Header="Grade" Binding="{Binding GradeCode}" Width="110"/>
                 <DataGridTextColumn Header="Size" Binding="{Binding SizeCode}" Width="80"/>
                 <DataGridTextColumn Header="Balance ct" Binding="{Binding BalanceCt, StringFormat=N4}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                <DataGridTextColumn Header="Avg price" Binding="{Binding AvgPricePerCt, StringFormat=N2}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                <DataGridTextColumn Header="Value" Binding="{Binding Value, StringFormat=N2}" Width="*" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                <DataGridTextColumn Header="Avg cost" Binding="{Binding AvgCost, StringFormat=N2}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                <DataGridTextColumn Header="Value" Binding="{Binding StockValue, StringFormat=N2}" Width="*" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
               </DataGrid.Columns>
             </DataGrid>
             <DataGrid x:Name="MovementGrid" Grid.Column="1" Margin="4,0,0,0">
@@ -411,7 +408,7 @@
                 <DataGridTextColumn Header="Type" Binding="{Binding MovementType}" Width="110"/>
                 <DataGridTextColumn Header="Weight ct" Binding="{Binding WeightCt, StringFormat=N4}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
                 <DataGridTextColumn Header="Price/ct" Binding="{Binding PricePerCt, StringFormat=N2}" Width="100" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*"/>
+                <DataGridTextColumn Header="Source" Binding="{Binding RefType}" Width="*"/>
               </DataGrid.Columns>
             </DataGrid>
           </Grid>
@@ -552,8 +549,8 @@
             <DataGrid.Columns>
               <DataGridTextColumn Header="Code" Binding="{Binding Code}" Width="110"/>
               <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="110"/>
-              <DataGridTextColumn Header="Sizes" Binding="{Binding SizeList}" Width="180"/>
-              <DataGridTextColumn Header="Aliases" Binding="{Binding AliasList}" Width="*"/>
+              <DataGridTextColumn Header="Order" Binding="{Binding SortOrder}" Width="70"/>
+              <DataGridCheckBoxColumn Header="Active" Binding="{Binding Active}" Width="*"/>
             </DataGrid.Columns>
           </DataGrid>
           </DockPanel>
@@ -686,12 +683,9 @@
                   <ComboBoxItem Tag="period">W4 · Sales by period</ComboBoxItem>
                   <ComboBoxItem Tag="salesperson">W5 · Sales by salesperson</ComboBoxItem>
                   <ComboBoxItem Tag="buyer">W6 · Sales by buyer</ComboBoxItem>
-                  <ComboBoxItem Tag="grade">W8 · Avg rate/ct by grade</ComboBoxItem>
                   <ComboBoxItem Tag="ageing">W10 · Receivables ageing</ComboBoxItem>
                   <ComboBoxItem Tag="inventory">W11 · Inventory value by grade</ComboBoxItem>
                   <ComboBoxItem Tag="inventory-aging">W12 · Inventory aging</ComboBoxItem>
-                  <ComboBoxItem Tag="top-movers">W13 · Top movers</ComboBoxItem>
-                  <ComboBoxItem Tag="margin">W7 · Margin by grade</ComboBoxItem>
                   <ComboBoxItem Tag="broker-cost">W14 · Broker cost</ComboBoxItem>
                 </ComboBox>
                 <ComboBox x:Name="PeriodBucket" Width="90" SelectedIndex="0" Margin="8,0,0,0" SelectionChanged="Breakdown_Changed">
@@ -728,8 +722,8 @@
               <DataGrid x:Name="DrillGrid">
                 <DataGrid.Columns>
                   <DataGridTextColumn Header="No" Binding="{Binding InvoiceNo}" Width="90"/>
-                  <DataGridTextColumn Header="Buyer" Binding="{Binding Buyer}" Width="*"/>
-                  <DataGridTextColumn Header="Amount" Binding="{Binding Total, StringFormat=N2}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                  <DataGridTextColumn Header="Buyer" Binding="{Binding BuyerName}" Width="*"/>
+                  <DataGridTextColumn Header="Amount" Binding="{Binding AmountTotal, StringFormat=N2}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
                 </DataGrid.Columns>
               </DataGrid>
             </DockPanel>
@@ -743,8 +737,8 @@
           <Button DockPanel.Dock="Top" Content="Refresh" Click="LoadAudit_Click" HorizontalAlignment="Left" Margin="0,0,0,8"/>
           <DataGrid x:Name="AuditGrid">
             <DataGrid.Columns>
-              <DataGridTextColumn Header="When (UTC)" Binding="{Binding OccurredAt, StringFormat=dd-MM-yyyy HH:mm:ss}" Width="150"/>
-              <DataGridTextColumn Header="Entity" Binding="{Binding EntityType}" Width="130"/>
+              <DataGridTextColumn Header="When (UTC)" Binding="{Binding ChangedAt, StringFormat=dd-MM-yyyy HH:mm:ss}" Width="150"/>
+              <DataGridTextColumn Header="Entity" Binding="{Binding Entity}" Width="130"/>
               <DataGridTextColumn Header="Action" Binding="{Binding Action}" Width="100"/>
               <DataGridTextColumn Header="Before" Binding="{Binding Before}" Width="250"/>
               <DataGridTextColumn Header="After" Binding="{Binding After}" Width="*"/>
@@ -755,21 +749,14 @@
 
       <TabItem Header="Users" x:Name="UsersTab">
         <DockPanel Margin="8">
+          <!-- Read-only: creating or disabling a Supabase account needs the service_role key, which
+               must never ship in a desktop binary. That work happens in the Supabase dashboard. -->
           <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,8">
             <Button Content="Refresh" Click="LoadUsers_Click"/>
-            <TextBox x:Name="NewUserName" Width="120" Margin="10,0,6,0"/>
-            <TextBox x:Name="NewUserDisplay" Width="140" Margin="0,0,6,0"/>
-            <PasswordBox x:Name="NewUserPassword" Width="120" Margin="0,0,6,0"/>
-            <ComboBox x:Name="NewUserRole" Width="110" SelectedIndex="0" Margin="0,0,6,0">
-              <ComboBoxItem>SALES</ComboBoxItem><ComboBoxItem>MANAGER</ComboBoxItem><ComboBoxItem>OWNER</ComboBoxItem>
-            </ComboBox>
-            <Button Content="Add user" Click="AddUser_Click"/>
-            <Button Content="Deactivate selected" Click="DeactivateUser_Click"/>
           </WrapPanel>
           <DataGrid x:Name="UserGrid">
             <DataGrid.Columns>
-              <DataGridTextColumn Header="Username" Binding="{Binding Username}" Width="150"/>
-              <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="200"/>
+              <DataGridTextColumn Header="Name" Binding="{Binding FullName}" Width="200"/>
               <DataGridTextColumn Header="Role" Binding="{Binding Role}" Width="120"/>
               <DataGridCheckBoxColumn Header="Active" Binding="{Binding Active}" Width="*"/>
             </DataGrid.Columns>
@@ -784,13 +771,9 @@
             <TextBlock Text="Value for selected key:" Style="{StaticResource Lbl}" Margin="16,0,6,0"/>
             <TextBox x:Name="SettingValue" Width="180" Margin="0,0,6,0"/>
             <Button Content="Save (Owner)" Click="SaveSetting_Click"/>
-            <Button Content="Back up now" Click="Backup_Click" Margin="16,0,0,0"/>
           </WrapPanel>
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*"/><ColumnDefinition Width="360"/>
-            </Grid.ColumnDefinitions>
-          <DockPanel Grid.Column="0" Margin="0,0,8,0">
+          <!-- No backup panel: Supabase takes and keeps the backups now. -->
+          <DockPanel>
             <TextBlock DockPanel.Dock="Top" Text="Policies (CFG-001/002)" FontWeight="SemiBold" Margin="0,0,0,6"/>
             <DataGrid x:Name="SettingGrid">
               <DataGrid.Columns>
@@ -799,17 +782,6 @@
               </DataGrid.Columns>
             </DataGrid>
           </DockPanel>
-            <DockPanel Grid.Column="1">
-              <TextBlock DockPanel.Dock="Top" Text="Backups (OPS-001)" FontWeight="SemiBold" Margin="0,0,0,6"/>
-              <DataGrid x:Name="BackupGrid">
-                <DataGrid.Columns>
-                  <DataGridTextColumn Header="File" Binding="{Binding File}" Width="*"/>
-                  <DataGridTextColumn Header="KB" Binding="{Binding SizeKb}" Width="60" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                  <DataGridTextColumn Header="Taken (UTC)" Binding="{Binding CreatedUtc, StringFormat=dd-MM HH:mm}" Width="100"/>
-                </DataGrid.Columns>
-              </DataGrid>
-            </DockPanel>
-          </Grid>
         </DockPanel>
       </TabItem>
     </TabControl>

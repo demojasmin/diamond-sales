@@ -17,11 +17,13 @@ public static class Db
     private const string AnonKey = "sb_publishable_bkIjJlfcQZDrXD6-l7i1uQ_v6OLf9Un";
     private const string Offline = "No connection to the server.";
 
+    private static readonly IGotrueSessionPersistence<Session> Sessions = new EncryptedSession();
+
     public static Supabase.Client Client { get; } = new(Url, AnonKey, new Supabase.SupabaseOptions
     {
         AutoRefreshToken = true,
         AutoConnectRealtime = false,
-        SessionHandler = new EncryptedSession()
+        SessionHandler = Sessions
     });
 
     public static Profile? CurrentUser { get; private set; }
@@ -30,9 +32,16 @@ public static class Db
     public static bool IsOwner => CurrentUser?.Role is "owner";
     public static bool IsOnline { get; private set; } = true;
 
+    /// Cached so initialisation happens exactly once however many callers race for it. Sign-in awaits
+    /// this too: clicking the button before the window's own Loaded handler finished would otherwise
+    /// reach Auth on an unconfigured client, and a fast typist can do that.
+    private static Task<string?>? _initialising;
+
     /// Restores and refreshes a saved session if one is on disk. Null means "ready" — check CurrentUser
     /// to decide whether the login window is still needed.
-    public static async Task<string?> InitializeAsync()
+    public static Task<string?> InitializeAsync() => _initialising ??= InitialiseCoreAsync();
+
+    private static async Task<string?> InitialiseCoreAsync()
     {
         try
         {
@@ -51,6 +60,8 @@ public static class Db
 
     public static async Task<string?> SignInAsync(string email, string password)
     {
+        if (await InitializeAsync() is { } notReady) return notReady;
+
         try
         {
             var session = await Client.Auth.SignIn(email, password);
@@ -70,15 +81,20 @@ public static class Db
         CurrentUser = null;
         // Local scope only: signing out at this desk must not kick the same user off their other machines.
         try { await Client.Auth.SignOut(Constants.SignOutScope.Local); }
-        catch { /* the on-disk session is destroyed by the persistence listener either way */ }
+        catch { /* offline or an expired token — the server-side session lapses on its own */ }
+
+        // Gotrue skips its own cleanup when that call throws, and a surviving session.dat would sign the
+        // next person at this desk in as the previous user.
+        Sessions.DestroySession();
     }
 
     /// A token without a usable profile row is worse than no token: RLS denies everything and the user
-    /// stares at blank screens. Drop the session and say why.
+    /// stares at blank screens. Drop the session and say why — but only on an answer we actually got, or a
+    /// blip at startup would burn a saved login the user cannot replace until the network is back.
     private static async Task<string?> AdoptSessionAsync()
     {
         string? problem = await LoadProfileAsync();
-        if (problem is not null) await SignOutAsync();
+        if (problem is not null && IsOnline) await SignOutAsync();
         return problem;
     }
 
@@ -106,29 +122,28 @@ public static class Db
 
     private static string Fail(Exception ex)
     {
-        string message = Explain(ex);
+        string message = ex switch
+        {
+            GotrueException
+            {
+                Reason: FailureHint.Reason.UserBadLogin or FailureHint.Reason.UserBadPassword
+                     or FailureHint.Reason.UserBadEmailAddress or FailureHint.Reason.UserBadMultiple
+            } => "Wrong email or password.",
+            GotrueException { Reason: FailureHint.Reason.UserEmailNotConfirmed } => "Email not confirmed yet.",
+            GotrueException { Reason: FailureHint.Reason.UserTooManyRequests } => "Too many attempts. Wait a minute.",
+            GotrueException { Reason: FailureHint.Reason.Offline } => Offline,
+            GotrueException
+            {
+                Reason: FailureHint.Reason.ExpiredRefreshToken or FailureHint.Reason.InvalidRefreshToken
+                     or FailureHint.Reason.NoSessionFound
+            } => "Session expired. Sign in again.",
+            HttpRequestException or TaskCanceledException => Offline,
+            _ => ex.Message
+        };
+
         IsOnline = message != Offline;   // the server answering "no" still proves we reached it
         return message;
     }
-
-    private static string Explain(Exception ex) => ex switch
-    {
-        GotrueException
-        {
-            Reason: FailureHint.Reason.UserBadLogin or FailureHint.Reason.UserBadPassword
-                 or FailureHint.Reason.UserBadEmailAddress or FailureHint.Reason.UserBadMultiple
-        } => "Wrong email or password.",
-        GotrueException { Reason: FailureHint.Reason.UserEmailNotConfirmed } => "Email not confirmed yet.",
-        GotrueException { Reason: FailureHint.Reason.UserTooManyRequests } => "Too many attempts. Wait a minute.",
-        GotrueException { Reason: FailureHint.Reason.Offline } => Offline,
-        GotrueException
-        {
-            Reason: FailureHint.Reason.ExpiredRefreshToken or FailureHint.Reason.InvalidRefreshToken
-                 or FailureHint.Reason.NoSessionFound
-        } => "Session expired. Sign in again.",
-        HttpRequestException or TaskCanceledException => Offline,
-        _ => ex.Message
-    };
 }
 
 /// DPAPI ties the ciphertext to this Windows account, so a copied session.dat is useless on another

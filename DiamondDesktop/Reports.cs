@@ -4,6 +4,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
+using DiamondDesktop.Data;
 using Microsoft.Win32;
 
 namespace DiamondDesktop;
@@ -38,16 +39,27 @@ public static class Reports
         foreach (var row in grid.ItemsSource)
             sb.AppendLine(string.Join(",", columns.Select(c => Quote(ValueOf(row, c.Path!)))));
 
-        File.WriteAllText(dialog.FileName, sb.ToString(), Encoding.UTF8);
+        // Yesterday's export is usually still open in Excel, which locks it. The callers are plain
+        // void click handlers, so an escaping IOException kills the app — and with it whatever
+        // invoice was half-typed on the entry screen.
+        try { File.WriteAllText(dialog.FileName, sb.ToString(), Encoding.UTF8); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return $"Could not write {dialog.FileName} — {e.Message}";
+        }
         return $"Exported to {dialog.FileName}";
     }
 
     /// <summary>RPT-002. Builds the bill as a FlowDocument and hands it to the system print dialog
-    /// — which includes "Microsoft Print to PDF", so this covers print and PDF in one path.</summary>
-    public static string? PrintInvoice(InvoiceDetail invoice, string companyName)
+    /// — which includes "Microsoft Print to PDF", so this covers print and PDF in one path.
+    /// Both arguments are views: every figure printed is the one Postgres computed.</summary>
+    public static string? PrintInvoice(VInvoice invoice, List<VSalesLine> lines, string companyName)
     {
         var dialog = new PrintDialog();
-        if (dialog.ShowDialog() != true) return null;
+        // No printer installed makes ShowDialog itself throw, and this is called from an async void
+        // handler where that ends the process rather than the print job.
+        try { if (dialog.ShowDialog() != true) return null; }
+        catch (Exception e) { return $"No printer available — {e.Message}"; }
 
         var doc = new FlowDocument
         {
@@ -61,7 +73,7 @@ public static class Reports
         doc.Blocks.Add(Heading($"{invoice.DocType} · {invoice.InvoiceNo ?? "DRAFT"}", 14));
 
         doc.Blocks.Add(new Paragraph(new Run(
-            $"Date {invoice.InvoiceDate:dd-MM-yyyy}\nBuyer {invoice.Buyer}\n" +
+            $"Date {invoice.InvoiceDate:dd-MM-yyyy}\nBuyer {invoice.BuyerName}\n" +
             $"Terms {invoice.TermsDays} days · Due {invoice.DueDate:dd-MM-yyyy}"))
         { Margin = new Thickness(0, 0, 0, 14) });
 
@@ -71,7 +83,7 @@ public static class Reports
         table.RowGroups.Add(body);
 
         body.Rows.Add(Row(bold: true, "Grade", "Size", "Weight", "Selection", "Price/ct", "Less", "Amount"));
-        foreach (var l in invoice.Lines)
+        foreach (var l in lines)
             body.Rows.Add(Row(false, l.GradeCode, l.SizeCode, N(l.GrossWeightCt), N(l.SelectionCt),
                               N(l.PricePerCt), $"{l.Less1Pct}/{l.Less2Pct}", N(l.Amount)));
 
@@ -88,7 +100,8 @@ public static class Reports
         doc.Blocks.Add(new Paragraph(new Run($"Outstanding  {N(invoice.Outstanding)}"))
         { TextAlignment = TextAlignment.Right });
 
-        dialog.PrintDocument(((IDocumentPaginatorSource)doc).DocumentPaginator, $"Invoice {invoice.InvoiceNo}");
+        try { dialog.PrintDocument(((IDocumentPaginatorSource)doc).DocumentPaginator, $"Invoice {invoice.InvoiceNo}"); }
+        catch (Exception e) { return $"Could not print {invoice.InvoiceNo} — {e.Message}"; }
         return $"Sent {invoice.InvoiceNo} to the printer";
     }
 
