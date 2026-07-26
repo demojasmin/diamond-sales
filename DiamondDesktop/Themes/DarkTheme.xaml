@@ -38,6 +38,11 @@
     <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource AccentColor}"/>
     <SolidColorBrush x:Key="AccentHoverBrush" Color="{StaticResource AccentHoverColor}"/>
     <SolidColorBrush x:Key="AccentSoftBrush" Color="{StaticResource AccentSoftColor}"/>
+    <!-- NOT AccentColor. #4C8DFF is lightened so accent TEXT reads on a dark ground, but that same
+         lightness puts white-on-accent at 3.2:1 — under the 4.5:1 floor. The button fill keeps the
+         deeper sapphire, which measures 4.88:1 against white. -->
+    <SolidColorBrush x:Key="AccentStrongBrush" Color="#2F6BE0"/>
+    <SolidColorBrush x:Key="AccentStrongHoverBrush" Color="#3F7BEE"/>
     <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource SuccessColor}"/>
     <SolidColorBrush x:Key="WarningBrush" Color="{StaticResource WarningColor}"/>
     <SolidColorBrush x:Key="DangerBrush" Color="{StaticResource DangerColor}"/>

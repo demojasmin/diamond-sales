@@ -38,6 +38,11 @@
     <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource AccentColor}"/>
     <SolidColorBrush x:Key="AccentHoverBrush" Color="{StaticResource AccentHoverColor}"/>
     <SolidColorBrush x:Key="AccentSoftBrush" Color="{StaticResource AccentSoftColor}"/>
+    <!-- Fill behind white text. Separate from AccentBrush because the accent that reads well as
+         TEXT on a page and the accent that carries white text ON it pull in opposite directions —
+         see DarkTheme, where they must differ to clear 4.5:1. -->
+    <SolidColorBrush x:Key="AccentStrongBrush" Color="{StaticResource AccentColor}"/>
+    <SolidColorBrush x:Key="AccentStrongHoverBrush" Color="{StaticResource AccentHoverColor}"/>
     <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource SuccessColor}"/>
     <SolidColorBrush x:Key="WarningBrush" Color="{StaticResource WarningColor}"/>
     <SolidColorBrush x:Key="DangerBrush" Color="{StaticResource DangerColor}"/>

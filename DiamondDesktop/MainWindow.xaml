@@ -18,13 +18,7 @@
     <Style TargetType="TextBox" BasedOn="{StaticResource AppTextBox}"/>
     <Style TargetType="ComboBox" BasedOn="{StaticResource AppComboBox}"/>
     <Style TargetType="ComboBoxItem" BasedOn="{StaticResource FieldComboBoxItem}"/>
-    <Style TargetType="PasswordBox">
-      <Setter Property="Height" Value="34"/>
-      <Setter Property="Padding" Value="10,0"/>
-      <Setter Property="VerticalContentAlignment" Value="Center"/>
-      <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
-    </Style>
+    <Style TargetType="PasswordBox" BasedOn="{StaticResource AppPasswordBox}"/>
 
     <Style x:Key="Num" TargetType="TextBlock" BasedOn="{StaticResource NumericCellText}"/>
     <Style x:Key="NumEdit" TargetType="TextBox" BasedOn="{StaticResource CellNumericTextBox}"/>
@@ -38,11 +32,61 @@
     </Style>
     <Style x:Key="Kpi" TargetType="TextBlock" BasedOn="{StaticResource MonoDisplay}"/>
 
-    <!-- The tab strip becomes the nav rail, matching the design's NavButton. -->
+    <!-- Icon + label, matching the design's NavButton. The header stays a plain string — it is the
+         key Tabs_Changed and ScreenSubtitles look up — so the icon is picked from that string here
+         rather than by rebuilding every header as a panel. -->
+    <DataTemplate x:Key="NavHeader">
+      <StackPanel Orientation="Horizontal">
+        <Path x:Name="icon" Width="17" Height="17" Stretch="Uniform" Margin="0,0,11,0"
+              StrokeThickness="1.4" Fill="Transparent"
+              Stroke="{Binding Path=(TextElement.Foreground), RelativeSource={RelativeSource AncestorType=ContentPresenter}}"
+              Data="M4,2.5 h12 v15 h-12 z M7,7.5 h6 M7,10.5 h6 M7,13.5 h4"/>
+        <TextBlock Text="{Binding}" VerticalAlignment="Center"/>
+      </StackPanel>
+      <DataTemplate.Triggers>
+        <DataTrigger Binding="{Binding}" Value="Invoices">
+          <Setter TargetName="icon" Property="Data" Value="M3,4.5 h14 M3,9 h14 M3,13.5 h14 M3,17.5 h8"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding}" Value="Receivables">
+          <Setter TargetName="icon" Property="Data" Value="M10,2.8 A7.2,7.2 0 1,0 10,17.2 A7.2,7.2 0 1,0 10,2.8 M6.8,10.4 h6.4 M8.4,7.6 h3.2"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding}" Value="Stock">
+          <Setter TargetName="icon" Property="Data" Value="M2.5,2.5 h4 v4 h-4 z M8,2.5 h4 v4 h-4 z M13.5,2.5 h4 v4 h-4 z M2.5,8 h4 v4 h-4 z M8,8 h4 v4 h-4 z M13.5,8 h4 v4 h-4 z M2.5,13.5 h4 v4 h-4 z M8,13.5 h4 v4 h-4 z"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding}" Value="Intake &amp; movements">
+          <Setter TargetName="icon" Property="Data" Value="M3,6 h9 M9,3 L12,6 L9,9 M17,14 h-9 M11,11 L8,14 L11,17"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding}" Value="Master data">
+          <Setter TargetName="icon" Property="Data" Value="M2.8,4 h14.4 v4.4 h-14.4 z M2.8,11.6 h14.4 v4.4 h-14.4 z"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding}" Value="Dashboard">
+          <Setter TargetName="icon" Property="Data" Value="M3,3 h6 v6 h-6 z M11,3 h6 v4 h-6 z M11,9 h6 v8 h-6 z M3,11 h6 v6 h-6 z"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding}" Value="Audit">
+          <Setter TargetName="icon" Property="Data" Value="M10,3 A7,7 0 1,1 3,10 A7,7 0 0,1 10,3 M10,6 v4.6 l3.4,2"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding}" Value="Users">
+          <Setter TargetName="icon" Property="Data" Value="M10,3.6 A3.1,3.1 0 1,0 10,9.8 A3.1,3.1 0 1,0 10,3.6 M4,17 a6,6 0 0,1 12,0"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding}" Value="Settings">
+          <Setter TargetName="icon" Property="Data" Value="M10,7 A3,3 0 1,0 10,13 A3,3 0 1,0 10,7 M10,3 A7,7 0 1,0 10,17 A7,7 0 1,0 10,3"/>
+        </DataTrigger>
+      </DataTemplate.Triggers>
+    </DataTemplate>
+
+    <!-- The tab strip becomes the nav rail, matching the design's NavButton.
+         Selection colour goes on the header Border, NOT on the TabItem: a TabItem is the logical
+         parent of its own page, so `Foreground` set here inherits straight into every unstyled
+         TextBlock on that page and paints the whole screen accent-blue. -->
     <Style x:Key="NavTab" TargetType="TabItem">
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Height" Value="38"/>
       <Setter Property="FontSize" Value="13"/>
+      <Setter Property="HeaderTemplate" Value="{StaticResource NavHeader}"/>
+      <!-- Load-bearing: a TabItem is the inheritance parent of its own page, so this is what every
+           unstyled TextBlock on that page inherits. Drop it and they fall back to the property
+           default — pure black — which is invisible on the dark theme. The accent for the selected
+           nav item goes on the header Border below, never here, or it bleeds into the page. -->
       <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
       <Setter Property="Template">
         <Setter.Value>
@@ -50,7 +94,8 @@
             <Grid Margin="0,1">
               <Border x:Name="bar" Width="3" HorizontalAlignment="Left" Margin="0,9,0,9"
                       CornerRadius="0,2,2,0" Background="{DynamicResource AccentBrush}" Visibility="Collapsed"/>
-              <Border x:Name="bd" CornerRadius="7" Background="Transparent" Padding="14,0" Margin="6,0,8,0">
+              <Border x:Name="bd" CornerRadius="7" Background="Transparent" Padding="14,0" Margin="6,0,8,0"
+                      TextElement.Foreground="{DynamicResource TextBrush}">
                 <ContentPresenter ContentSource="Header" VerticalAlignment="Center"/>
               </Border>
             </Grid>
@@ -61,8 +106,8 @@
               <Trigger Property="IsSelected" Value="True">
                 <Setter TargetName="bd" Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
                 <Setter TargetName="bar" Property="Visibility" Value="Visible"/>
-                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
-                <Setter Property="FontWeight" Value="SemiBold"/>
+                <Setter TargetName="bd" Property="TextElement.Foreground" Value="{DynamicResource AccentBrush}"/>
+                <Setter TargetName="bd" Property="TextElement.FontWeight" Value="SemiBold"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -89,7 +134,12 @@
                   <TabPanel IsItemsHost="True" VerticalAlignment="Top"/>
                 </DockPanel>
               </Border>
-              <ContentPresenter Grid.Column="1" ContentSource="SelectedContent"/>
+              <!-- The name is load-bearing, not decoration: TabItemAutomationPeer finds the selected
+                   tab's content by looking up "PART_SelectedContentHost" on the TabControl. Unnamed,
+                   every screen vanishes from the UIA tree — screen readers and UI automation see the
+                   nav rail and nothing else. -->
+              <ContentPresenter x:Name="PART_SelectedContentHost" Grid.Column="1"
+                                ContentSource="SelectedContent"/>
             </Grid>
           </ControlTemplate>
         </Setter.Value>
@@ -118,7 +168,11 @@
               <TextBlock x:Name="SyncText" Text="Connected" FontSize="11.5" Foreground="{DynamicResource TextMutedBrush}"/>
             </StackPanel>
           </Border>
-          <Button Style="{StaticResource IconButton}" Click="ThemeToggle_Click" ToolTip="Light / dark" Margin="0,0,10,0">
+          <!-- Named for a reason: with no x:Name and no AutomationProperties.Name a screen reader
+               announces this only as "button", and automation can't address it at all. -->
+          <Button x:Name="ThemeToggle" Style="{StaticResource IconButton}" Click="ThemeToggle_Click"
+                  ToolTip="Light / dark" AutomationProperties.Name="Toggle light or dark theme"
+                  Margin="0,0,10,0">
             <Grid Width="14" Height="14">
               <Ellipse Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6"/>
               <Path Data="M7,0 A7,7 0 0,1 7,14 Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
@@ -149,21 +203,30 @@
           <Border DockPanel.Dock="Top" Background="{DynamicResource Surface2Brush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
                   CornerRadius="{StaticResource RadiusCard}" Padding="14" Margin="0,0,0,8">
             <WrapPanel>
+              <!-- Every header control is named. A bare <ComboBox/> here has no AutomationId and no
+                   accessible name, so a screen reader announces it as "combo box" with no clue what
+                   it edits, and automation cannot tell the three of them apart at all. -->
               <TextBlock Text="Date" Style="{StaticResource Lbl}"/>
-              <DatePicker SelectedDate="{Binding InvoiceDate}" Style="{StaticResource AppDatePicker}"
-                          Width="150" Margin="0,0,16,0"/>
+              <DatePicker x:Name="InvoiceDatePicker" SelectedDate="{Binding InvoiceDate}"
+                          AutomationProperties.Name="Invoice date"
+                          Style="{StaticResource AppDatePicker}" Width="150" Margin="0,0,16,0"/>
               <TextBlock Text="Buyer" Style="{StaticResource Lbl}"/>
-              <ComboBox ItemsSource="{Binding Buyers}" SelectedItem="{Binding SelectedBuyer}" Width="180" Margin="0,0,16,0"/>
+              <ComboBox x:Name="BuyerPicker" ItemsSource="{Binding Buyers}" SelectedItem="{Binding SelectedBuyer}"
+                        AutomationProperties.Name="Buyer" Width="180" Margin="0,0,16,0"/>
               <TextBlock Text="Broker" Style="{StaticResource Lbl}"/>
-              <ComboBox ItemsSource="{Binding Brokers}" SelectedItem="{Binding SelectedBroker}" Width="160" Margin="0,0,16,0"/>
+              <ComboBox x:Name="BrokerPicker" ItemsSource="{Binding Brokers}" SelectedItem="{Binding SelectedBroker}"
+                        AutomationProperties.Name="Broker" Width="160" Margin="0,0,16,0"/>
               <TextBlock Text="Broker %" Style="{StaticResource Lbl}"/>
-              <TextBox Text="{Binding BrokerPct, UpdateSourceTrigger=PropertyChanged}" Width="70"
+              <TextBox x:Name="BrokerPctBox" Text="{Binding BrokerPct, UpdateSourceTrigger=PropertyChanged}" Width="70"
+                       AutomationProperties.Name="Broker percent"
                        Style="{StaticResource AppNumericTextBox}" Margin="0,0,16,0"/>
               <TextBlock Text="Terms" Style="{StaticResource Lbl}"/>
-              <TextBox Text="{Binding TermsDays, UpdateSourceTrigger=PropertyChanged}" Width="70"
+              <TextBox x:Name="TermsBox" Text="{Binding TermsDays, UpdateSourceTrigger=PropertyChanged}" Width="70"
+                       AutomationProperties.Name="Terms in days"
                        Style="{StaticResource AppNumericTextBox}" Margin="0,0,16,0"/>
               <TextBlock Text="Type" Style="{StaticResource Lbl}"/>
-              <ComboBox ItemsSource="{Binding DocTypes}" SelectedItem="{Binding DocType}" Width="80" Margin="0,0,16,0"/>
+              <ComboBox x:Name="DocTypePicker" ItemsSource="{Binding DocTypes}" SelectedItem="{Binding DocType}"
+                        AutomationProperties.Name="Document type" Width="80" Margin="0,0,16,0"/>
               <TextBlock Text="Due" Style="{StaticResource Lbl}"/>
               <TextBlock Text="{Binding DueDate, StringFormat=dd-MM-yyyy}" VerticalAlignment="Center" FontWeight="SemiBold"/>
             </WrapPanel>
@@ -179,17 +242,20 @@
               </Grid.ColumnDefinitions>
               <WrapPanel Grid.Column="0" VerticalAlignment="Center">
                 <TextBlock Text="Carats" Style="{StaticResource Lbl}"/>
-                <TextBlock Text="{Binding TotalCarats, StringFormat=N2}" Style="{StaticResource Total}"/>
+                <TextBlock x:Name="TotalCarats"
+                           Text="{Binding TotalCarats, StringFormat=N2}" Style="{StaticResource Total}"/>
                 <TextBlock Text="Amount" Style="{StaticResource Lbl}"/>
-                <TextBlock Text="{Binding TotalAmount, StringFormat=N2}" Style="{StaticResource Total}"/>
+                <TextBlock x:Name="TotalAmount"
+                           Text="{Binding TotalAmount, StringFormat=N2}" Style="{StaticResource Total}"/>
                 <TextBlock Text="Blended rate/ct" Style="{StaticResource Lbl}"/>
-                <TextBlock Text="{Binding BlendedRate, StringFormat=N2}" Style="{StaticResource Total}"/>
+                <TextBlock x:Name="BlendedRate"
+                           Text="{Binding BlendedRate, StringFormat=N2}" Style="{StaticResource Total}"/>
               </WrapPanel>
               <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Content="Add line  (Enter)" Click="AddLine_Click" Margin="0,0,8,0"/>
-                <Button Content="New" Click="NewInvoice_Click" Margin="0,0,8,0"/>
-                <Button Content="Save draft  (Ctrl+S)" Click="SaveDraft_Click" Margin="0,0,8,0"/>
-                <Button Content="Post" Click="Post_Click" Style="{StaticResource AppPrimaryButton}"/>
+                <Button x:Name="AddLineButton" Content="Add line  (Enter)" Click="AddLine_Click" Margin="0,0,8,0"/>
+                <Button x:Name="New" Content="New" Click="NewInvoice_Click" Margin="0,0,8,0"/>
+                <Button x:Name="SaveDraft" Content="Save draft  (Ctrl+S)" Click="SaveDraft_Click" Margin="0,0,8,0"/>
+                <Button x:Name="Post" Content="Post" Click="Post_Click" Style="{StaticResource AppPrimaryButton}"/>
               </StackPanel>
             </Grid>
           </Border>
@@ -201,6 +267,14 @@
                     CanUserAddRows="False" CanUserDeleteRows="True" SelectionUnit="Cell"
                     PreviewKeyDown="Grid_KeyDown" RowHeight="36" ColumnHeaderHeight="40"
                     HeadersVisibility="Column" GridLinesVisibility="None">
+            <!-- A cell takes the first click to become current and only edits on the second, so on
+                 a fresh screen the first figure typed goes nowhere. On a keyboard-first entry
+                 screen that is a silent data loss, not a nicety. -->
+            <DataGrid.CellStyle>
+              <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
+                <EventSetter Event="PreviewMouseLeftButtonDown" Handler="Cell_Down"/>
+              </Style>
+            </DataGrid.CellStyle>
             <DataGrid.RowStyle>
               <Style TargetType="DataGridRow">
                 <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
@@ -261,7 +335,7 @@
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
             <Button Content="Refresh" Click="LoadInvoices_Click"/>
             <TextBlock Text="Receipt:" Style="{StaticResource Lbl}" Margin="16,0,6,0"/>
-            <TextBox x:Name="ReceiptAmount" Width="110" Style="{StaticResource NumEdit}" Margin="0,0,6,0"/>
+            <TextBox x:Name="ReceiptAmount" Width="110" Style="{StaticResource AppNumericTextBox}" Margin="0,0,6,0"/>
             <ComboBox x:Name="ReceiptMethod" Width="100" SelectedIndex="0" Margin="0,0,6,0">
               <ComboBoxItem>CASH</ComboBoxItem><ComboBoxItem>RTGS</ComboBoxItem><ComboBoxItem>CHEQUE</ComboBoxItem>
             </ComboBox>
@@ -346,54 +420,89 @@
 
       <!-- ══ INV-001/004/005/006 · movements in ══════════════════════════ -->
       <TabItem Header="Intake &amp; movements">
-        <ScrollViewer Margin="8">
+        <!-- IsSharedSizeScope is what keeps the stacked forms honest: every label and field column
+             below sizes to the widest entry across ALL of them, so the four forms line up instead
+             of each one starting wherever its own label text happens to end. -->
+        <ScrollViewer Margin="8" Grid.IsSharedSizeScope="True">
           <StackPanel>
+            <StackPanel.Resources>
+              <Style x:Key="FormRow" TargetType="Grid">
+                <Setter Property="Margin" Value="0,0,0,14"/>
+              </Style>
+            </StackPanel.Resources>
+
             <TextBlock Text="Rough intake (INV-001)" FontWeight="SemiBold" Margin="0,0,0,6"/>
-            <WrapPanel Margin="0,0,0,14">
-              <TextBlock Text="Grade" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="IntakeGrade" Width="130" Margin="0,0,10,0" SelectionChanged="IntakeGrade_Changed"/>
-              <TextBlock Text="Size" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="IntakeSize" Width="90" Margin="0,0,10,0"/>
-              <TextBlock Text="Weight ct" Style="{StaticResource Lbl}"/>
-              <TextBox x:Name="IntakeWeight" Width="90" Style="{StaticResource NumEdit}" Margin="0,0,10,0"/>
-              <TextBlock Text="Price/ct" Style="{StaticResource Lbl}"/>
-              <TextBox x:Name="IntakePrice" Width="90" Style="{StaticResource NumEdit}" Margin="0,0,10,0"/>
-              <Button Content="Add intake" Click="Intake_Click"/>
-            </WrapPanel>
+            <Grid Style="{StaticResource FormRow}">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L1"/><ColumnDefinition Width="Auto" SharedSizeGroup="F1"/>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L2"/><ColumnDefinition Width="Auto" SharedSizeGroup="F2"/>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L3"/><ColumnDefinition Width="Auto" SharedSizeGroup="F3"/>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L4"/><ColumnDefinition Width="Auto" SharedSizeGroup="F4"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Text="Grade" Style="{StaticResource Lbl}"/>
+              <ComboBox Grid.Column="1" x:Name="IntakeGrade" Width="130" Margin="0,0,16,0" SelectionChanged="IntakeGrade_Changed"/>
+              <TextBlock Grid.Column="2" Text="Size" Style="{StaticResource Lbl}"/>
+              <ComboBox Grid.Column="3" x:Name="IntakeSize" Width="90" Margin="0,0,16,0"/>
+              <TextBlock Grid.Column="4" Text="Weight ct" Style="{StaticResource Lbl}"/>
+              <TextBox Grid.Column="5" x:Name="IntakeWeight" Width="90" Style="{StaticResource AppNumericTextBox}" Margin="0,0,16,0"/>
+              <TextBlock Grid.Column="6" Text="Price/ct" Style="{StaticResource Lbl}"/>
+              <TextBox Grid.Column="7" x:Name="IntakePrice" Width="90" Style="{StaticResource AppNumericTextBox}" Margin="0,0,16,0"/>
+              <Button Grid.Column="8" Content="Add intake" Click="Intake_Click" HorizontalAlignment="Left"/>
+            </Grid>
 
             <TextBlock Text="Grade-to-grade conversion — &quot;avelu&quot; (INV-004)" FontWeight="SemiBold" Margin="0,0,0,6"/>
-            <WrapPanel Margin="0,0,0,14">
-              <TextBlock Text="From" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="ConvFromGrade" Width="120" Margin="0,0,6,0" SelectionChanged="ConvFromGrade_Changed"/>
-              <ComboBox x:Name="ConvFromSize" Width="85" Margin="0,0,12,0"/>
-              <TextBlock Text="To" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="ConvToGrade" Width="120" Margin="0,0,6,0" SelectionChanged="ConvToGrade_Changed"/>
-              <ComboBox x:Name="ConvToSize" Width="85" Margin="0,0,12,0"/>
-              <TextBlock Text="Weight ct" Style="{StaticResource Lbl}"/>
-              <TextBox x:Name="ConvWeight" Width="85" Style="{StaticResource NumEdit}" Margin="0,0,10,0"/>
-              <TextBlock Text="Price/ct" Style="{StaticResource Lbl}"/>
-              <TextBox x:Name="ConvPrice" Width="85" Style="{StaticResource NumEdit}" Margin="0,0,10,0"/>
-              <Button Content="Convert" Click="Convert_Click"/>
-            </WrapPanel>
+            <!-- Two grade/size pairs instead of one, so only the leading label column is shared —
+                 enough to start this form on the same vertical line as the other three. -->
+            <Grid Style="{StaticResource FormRow}">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L1"/><ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Text="From" Style="{StaticResource Lbl}"/>
+              <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <ComboBox x:Name="ConvFromGrade" Width="130" Margin="0,0,6,0" SelectionChanged="ConvFromGrade_Changed"/>
+                <ComboBox x:Name="ConvFromSize" Width="90" Margin="0,0,16,0"/>
+                <TextBlock Text="To" Style="{StaticResource Lbl}"/>
+                <ComboBox x:Name="ConvToGrade" Width="130" Margin="0,0,6,0" SelectionChanged="ConvToGrade_Changed"/>
+                <ComboBox x:Name="ConvToSize" Width="90" Margin="0,0,16,0"/>
+                <TextBlock Text="Weight ct" Style="{StaticResource Lbl}"/>
+                <TextBox x:Name="ConvWeight" Width="90" Style="{StaticResource AppNumericTextBox}" Margin="0,0,16,0"/>
+                <TextBlock Text="Price/ct" Style="{StaticResource Lbl}"/>
+                <TextBox x:Name="ConvPrice" Width="90" Style="{StaticResource AppNumericTextBox}" Margin="0,0,16,0"/>
+                <Button Content="Convert" Click="Convert_Click"/>
+              </StackPanel>
+            </Grid>
 
             <TextBlock Text="Rejection with dispositions (INV-005/006)" FontWeight="SemiBold" Margin="0,0,0,6"/>
-            <WrapPanel Margin="0,0,0,6">
-              <TextBlock Text="Grade" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="RejGrade" Width="130" Margin="0,0,10,0" SelectionChanged="RejGrade_Changed"/>
-              <TextBlock Text="Size" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="RejSize" Width="90" Margin="0,0,10,0"/>
-              <TextBlock Text="Weight ct" Style="{StaticResource Lbl}"/>
-              <TextBox x:Name="RejWeight" Width="90" Style="{StaticResource NumEdit}" Margin="0,0,10,0"/>
-              <TextBlock Text="Price/ct" Style="{StaticResource Lbl}"/>
-              <TextBox x:Name="RejPrice" Width="90" Style="{StaticResource NumEdit}" Margin="0,0,10,0"/>
-              <Button Content="Record rejection" Click="Reject_Click"/>
-            </WrapPanel>
+            <Grid Style="{StaticResource FormRow}" Margin="0,0,0,6">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L1"/><ColumnDefinition Width="Auto" SharedSizeGroup="F1"/>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L2"/><ColumnDefinition Width="Auto" SharedSizeGroup="F2"/>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L3"/><ColumnDefinition Width="Auto" SharedSizeGroup="F3"/>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L4"/><ColumnDefinition Width="Auto" SharedSizeGroup="F4"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Text="Grade" Style="{StaticResource Lbl}"/>
+              <ComboBox Grid.Column="1" x:Name="RejGrade" Width="130" Margin="0,0,16,0" SelectionChanged="RejGrade_Changed"/>
+              <TextBlock Grid.Column="2" Text="Size" Style="{StaticResource Lbl}"/>
+              <ComboBox Grid.Column="3" x:Name="RejSize" Width="90" Margin="0,0,16,0"/>
+              <TextBlock Grid.Column="4" Text="Weight ct" Style="{StaticResource Lbl}"/>
+              <TextBox Grid.Column="5" x:Name="RejWeight" Width="90" Style="{StaticResource AppNumericTextBox}" Margin="0,0,16,0"/>
+              <TextBlock Grid.Column="6" Text="Price/ct" Style="{StaticResource Lbl}"/>
+              <TextBox Grid.Column="7" x:Name="RejPrice" Width="90" Style="{StaticResource AppNumericTextBox}" Margin="0,0,16,0"/>
+              <Button Grid.Column="8" Content="Record rejection" Click="Reject_Click" HorizontalAlignment="Left"/>
+            </Grid>
             <TextBlock Text="Dispositions — weights must sum to the rejection (docs/04 §2.5). Leave empty to record a plain rejection."
                        Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,0,4"/>
             <DataGrid x:Name="DispositionGrid" Height="120" IsReadOnly="False" CanUserAddRows="True" Margin="0,0,0,14">
               <DataGrid.Columns>
                 <DataGridTextColumn Header="Weight ct" Binding="{Binding WeightCt}" Width="110"/>
-                <DataGridComboBoxColumn Header="Outcome" SelectedValueBinding="{Binding Outcome}" Width="130">
+                <!-- Without these it falls back to WPF's own combo chrome and renders 20px tall
+                     against the 32px every other input uses. -->
+                <DataGridComboBoxColumn Header="Outcome" SelectedValueBinding="{Binding Outcome}" Width="130"
+                                        ElementStyle="{StaticResource AppComboBox}"
+                                        EditingElementStyle="{StaticResource AppComboBox}">
                   <DataGridComboBoxColumn.ItemsSource>
                     <x:Array Type="sys:String" xmlns:sys="clr-namespace:System;assembly=mscorlib">
                       <sys:String>RESELECT</sys:String><sys:String>REPAIR</sys:String><sys:String>REGRADE</sys:String>
@@ -407,17 +516,24 @@
             </DataGrid>
 
             <TextBlock Text="Stock adjustment — always visible, never silent" FontWeight="SemiBold" Margin="0,0,0,6"/>
-            <WrapPanel>
-              <TextBlock Text="Grade" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="AdjGrade" Width="130" Margin="0,0,10,0" SelectionChanged="AdjGrade_Changed"/>
-              <TextBlock Text="Size" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="AdjSize" Width="90" Margin="0,0,10,0"/>
-              <TextBlock Text="Weight ct (± )" Style="{StaticResource Lbl}"/>
-              <TextBox x:Name="AdjWeight" Width="90" Style="{StaticResource NumEdit}" Margin="0,0,10,0"/>
-              <TextBlock Text="Reason" Style="{StaticResource Lbl}"/>
-              <TextBox x:Name="AdjReason" Width="220" Margin="0,0,10,0"/>
-              <Button Content="Adjust" Click="Adjust_Click"/>
-            </WrapPanel>
+            <Grid Style="{StaticResource FormRow}" Margin="0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L1"/><ColumnDefinition Width="Auto" SharedSizeGroup="F1"/>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L2"/><ColumnDefinition Width="Auto" SharedSizeGroup="F2"/>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L3"/><ColumnDefinition Width="Auto" SharedSizeGroup="F3"/>
+                <ColumnDefinition Width="Auto" SharedSizeGroup="L4"/><ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Text="Grade" Style="{StaticResource Lbl}"/>
+              <ComboBox Grid.Column="1" x:Name="AdjGrade" Width="130" Margin="0,0,16,0" SelectionChanged="AdjGrade_Changed"/>
+              <TextBlock Grid.Column="2" Text="Size" Style="{StaticResource Lbl}"/>
+              <ComboBox Grid.Column="3" x:Name="AdjSize" Width="90" Margin="0,0,16,0"/>
+              <TextBlock Grid.Column="4" Text="Weight ct (±)" Style="{StaticResource Lbl}"/>
+              <TextBox Grid.Column="5" x:Name="AdjWeight" Width="90" Style="{StaticResource AppNumericTextBox}" Margin="0,0,16,0"/>
+              <TextBlock Grid.Column="6" Text="Reason" Style="{StaticResource Lbl}"/>
+              <TextBox Grid.Column="7" x:Name="AdjReason" Width="220" Margin="0,0,16,0"/>
+              <Button Grid.Column="8" Content="Adjust" Click="Adjust_Click" HorizontalAlignment="Left"/>
+            </Grid>
           </StackPanel>
         </ScrollViewer>
       </TabItem>
@@ -428,7 +544,11 @@
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
-          <DataGrid x:Name="GradeGrid" Grid.Column="0" Margin="0,0,8,0">
+          <!-- The left column needs its own heading or its grid starts 22px above the right one,
+               which reads as a misalignment rather than as two columns. -->
+          <DockPanel Grid.Column="0" Margin="0,0,8,0">
+          <TextBlock DockPanel.Dock="Top" Text="Grades (MDM-001)" FontWeight="SemiBold" Margin="0,0,0,4"/>
+          <DataGrid x:Name="GradeGrid">
             <DataGrid.Columns>
               <DataGridTextColumn Header="Code" Binding="{Binding Code}" Width="110"/>
               <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="110"/>
@@ -436,36 +556,45 @@
               <DataGridTextColumn Header="Aliases" Binding="{Binding AliasList}" Width="*"/>
             </DataGrid.Columns>
           </DataGrid>
-          <StackPanel Grid.Column="1" Width="330">
-            <TextBlock Text="Buyers (MDM-002)" FontWeight="SemiBold" Margin="0,0,0,4"/>
-            <DataGrid x:Name="BuyerGrid" Height="180" Margin="0,0,0,6">
+          </DockPanel>
+          <!-- Proportional rows, not fixed heights: three 180/150px grids plus their forms add up
+               to more than a short window has, and "Set price" was the piece that fell off the
+               bottom. Sharing the space means it fits at any height. -->
+          <Grid Grid.Column="1" Width="380">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Buyers (MDM-002)" FontWeight="SemiBold" Margin="0,0,0,4"/>
+            <DataGrid Grid.Row="1" x:Name="BuyerGrid" Margin="0,0,0,6">
               <DataGrid.Columns>
                 <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="*"/>
                 <DataGridTextColumn Header="Terms" Binding="{Binding DefaultTermsDays}" Width="60"/>
               </DataGrid.Columns>
             </DataGrid>
-            <WrapPanel Margin="0,0,0,14">
+            <WrapPanel Grid.Row="2" Margin="0,0,0,14">
               <TextBox x:Name="NewBuyerName" Width="150" Margin="0,0,6,0"/>
-              <TextBox x:Name="NewBuyerTerms" Width="50" Text="0" Style="{StaticResource NumEdit}" Margin="0,0,6,0"/>
+              <TextBox x:Name="NewBuyerTerms" Width="50" Text="0" Style="{StaticResource AppNumericTextBox}" Margin="0,0,6,0"/>
               <Button Content="Add buyer" Click="AddBuyer_Click"/>
             </WrapPanel>
 
-            <TextBlock Text="Brokers" FontWeight="SemiBold" Margin="0,0,0,4"/>
-            <DataGrid x:Name="BrokerGrid" Height="180" Margin="0,0,0,6">
+            <TextBlock Grid.Row="3" Text="Brokers" FontWeight="SemiBold" Margin="0,0,0,4"/>
+            <DataGrid Grid.Row="4" x:Name="BrokerGrid" Margin="0,0,0,6">
               <DataGrid.Columns>
                 <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="*"/>
                 <DataGridTextColumn Header="Default %" Binding="{Binding DefaultBrokerPct}" Width="75"/>
               </DataGrid.Columns>
             </DataGrid>
-            <WrapPanel Margin="0,0,0,14">
+            <WrapPanel Grid.Row="5" Margin="0,0,0,14">
               <TextBox x:Name="NewBrokerName" Width="150" Margin="0,0,6,0"/>
-              <TextBox x:Name="NewBrokerPct" Width="50" Text="1" Style="{StaticResource NumEdit}" Margin="0,0,6,0"/>
+              <TextBox x:Name="NewBrokerPct" Width="50" Text="1" Style="{StaticResource AppNumericTextBox}" Margin="0,0,6,0"/>
               <Button Content="Add broker" Click="AddBroker_Click"/>
             </WrapPanel>
 
             <!-- MDM-003 · grade × size price list, effective-dated -->
-            <TextBlock Text="Price list (MDM-003)" FontWeight="SemiBold" Margin="0,0,0,4"/>
-            <DataGrid x:Name="PriceGrid" Height="150" Margin="0,0,0,6">
+            <TextBlock Grid.Row="6" Text="Price list (MDM-003)" FontWeight="SemiBold" Margin="0,0,0,4"/>
+            <DataGrid Grid.Row="7" x:Name="PriceGrid" Margin="0,0,0,6">
               <DataGrid.Columns>
                 <DataGridTextColumn Header="Grade" Binding="{Binding GradeCode}" Width="80"/>
                 <DataGridTextColumn Header="Size" Binding="{Binding SizeCode}" Width="60"/>
@@ -474,16 +603,16 @@
                 <DataGridTextColumn Header="From" Binding="{Binding EffectiveFrom, StringFormat=dd-MM-yy}" Width="70"/>
               </DataGrid.Columns>
             </DataGrid>
-            <WrapPanel>
+            <WrapPanel Grid.Row="8">
               <ComboBox x:Name="PriceGradePicker" Width="95" Margin="0,0,4,0" SelectionChanged="PriceGrade_Changed"/>
               <ComboBox x:Name="PriceSizePicker" Width="70" Margin="0,0,4,0"/>
               <ComboBox x:Name="PriceContext" Width="90" SelectedIndex="0" Margin="0,0,4,0">
                 <ComboBoxItem>SALE</ComboBoxItem><ComboBoxItem>STOCK</ComboBoxItem><ComboBoxItem>REJECTION</ComboBoxItem>
               </ComboBox>
-              <TextBox x:Name="PriceValue" Width="80" Style="{StaticResource NumEdit}" Margin="0,0,4,0"/>
+              <TextBox x:Name="PriceValue" Width="80" Style="{StaticResource AppNumericTextBox}" Margin="0,0,4,0"/>
               <Button Content="Set price" Click="AddPrice_Click"/>
             </WrapPanel>
-          </StackPanel>
+          </Grid>
         </Grid>
       </TabItem>
 
@@ -523,22 +652,24 @@
           </Border>
 
           <!-- W1,W2,W3,W7,W9,W11,W14 · KPI tiles -->
-          <UniformGrid DockPanel.Dock="Top" Columns="4" Rows="2" Height="170">
-            <Border Margin="3" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="{StaticResource RadiusCard}" Padding="14">
+          <!-- No fixed Height: at 170 each tile got 85px and the third line (delta / basis / carats)
+               was clipped off the bottom of every tile. -->
+          <UniformGrid DockPanel.Dock="Top" Columns="4" Rows="2">
+            <Border Style="{StaticResource Card}" Margin="3" Padding="14">
               <StackPanel><TextBlock Text="W1 · Total sales" Foreground="{DynamicResource TextMutedBrush}"/><TextBlock x:Name="KpiSales" Style="{StaticResource Kpi}"/><TextBlock x:Name="KpiSalesDelta" Foreground="{DynamicResource TextMutedBrush}" FontSize="11"/></StackPanel></Border>
-            <Border Margin="3" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="{StaticResource RadiusCard}" Padding="14">
+            <Border Style="{StaticResource Card}" Margin="3" Padding="14">
               <StackPanel><TextBlock Text="W2 · Carats sold" Foreground="{DynamicResource TextMutedBrush}"/><TextBlock x:Name="KpiCarats" Style="{StaticResource Kpi}"/></StackPanel></Border>
-            <Border Margin="3" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="{StaticResource RadiusCard}" Padding="14">
+            <Border Style="{StaticResource Card}" Margin="3" Padding="14">
               <StackPanel><TextBlock Text="W3 · Blended rate/ct" Foreground="{DynamicResource TextMutedBrush}"/><TextBlock x:Name="KpiRate" Style="{StaticResource Kpi}"/></StackPanel></Border>
-            <Border Margin="3" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="{StaticResource RadiusCard}" Padding="14">
+            <Border Style="{StaticResource Card}" Margin="3" Padding="14">
               <StackPanel><TextBlock Text="W9 · Outstanding" Foreground="{DynamicResource TextMutedBrush}"/><TextBlock x:Name="KpiOutstanding" Style="{StaticResource Kpi}"/></StackPanel></Border>
-            <Border Margin="3" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="{StaticResource RadiusCard}" Padding="14">
+            <Border Style="{StaticResource Card}" Margin="3" Padding="14">
               <StackPanel><TextBlock Text="W11 · Inventory value" Foreground="{DynamicResource TextMutedBrush}"/><TextBlock x:Name="KpiInventory" Style="{StaticResource Kpi}"/><TextBlock x:Name="KpiInventoryCt" Foreground="{DynamicResource TextMutedBrush}" FontSize="11"/></StackPanel></Border>
-            <Border Margin="3" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="{StaticResource RadiusCard}" Padding="14">
+            <Border Style="{StaticResource Card}" Margin="3" Padding="14">
               <StackPanel><TextBlock Text="W7 · Margin" Foreground="{DynamicResource TextMutedBrush}"/><TextBlock x:Name="KpiMargin" Style="{StaticResource Kpi}"/><TextBlock x:Name="KpiMarginBasis" Foreground="{DynamicResource TextMutedBrush}" FontSize="11"/></StackPanel></Border>
-            <Border Margin="3" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="{StaticResource RadiusCard}" Padding="14">
+            <Border Style="{StaticResource Card}" Margin="3" Padding="14">
               <StackPanel><TextBlock Text="W14 · Broker cost" Foreground="{DynamicResource TextMutedBrush}"/><TextBlock x:Name="KpiBroker" Style="{StaticResource Kpi}"/></StackPanel></Border>
-            <Border Margin="3" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="{StaticResource RadiusCard}" Padding="14">
+            <Border Style="{StaticResource Card}" Margin="3" Padding="14">
               <StackPanel><TextBlock Text="Posted invoices" Foreground="{DynamicResource TextMutedBrush}"/><TextBlock x:Name="KpiCount" Style="{StaticResource Kpi}"/></StackPanel></Border>
           </UniformGrid>
 
@@ -659,12 +790,15 @@
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/><ColumnDefinition Width="360"/>
             </Grid.ColumnDefinitions>
-            <DataGrid x:Name="SettingGrid" Grid.Column="0" Margin="0,0,8,0">
+          <DockPanel Grid.Column="0" Margin="0,0,8,0">
+            <TextBlock DockPanel.Dock="Top" Text="Policies (CFG-001/002)" FontWeight="SemiBold" Margin="0,0,0,6"/>
+            <DataGrid x:Name="SettingGrid">
               <DataGrid.Columns>
                 <DataGridTextColumn Header="Key" Binding="{Binding Key}" Width="260"/>
                 <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="*"/>
               </DataGrid.Columns>
             </DataGrid>
+          </DockPanel>
             <DockPanel Grid.Column="1">
               <TextBlock DockPanel.Dock="Top" Text="Backups (OPS-001)" FontWeight="SemiBold" Margin="0,0,0,6"/>
               <DataGrid x:Name="BackupGrid">

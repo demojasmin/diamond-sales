@@ -150,8 +150,10 @@
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
     </Style>
 
+    <!-- No right margin: the primary action is always last in a right-aligned row, so the 8px that
+         separates the others just pushed it out of line with the grid edge above it. -->
     <Style x:Key="AppPrimaryButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-        <Setter Property="Margin" Value="0,0,8,0"/>
+        <Setter Property="Margin" Value="0"/>
         <Setter Property="MinWidth" Value="86"/>
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
     </Style>
@@ -170,6 +172,48 @@
         <Setter Property="HorizontalContentAlignment" Value="Right"/>
         <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
         <Setter Property="Padding" Value="8,0"/>
+    </Style>
+
+    <!-- ================= PASSWORD =================
+         The stock PasswordBox keeps Windows' own chrome, so it read as a foreign control sitting
+         under two on-token text fields. Same template as FieldTextBox — PasswordBox exposes the
+         same PART_ContentHost, so the design's field can be reused verbatim. -->
+
+    <Style x:Key="AppPasswordBox" TargetType="PasswordBox">
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Height" Value="32"/>
+        <Setter Property="Padding" Value="10,0"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+        <Setter Property="CaretBrush" Value="{DynamicResource AccentBrush}"/>
+        <Setter Property="Background" Value="{DynamicResource Surface2Brush}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="PasswordBox">
+                    <Border x:Name="bd" CornerRadius="{StaticResource RadiusControl}"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}">
+                        <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                                      VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource SurfaceBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="bd" Property="Opacity" Value="0.5"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <!-- ================= DATE FIELD =================
@@ -194,7 +238,9 @@
     </Style>
 
     <Style x:Key="AppDatePicker" TargetType="DatePicker">
-        <Setter Property="Height" Value="34"/>
+        <!-- 32, not 34: this is an input and sits in a row of them. 34 is the BUTTON height, and
+             borrowing it made the date field two pixels taller than every field beside it. -->
+        <Setter Property="Height" Value="32"/>
         <Setter Property="MinWidth" Value="140"/>
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>

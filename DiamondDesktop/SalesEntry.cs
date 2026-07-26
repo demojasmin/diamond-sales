@@ -125,19 +125,43 @@ public sealed class SaleLine : Notifier
     {
         if (IsBlank) { Error = null; RejectionCt = 0; Amount = 0; return; }
 
+        // Field rules first. The engine throws on the same bad input, but its message names a C#
+        // parameter — a half-typed line used to read "grossWeightCt is out of range" instead of
+        // "Grade is required", which is both cryptic and the wrong problem to point at.
+        if (Validate() is { } invalid)
+        {
+            RejectionCt = 0;
+            Amount = 0;
+            Error = invalid;
+            return;
+        }
+
         try
         {
             RejectionCt = Calc.Rejection(GrossWeightCt, SelectionCt);
             Amount = Calc.LineAmount(SelectionCt, PricePerCt, ExRate, Less1Pct, Less2Pct, brokerPct);
-            Error = Validate();
+            Error = null;
         }
         catch (ArgumentException e)          // covers ArgumentOutOfRangeException too
         {
             RejectionCt = 0;
             Amount = 0;
-            Error = e is ArgumentOutOfRangeException r ? $"{r.ParamName} is out of range" : e.Message;
+            Error = e is ArgumentOutOfRangeException r ? $"{FieldName(r.ParamName)} is out of range" : e.Message;
         }
     }
+
+    /// Turns an engine parameter name into the column heading the user is actually looking at.
+    private static string FieldName(string? parameter) => parameter switch
+    {
+        "grossWeightCt" => "Weight",
+        "selectionCt" => "Selection",
+        "pricePerCt" => "Price/ct",
+        "exRate" => "Ex Rate",
+        "less1Pct" => "Less 1",
+        "less2Pct" => "Less 2",
+        "brokerPct" => "Broker %",
+        _ => parameter ?? "A value",
+    };
 
     private string? Validate()
     {

@@ -31,18 +31,17 @@
         <TextBlock Text="AUTH-001 · every action is attributed to you"
                    Style="{StaticResource MutedText}" FontSize="12.5" Margin="0,0,0,22"/>
 
-        <TextBlock Text="SERVER" Style="{StaticResource LabelCaps}" Margin="0,0,0,5"/>
-        <TextBox x:Name="ServerBox" Style="{StaticResource FieldTextBox}" Text="http://localhost:5000" Margin="0,0,0,14"/>
-
-        <TextBlock Text="USERNAME" Style="{StaticResource LabelCaps}" Margin="0,0,0,5"/>
-        <TextBox x:Name="UserBox" Style="{StaticResource FieldTextBox}" Text="owner" Margin="0,0,0,14"/>
+        <!-- No server field: the Supabase URL is fixed and the anon key ships in the binary by
+             design. RLS is the security boundary, not the key. -->
+        <TextBlock Text="EMAIL" Style="{StaticResource LabelCaps}" Margin="0,0,0,5"/>
+        <TextBox x:Name="UserBox" Style="{StaticResource FieldTextBox}" Margin="0,0,0,14"/>
 
         <TextBlock Text="PASSWORD" Style="{StaticResource LabelCaps}" Margin="0,0,0,5"/>
-        <!-- ponytail: the seeded first-run password is pre-filled for local testing only.
-             Delete this Password attribute before the app reaches a real server (D5). -->
-        <PasswordBox x:Name="PasswordBox" Password="owner" Height="34" Padding="10,0"
-                     VerticalContentAlignment="Center" Margin="0,0,0,20"
-                     Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}"/>
+        <!-- Nothing is pre-filled. These are real credentials to a live cloud database now, so a
+             password in source would ship to every trading-floor machine. The UI tests supply
+             SOLITAIRE_EMAIL / SOLITAIRE_PASSWORD instead. -->
+        <PasswordBox x:Name="PasswordBox" Style="{StaticResource AppPasswordBox}"
+                     Margin="0,0,0,20"/>
 
         <Button x:Name="SignIn" Content="Sign in" Style="{StaticResource PrimaryButton}"
                 Height="38" IsDefault="True" Click="SignIn_Click"/>

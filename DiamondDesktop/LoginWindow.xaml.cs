@@ -1,12 +1,31 @@
 using System.Windows;
+using DiamondDesktop.Data;
 
 namespace DiamondDesktop;
 
 public partial class LoginWindow : Window
 {
-    public LoginWindow() => InitializeComponent();
+    public LoginWindow()
+    {
+        InitializeComponent();
 
-    public Api? Api { get; private set; }
+        // Dev and CI convenience only. Real credentials never live in source — this reads the
+        // machine's own environment, so nothing secret ships in the binary.
+        UserBox.Text = Environment.GetEnvironmentVariable("SOLITAIRE_EMAIL") ?? "";
+        PasswordBox.Password = Environment.GetEnvironmentVariable("SOLITAIRE_PASSWORD") ?? "";
+
+        Loaded += async (_, _) =>
+        {
+            var failure = await Db.InitializeAsync();
+            if (failure is not null) { Status.Text = failure; return; }
+
+            // A session persisted from last run is still valid — skip straight in.
+            if (Db.CurrentUser is not null) DialogResult = true;
+            else if (UserBox.Text.Length == 0) UserBox.Focus();
+        };
+    }
+
+    public bool SignedIn { get; private set; }
 
     private async void SignIn_Click(object sender, RoutedEventArgs e)
     {
@@ -15,17 +34,11 @@ public partial class LoginWindow : Window
 
         try
         {
-            var api = new Api(ServerBox.Text.Trim());
-            string? error = await api.LoginAsync(UserBox.Text.Trim(), PasswordBox.Password);
-            if (error is not null) { Status.Text = error; return; }
+            string? failure = await Db.SignInAsync(UserBox.Text.Trim(), PasswordBox.Password);
+            if (failure is not null) { Status.Text = failure; return; }
 
-            await api.LoadCatalogueAsync();
-            Api = api;
+            SignedIn = true;
             DialogResult = true;
-        }
-        catch (Exception ex)
-        {
-            Status.Text = $"Cannot reach the server: {ex.Message}";   // is DiamondApi running?
         }
         finally
         {

@@ -104,6 +104,23 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    /// <summary>
+    /// A DataGridCell spends the first click becoming the current cell and only enters edit mode on
+    /// the second, so the first figure typed on a fresh screen is silently dropped. This puts the
+    /// cell straight into edit so one click is enough.
+    ///
+    /// Text columns only: the Size and Grade cells hold ComboBoxes with their own first-click
+    /// handler (<see cref="CellCombo_Down"/>), and beginning an edit under them would fight it.
+    /// </summary>
+    private void Cell_Down(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not DataGridCell { IsEditing: false, IsReadOnly: false } cell) return;
+        if (cell.Column is not DataGridTextColumn) return;
+
+        if (!cell.IsFocused) cell.Focus();
+        Grid.BeginEdit(e);
+    }
+
     private void AddLine()
     {
         var line = new SaleLine();
@@ -723,6 +740,7 @@ public partial class MainWindow : Window
         string header = tab.Header?.ToString() ?? "";
         ScreenTitle.Text = header;
         ScreenSub.Text = ScreenSubtitles.GetValueOrDefault(header, "");
+        Status.Text = "";                      // a message belongs to the screen that raised it
 
         switch (tab.Header?.ToString())
         {
@@ -742,7 +760,8 @@ public partial class MainWindow : Window
 
     private void Say(string message, bool ok = false)
     {
-        Status.Foreground = ok ? System.Windows.Media.Brushes.SeaGreen : System.Windows.Media.Brushes.Firebrick;
+        // Token brushes, not Brushes.SeaGreen/Firebrick — those don't follow the light/dark swap.
+        Status.Foreground = (Brush)FindResource(ok ? "SuccessBrush" : "DangerBrush");
         Status.Text = message;
     }
 }
