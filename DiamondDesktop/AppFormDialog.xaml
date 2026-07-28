@@ -1,0 +1,51 @@
+<Window x:Class="DiamondDesktop.AppFormDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        SizeToContent="Height" Width="440"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        ShowInTaskbar="False" WindowStyle="SingleBorderWindow"
+        Background="{DynamicResource BgBrush}"
+        TextElement.Foreground="{DynamicResource TextBrush}"
+        TextElement.FontFamily="{StaticResource UiFont}"
+        TextElement.FontSize="13.5" TextOptions.TextFormattingMode="Ideal">
+
+  <!-- Only application-level resource keys are used here. Lbl, Num, Empty and EmptyHint live in
+       MainWindow.Resources and are invisible from anywhere else — reaching for one of those is
+       what threw XamlParseException the last time a shared component was added. -->
+  <DockPanel>
+
+    <Border DockPanel.Dock="Bottom" Background="{DynamicResource SurfaceBrush}"
+            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
+            Padding="22,14">
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button x:Name="CancelButton" Content="Cancel" Margin="0,0,10,0" IsCancel="True"
+                Style="{StaticResource SecondaryAction}" Click="Cancel_Click"
+                VerticalAlignment="Center"/>
+        <Button x:Name="PrimaryButton" IsDefault="True" Style="{StaticResource PrimaryAction}"
+                Click="Primary_Click" VerticalAlignment="Center"/>
+      </StackPanel>
+    </Border>
+
+    <StackPanel Margin="22,20,22,18">
+      <TextBlock x:Name="Headline" Style="{StaticResource CardTitle}"/>
+      <TextBlock x:Name="Subhead" Style="{StaticResource CardSubtitle}" Margin="0,4,0,0"/>
+
+      <!-- Fields are built in code so one dialog serves any small form. -->
+      <StackPanel x:Name="Fields" Margin="0,16,0,0"/>
+
+      <!-- Inline, not a second message box: the error belongs beside the field that caused it. -->
+      <Border x:Name="ErrorBox" Visibility="Collapsed" Margin="0,14,0,0"
+              Background="{DynamicResource DangerSoftBrush}"
+              BorderBrush="{DynamicResource DangerBorderBrush}" BorderThickness="1"
+              CornerRadius="{StaticResource RadiusField}" Padding="12,9">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                     Foreground="{DynamicResource DangerBrush}" Margin="0,1,9,0"
+                     VerticalAlignment="Top"/>
+          <TextBlock x:Name="ErrorText" TextWrapping="Wrap" MaxWidth="330"
+                     Foreground="{DynamicResource TextBrush}"/>
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </DockPanel>
+</Window>

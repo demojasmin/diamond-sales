@@ -82,6 +82,7 @@ public sealed class SaleLine : Notifier
     private decimal _exRate = 1m;
     private decimal _rejectionCt, _amount;
     private string? _remark, _error;
+    private bool _incomplete;
 
     public Grade? Grade
     {
@@ -109,21 +110,41 @@ public sealed class SaleLine : Notifier
     public decimal Amount { get => _amount; private set => Set(ref _amount, value); }
 
     /// Non-null blocks the save and shows on the row. AC: "selection > weight … blocked with a clear message".
-    public string? Error { get => _error; private set => Set(ref _error, value); }
+    public string? Error { get => _error; private set { Set(ref _error, value); Raise(nameof(HasConflict)); } }
+
+    /// <summary>
+    /// A line still being typed — a required value simply is not there yet — as opposed to one that
+    /// contradicts itself. Both block the save; the difference is only whether the row is coloured.
+    /// </summary>
+    public bool IsIncomplete
+    {
+        get => _incomplete;
+        private set { Set(ref _incomplete, value); Raise(nameof(HasConflict)); }
+    }
+
+    /// <summary>
+    /// What the row's warning colour binds to. Picking a grade used to turn the row red instantly,
+    /// because Weight was still 0 — the app shouting about a field the user was on their way to
+    /// filling in. Red is now reserved for values that cannot be reconciled: selection above
+    /// weight, a negative price, a size the grade does not carry.
+    /// </summary>
+    public bool HasConflict => _error is not null && !_incomplete;
 
     public bool IsBlank => _grade is null && _size is null && _grossWeightCt == 0 && _selectionCt == 0 && _pricePerCt == 0;
 
     internal void Recalculate(decimal brokerPct)
     {
-        if (IsBlank) { Error = null; RejectionCt = 0; Amount = 0; return; }
+        if (IsBlank) { Error = null; IsIncomplete = false; RejectionCt = 0; Amount = 0; return; }
 
         // Field rules first. The engine throws on the same bad input, but its message names a C#
         // parameter — a half-typed line used to read "grossWeightCt is out of range" instead of
         // "Grade is required", which is both cryptic and the wrong problem to point at.
-        if (Validate() is { } invalid)
+        var (invalid, incomplete) = Validate();
+        if (invalid is not null)
         {
             RejectionCt = 0;
             Amount = 0;
+            IsIncomplete = incomplete;
             Error = invalid;
             return;
         }
@@ -132,12 +153,14 @@ public sealed class SaleLine : Notifier
         {
             RejectionCt = Calc.Rejection(GrossWeightCt, SelectionCt);
             Amount = Calc.LineAmount(SelectionCt, PricePerCt, ExRate, Less1Pct, Less2Pct, brokerPct);
+            IsIncomplete = false;
             Error = null;
         }
         catch (ArgumentException e)          // covers ArgumentOutOfRangeException too
         {
             RejectionCt = 0;
             Amount = 0;
+            IsIncomplete = false;            // the engine only throws on values that contradict
             Error = e is ArgumentOutOfRangeException r ? $"{FieldName(r.ParamName)} is out of range" : e.Message;
         }
     }
@@ -155,14 +178,20 @@ public sealed class SaleLine : Notifier
         _ => parameter ?? "A value",
     };
 
-    private string? Validate()
+    /// <summary>
+    /// The message, and whether it is merely "not typed yet". Both still block the save — the flag
+    /// only decides whether the row is worth colouring while the user is still mid-line.
+    /// </summary>
+    private (string? Message, bool Incomplete) Validate()
     {
-        if (Grade is null) return "Grade is required";
-        if (Size is null) return "Size is required";
-        if (!AllowedSizes.Contains(Size)) return $"{Grade.DisplayName ?? Grade.Code} does not use size {Size.Code}";
-        if (GrossWeightCt <= 0) return "Weight must be greater than 0";
-        if (PricePerCt < 0) return "Price cannot be negative";
-        return null;
+        if (Grade is null) return ("Grade is required", true);
+        if (Size is null) return ("Size is required", true);
+        if (GrossWeightCt <= 0) return ("Weight must be greater than 0", true);
+
+        // Not "not yet" — these two are values that cannot both be right.
+        if (!AllowedSizes.Contains(Size)) return ($"{Grade.DisplayName ?? Grade.Code} does not use size {Size.Code}", false);
+        if (PricePerCt < 0) return ("Price cannot be negative", false);
+        return (null, false);
     }
 }
 
@@ -244,6 +273,11 @@ public sealed class InvoiceEntry : Notifier
 
     public IReadOnlyList<SaleLine> RealLines => Lines.Where(l => !l.IsBlank).ToList();
 
+    /// How many lines actually carry data. Presentation only — it drives the "nothing typed yet"
+    /// hint on the entry screen. RealLines is recomputed on demand and raises nothing, so a hint
+    /// bound to it would never update.
+    public int LineCount => RealLines.Count;
+
     public void Recalculate()
     {
         foreach (var line in Lines) line.Recalculate(BrokerPct);
@@ -257,6 +291,7 @@ public sealed class InvoiceEntry : Notifier
         Raise(nameof(TotalAmount));
         Raise(nameof(BlendedRate));
         Raise(nameof(DueDate));
+        Raise(nameof(LineCount));
     }
 
     /// Null when the invoice can be saved; otherwise the first thing wrong with it.
@@ -280,8 +315,11 @@ public sealed class InvoiceEntry : Notifier
     private void OnLineChanged(object? sender, PropertyChangedEventArgs e)
     {
         // Derived properties are set by Recalculate itself — reacting to them would recurse.
+        // IsIncomplete and HasConflict belong on this list for the same reason: Error's setter
+        // raises HasConflict, so leaving it off sent Recalculate straight back into itself.
         if (e.PropertyName is nameof(SaleLine.RejectionCt) or nameof(SaleLine.Amount)
-            or nameof(SaleLine.Error) or nameof(SaleLine.AllowedSizes)) return;
+            or nameof(SaleLine.Error) or nameof(SaleLine.AllowedSizes)
+            or nameof(SaleLine.IsIncomplete) or nameof(SaleLine.HasConflict)) return;
         Recalculate();
     }
 }

@@ -132,10 +132,27 @@ Eq("carats round to 4 dp", Calc.RoundCarat(1.00005m), 1.0001m);
 // ════════════════════════════════════════════════════════════════════════════
 Console.WriteLine();
 
+// Catalogue.Grades / AllSizes are filled from Supabase at startup, so this harness seeds them
+// directly — these checks are about entry logic and must run offline, with no live project.
+// Codes are the ones the live `grade` / `size_bucket` tables actually use: spaces, not the
+// underscores the old hardcoded seed had (docs/12 §3b).
+foreach (var (code, order) in new[] { ("-2", 1), ("-6.5", 2), ("+6.5", 3), ("+11", 4) })
+    DiamondDesktop.Catalogue.AllSizes.Add(
+        new DiamondDesktop.Data.SizeBucket { SizeId = order, Code = code, SortOrder = order });
+foreach (var (code, order) in new[] { ("NO 1", 1), ("NO 1 BB", 2), ("NO II", 3) })
+    DiamondDesktop.Catalogue.Grades.Add(
+        new DiamondDesktop.Data.Grade { GradeId = order, Code = code, DisplayName = code, SortOrder = order });
+
+var uiMinus2 = DiamondDesktop.Catalogue.AllSizes.First(s => s.Code == "-2");
+var uiPlus65 = DiamondDesktop.Catalogue.AllSizes.First(s => s.Code == "+6.5");
+var uiPlus11 = DiamondDesktop.Catalogue.AllSizes.First(s => s.Code == "+11");
+DiamondDesktop.Data.Grade GradeOf(string code) =>
+    DiamondDesktop.Catalogue.Grades.First(g => g.Code == code);
+
 var inv = new DiamondDesktop.InvoiceEntry { Buyer = "Z K ENTERPRISE", BrokerPct = 1m, TermsDays = 45 };
 var line = inv.Lines[0];
-line.Grade = DiamondDesktop.Catalogue.Grades.First(g => g.Code == "NO_1");
-line.Size = DiamondDesktop.Catalogue.Plus65;
+line.Grade = GradeOf("NO 1");
+line.Size = uiPlus65;
 line.GrossWeightCt = 137.29m;
 line.SelectionCt = 112.89m;
 line.PricePerCt = 1000m;
@@ -166,22 +183,21 @@ line.SelectionCt = 112.89m;
 
 // grade_size, enforced at entry (docs/04 §3.4)
 Check("SALES-001 NO 1 offers four sizes",
-    DiamondDesktop.Catalogue.SizesFor(DiamondDesktop.Catalogue.Grades.First(g => g.Code == "NO_1")).Count == 4);
+    DiamondDesktop.Catalogue.SizesFor(GradeOf("NO 1")).Count == 4);
 Check("SALES-001 NO II offers three — the -2 bucket is not on the list",
-    !DiamondDesktop.Catalogue.SizesFor(DiamondDesktop.Catalogue.Grades.First(g => g.Code == "NO_II"))
-        .Contains(DiamondDesktop.Catalogue.Minus2));
+    !DiamondDesktop.Catalogue.SizesFor(GradeOf("NO II")).Contains(uiMinus2));
 
-line.Grade = DiamondDesktop.Catalogue.Grades.First(g => g.Code == "NO_1");
-line.Size = DiamondDesktop.Catalogue.Minus2;
-line.Grade = DiamondDesktop.Catalogue.Grades.First(g => g.Code == "NO_II");   // NO II has no -2
+line.Grade = GradeOf("NO 1");
+line.Size = uiMinus2;
+line.Grade = GradeOf("NO II");   // NO II has no -2
 Check("SALES-001 switching to a grade that lacks the chosen size clears it", line.Size is null);
-line.Size = DiamondDesktop.Catalogue.Plus65;
+line.Size = uiPlus65;
 
 // Verified against the real sheet: row 5 is a fully-rejected line and must be accepted (docs/04 A-2)
 var line2 = new DiamondDesktop.SaleLine
 {
-    Grade = DiamondDesktop.Catalogue.Grades.First(g => g.Code == "NO_II"),
-    Size = DiamondDesktop.Catalogue.Plus11,
+    Grade = GradeOf("NO II"),
+    Size = uiPlus11,
     GrossWeightCt = 15.39m,
     SelectionCt = 0m,
     PricePerCt = 53001m,
@@ -472,6 +488,274 @@ finally
     Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
     if (File.Exists(dbPath)) File.Delete(dbPath);
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Input bounds and error wording (DiamondDesktop.Bounds / .Friendly)
+// ════════════════════════════════════════════════════════════════════════════
+Console.WriteLine();
+
+// The ceiling is the database's own: price_per_ct is numeric(12,2).
+Check("Bounds accepts a normal parcel",
+    DiamondDesktop.Bounds.TooLarge(232.86m, "Weight") is null);
+Check("Bounds accepts the largest storable value",
+    DiamondDesktop.Bounds.TooLarge(9_999_999_999.99m, "Price per carat") is null);
+Check("Bounds rejects one paisa above it",
+    DiamondDesktop.Bounds.TooLarge(10_000_000_000.00m, "Price per carat") is not null);
+
+// The real figure that overflowed during end-to-end testing.
+Check("Bounds rejects the 4,000,037,500 x 500,500 case",
+    DiamondDesktop.Bounds.TooLarge(4_000_037_500m, "Price per carat") is null    // storable...
+    && DiamondDesktop.Bounds.NeedsConfirming(4_000_037_500m, DiamondDesktop.Bounds.LargePricePerCt)
+    && DiamondDesktop.Bounds.NeedsConfirming(500_500m, DiamondDesktop.Bounds.LargeWeightCt));
+
+// Grouped in the current culture — this is an Indian trading business, so the limit reads
+// 9,99,99,99,999.99 on their machines, the same way every amount on screen does.
+Check("Bounds message names the field and the limit",
+    DiamondDesktop.Bounds.TooLarge(1e11m, "Weight") is { } overLimit
+    && overLimit.Contains("Weight")
+    && overLimit.Contains(DiamondDesktop.Bounds.StorageMax.ToString("N2")),
+    DiamondDesktop.Bounds.TooLarge(1e11m, "Weight"));
+
+// Signed adjustments are checked on magnitude, so a large correction downwards is caught too.
+Check("Bounds checks magnitude, not sign",
+    DiamondDesktop.Bounds.TooLarge(-1e11m, "Weight") is not null);
+Check("a workbook-sized parcel is never queried",
+    !DiamondDesktop.Bounds.NeedsConfirming(232.86m, DiamondDesktop.Bounds.LargeWeightCt)
+    && !DiamondDesktop.Bounds.NeedsConfirming(63_000m, DiamondDesktop.Bounds.LargePricePerCt));
+
+// The exact string Postgres returned on the trading-floor screen.
+const string overflow = "numeric field overflow A field with precision 12, scale 2 must round to "
+                      + "an absolute value less than 10^10.";
+Check("Friendly replaces the overflow message",
+    DiamondDesktop.Friendly.Message(overflow) == "That number is too large for this field.");
+Check("Friendly reports that it translated it",
+    DiamondDesktop.Friendly.Translates(overflow));
+Check("Friendly leaves our own messages alone",
+    DiamondDesktop.Friendly.Message("Weight must be positive") == "Weight must be positive");
+Check("Friendly does not claim to translate what it passed through",
+    !DiamondDesktop.Friendly.Translates("Weight must be positive"));
+Check("Friendly handles an empty message",
+    DiamondDesktop.Friendly.Message(null) == "" && !DiamondDesktop.Friendly.Translates(null));
+Check("Friendly explains a permission failure",
+    DiamondDesktop.Friendly.Message("new row violates row-level security policy for table \"x\"")
+        .Contains("permission"));
+Check("Friendly explains an expired session",
+    DiamondDesktop.Friendly.Message("JWT expired").Contains("Sign in again"));
+
+// ── Excel import · validation (docs/08 §4) ──────────────────────────────────
+// Real .xlsx files, built here, so the reader is exercised rather than mocked around.
+
+string tempDir = Path.Combine(Path.GetTempPath(), "diamond-import-checks");
+Directory.CreateDirectory(tempDir);
+
+string[] headers =
+    ["Sr.", "Date", "Name", "Broker", "Broker %", "Terms", "Size", "Number", "Weight",
+     "Rejection", "Selection", "Price Per ct", "Ex Rate", "Less 1", "Less 2", "Type",
+     "Amount", "Rec. Amt", "Outstanding", "Remark"];
+
+string[] gradeCodes = ["NO 1", "NO II"];
+string[] sizeCodes = ["-6.5", "+6.5"];
+
+// 2024-08-01 is serial 45505 on the 1900 system Excel writes.
+string[] GoodRow(string sr, string date = "45505", string buyer = "ABC Company",
+                 string size = "-6.5", string grade = "NO 1", string weight = "10",
+                 string selection = "9", string price = "50000", string rec = "0") =>
+    [sr, date, buyer, "JITESH SHAH", "1", "45", size, grade, weight, "1", selection, price,
+     "1", "0", "0", "BILL", "0", rec, "0", ""];
+
+string MakeBook(string name, string sheetName, IEnumerable<string[]> rows)
+{
+    string path = Path.Combine(tempDir, name);
+    DiamondCalc.Tests.MiniXlsx.Write(path, sheetName, rows);
+    return path;
+}
+
+var validPath = MakeBook("valid.xlsx", "Sheet1",
+    [headers, GoodRow("1"), GoodRow("1", grade: "NO II", size: "+6.5", rec: "100"),
+     GoodRow("2", date: "45536", buyer: "Z K ENTERPRISE")]);
+
+var validPlan = DiamondDesktop.SaleFileImport.Plan(validPath, gradeCodes, sizeCodes);
+Check("import · a good file validates", validPlan.IsValid,
+    validPlan.IsValid ? null : validPlan.Problems[0].Message);
+Check("import · rows sharing a Sr. become one invoice", validPlan.Invoices.Count == 2,
+    $"got {validPlan.Invoices.Count}");
+Check("import · that invoice keeps both lines", validPlan.LineCount == 3,
+    $"got {validPlan.LineCount}");
+Check("import · invoice numbers carry the MIG- prefix",
+    validPlan.Invoices.All(i => i.InvoiceNo.StartsWith("MIG-")));
+Check("import · only rows with money received become receipts",
+    validPlan.ReceiptCount == 1, $"got {validPlan.ReceiptCount}");
+Eq("import · totals are recomputed with CALC-1, not copied from the sheet",
+    validPlan.Invoices.First(i => i.InvoiceNo == "MIG-2").Total,
+    Calc.LineAmount(9m, 50000m, 1m, 0m, 0m, 1m));
+
+var wrongSheet = MakeBook("wrong-sheet.xlsx", "Data", [headers, GoodRow("1")]);
+var sheetPlan = DiamondDesktop.SaleFileImport.Plan(wrongSheet, gradeCodes, sizeCodes);
+Check("import · a missing sheet stops the import", !sheetPlan.IsValid);
+Check("import · and the message names the sheet and what was found",
+    sheetPlan.Problems[0].Message.Contains("Sheet1") && sheetPlan.Problems[0].Message.Contains("Data"),
+    sheetPlan.Problems[0].Message);
+
+string[] shortHeaders = [.. headers];
+shortHeaders[11] = "Rate";                       // "Price Per ct" renamed
+var badCols = MakeBook("bad-columns.xlsx", "Sheet1", [shortHeaders, GoodRow("1")]);
+var colPlan = DiamondDesktop.SaleFileImport.Plan(badCols, gradeCodes, sizeCodes);
+Check("import · a renamed column stops the import", !colPlan.IsValid);
+Check("import · and the message names the column and both headings",
+    colPlan.Problems[0].Message.Contains("Column L")
+    && colPlan.Problems[0].Message.Contains("Price Per ct")
+    && colPlan.Problems[0].Message.Contains("Rate"), colPlan.Problems[0].Message);
+
+var noRows = MakeBook("headers-only.xlsx", "Sheet1", [headers]);
+var emptyPlan = DiamondDesktop.SaleFileImport.Plan(noRows, gradeCodes, sizeCodes);
+Check("import · headings with no data stop the import", !emptyPlan.IsValid);
+Check("import · and say the sheet has no data rows",
+    emptyPlan.Problems[0].Message.Contains("no data rows"), emptyPlan.Problems[0].Message);
+
+var unknownGrade = MakeBook("unknown-grade.xlsx", "Sheet1", [headers, GoodRow("1", grade: "ZZ 9")]);
+var gradePlan = DiamondDesktop.SaleFileImport.Plan(unknownGrade, gradeCodes, sizeCodes);
+Check("import · an unmapped grade stops the import, never a guess", !gradePlan.IsValid);
+Check("import · and the message names the row and the grade",
+    gradePlan.Problems[0].Message.Contains("Row 3")
+    && gradePlan.Problems[0].Message.Contains("ZZ 9"), gradePlan.Problems[0].Message);
+
+var badNumber = MakeBook("bad-price.xlsx", "Sheet1", [headers, GoodRow("1", price: "")]);
+var numberPlan = DiamondDesktop.SaleFileImport.Plan(badNumber, gradeCodes, sizeCodes);
+Check("import · a missing price stops the import", !numberPlan.IsValid);
+Check("import · and the message names the column",
+    numberPlan.Problems[0].Message.Contains("column L"), numberPlan.Problems[0].Message);
+
+var overSelection = MakeBook("over-selection.xlsx", "Sheet1",
+    [headers, GoodRow("1", weight: "5", selection: "9")]);
+var selPlan = DiamondDesktop.SaleFileImport.Plan(overSelection, gradeCodes, sizeCodes);
+Check("import · selection above the weight stops the import", !selPlan.IsValid);
+Check("import · and the message shows both figures",
+    selPlan.Problems[0].Message.Contains("9.00") && selPlan.Problems[0].Message.Contains("5.00"),
+    selPlan.Problems[0].Message);
+
+// One Sr. covering two different buyers must not be merged into one document.
+var clashing = MakeBook("clashing-sr.xlsx", "Sheet1",
+    [headers, GoodRow("1"), GoodRow("1", buyer: "Z K ENTERPRISE")]);
+var clashPlan = DiamondDesktop.SaleFileImport.Plan(clashing, gradeCodes, sizeCodes);
+Check("import · one Sr. over two buyers becomes two invoices, not one",
+    clashPlan.IsValid && clashPlan.Invoices.Count == 2, $"got {clashPlan.Invoices.Count}");
+Check("import · and the split is counted so it is never silent", clashPlan.SplitSrCount == 1);
+Check("import · split invoice numbers stay unique",
+    clashPlan.Invoices.Select(i => i.InvoiceNo).Distinct().Count() == 2);
+
+// Legacy spellings resolve through grade.aliases, which is what lets an untouched workbook load.
+var aliasGrades = DiamondDesktop.SaleFileImport.AliasMap(
+    [("NO 1", "NO1;NO 1;1"), ("NO II", "II;NOII;NO2SPOT")]);
+var aliasSizes = DiamondDesktop.SaleFileImport.AliasMap([("-6.5", (string?)null)]);
+var aliasBook = MakeBook("aliases.xlsx", "Sheet1",
+    [headers, GoodRow("1", grade: "II"), GoodRow("2", grade: "1")]);
+var aliasPlan = DiamondDesktop.SaleFileImport.Plan(aliasBook, aliasGrades, aliasSizes);
+Check("import · a legacy grade spelling resolves through its alias", aliasPlan.IsValid,
+    aliasPlan.IsValid ? null : aliasPlan.Problems[0].Message);
+Check("import · and the stored code is the catalogue one, not the sheet's",
+    aliasPlan.Invoices.SelectMany(i => i.Lines).Select(l => l.GradeCode).OrderBy(c => c)
+        .SequenceEqual(["NO 1", "NO II"]));
+Check("import · an alias for a grade nobody listed is still refused",
+    !DiamondDesktop.SaleFileImport.Plan(
+        MakeBook("alias-miss.xlsx", "Sheet1", [headers, GoodRow("1", grade: "QQ")]),
+        aliasGrades, aliasSizes).IsValid);
+
+// MDM-004 · four canonical sizes, four notations. "6.5+" is "+6.5" written backwards.
+var sizeAliases = DiamondDesktop.SaleFileImport.SizeAliasMap(["-2", "-6.5", "+6.5", "+11"]);
+Check("sizes · a trailing sign resolves to the leading-sign code",
+    sizeAliases["6.5+"] == "+6.5" && sizeAliases["6.5-"] == "-6.5"
+    && sizeAliases["11+"] == "+11" && sizeAliases["2-"] == "-2");
+Check("sizes · the canonical spelling still resolves to itself",
+    sizeAliases["+6.5"] == "+6.5" && sizeAliases["-2"] == "-2");
+Check("sizes · a sieve nobody has defined stays unresolved",
+    !sizeAliases.ContainsKey("0.2") && !sizeAliases.ContainsKey("0.25")
+    && !sizeAliases.ContainsKey("14+"));
+
+var plainGrades = DiamondDesktop.SaleFileImport.AliasMap(
+    gradeCodes.Select(g => (g, (string?)null)));
+
+var reversedSize = MakeBook("reversed-size.xlsx", "Sheet1", [headers, GoodRow("1", size: "6.5-")]);
+var reversedPlan = DiamondDesktop.SaleFileImport.Plan(reversedSize, plainGrades, sizeAliases);
+Check("import · a workbook written \"6.5-\" imports without conversion",
+    reversedPlan.IsValid, reversedPlan.IsValid ? null : reversedPlan.Problems[0].Message);
+Check("import · and the stored size is the canonical one",
+    reversedPlan.Invoices.SelectMany(i => i.Lines).All(l => l.SizeCode == "-6.5"));
+
+var unknownSize = MakeBook("unknown-size.xlsx", "Sheet1", [headers, GoodRow("1", size: "0.25")]);
+var unknownSizePlan = DiamondDesktop.SaleFileImport.Plan(unknownSize, plainGrades, sizeAliases);
+Check("import · an undefined sieve is still a validation error", !unknownSizePlan.IsValid);
+Check("import · and the message names the size",
+    unknownSizePlan.Problems[0].Message.Contains("0.25"), unknownSizePlan.Problems[0].Message);
+
+// The behaviour that matters for the real workbook: good rows import, unmapped rows are skipped
+// and reported, and the count is never hidden.
+var mixed = MakeBook("mixed.xlsx", "Sheet1",
+    [headers, GoodRow("1"), GoodRow("2", size: "0.25"), GoodRow("3", size: "14+"),
+     GoodRow("4", grade: "NO II", size: "+6.5")]);
+var mixedPlan = DiamondDesktop.SaleFileImport.Plan(mixed, plainGrades, sizeAliases);
+Check("import · good rows still import when some rows are unmapped", mixedPlan.IsValid,
+    mixedPlan.IsValid ? null : mixedPlan.Problems[0].Message);
+Check("import · exactly the unmapped rows are skipped", mixedPlan.SkippedRows == 2,
+    $"got {mixedPlan.SkippedRows}");
+Check("import · the resolvable rows all made it", mixedPlan.LineCount == 2,
+    $"got {mixedPlan.LineCount}");
+Check("import · the skipped rows are reported, grouped by reason",
+    DiamondDesktop.SaleFileImport.ExceptionText(mixedPlan).Contains("0.25")
+    && DiamondDesktop.SaleFileImport.ExceptionText(mixedPlan).Contains("14+"),
+    DiamondDesktop.SaleFileImport.ExceptionText(mixedPlan));
+Check("import · a file where every row is unmapped is refused outright",
+    !DiamondDesktop.SaleFileImport.Plan(
+        MakeBook("all-bad.xlsx", "Sheet1", [headers, GoodRow("1", size: "0.25")]),
+        plainGrades, sizeAliases).IsValid);
+
+var notAWorkbook = Path.Combine(tempDir, "not-excel.xlsx");
+File.WriteAllText(notAWorkbook, "this is not a zip");
+var junkPlan = DiamondDesktop.SaleFileImport.Plan(notAWorkbook, gradeCodes, sizeCodes);
+Check("import · a file that is not a workbook is refused, not crashed on", !junkPlan.IsValid);
+
+try { Directory.Delete(tempDir, recursive: true); } catch (IOException) { }
+
+// Proof against the real workbook, using the catalogue exactly as it now stands in the database.
+// Skipped when the file is not on this machine, so the suite stays runnable anywhere.
+string realBook = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+    "Downloads", "Sale File Sample.xlsx");
+if (File.Exists(realBook))
+{
+    var realGrades = DiamondDesktop.SaleFileImport.AliasMap(
+        [("NO 1", "NO1;NO 1;1"), ("NO 1 BB", "1BB;1 BB;NO1BB;NO 1BB"), ("NO 2", "NO2;2;NO-2"),
+         ("NO 2 BB", "2BB;2 BB;NO2BB"), ("NO II", "II;NOII;NO2SPOT"),
+         ("NO DX", "DX;NODX;DELUXE;NO-DX"), ("EX 1", null), ("NO 3", "NO3;3;NO-3"),
+         ("NO 4", "NO4;4;NO-4"), ("NO 5", "NO5;5;NO-5"), ("NO 6", "NO6;6;NO-6"),
+         ("NO 7", "NO7;7;NO-7"), ("TOP-COL", null), ("COL", null), ("OW", null),
+         ("LC 1", "LC1;L C 1;LC-1"), ("LC 2", "LC2;L C 2;LC-2"), ("LC 3", "LC3;L C 3;LC-3"),
+         ("GH", null), ("LB 1", "LB1;L B 1;LB-1"), ("LB 2", "LB2;L B 2;LB-2"), ("+14", null),
+         ("EXTRA", null)]);
+    // The catalogue now carries the +14 sheet's own buckets too, so nothing should be skipped.
+    var realSizes = DiamondDesktop.SaleFileImport.SizeAliasMap(
+        ["-2", "-6.5", "+6.5", "+11", "14+", "0.2", "0.25"]);
+    var realPlan = DiamondDesktop.SaleFileImport.Plan(realBook, realGrades, realSizes);
+
+    Check("REAL FILE · the original Sale File Sample.xlsx validates", realPlan.IsValid,
+        realPlan.IsValid ? null : realPlan.Problems[0].Message);
+    Console.WriteLine($"      invoices {realPlan.Invoices.Count}, lines {realPlan.LineCount}, "
+        + $"receipts {realPlan.ReceiptCount}, skipped {realPlan.SkippedRows}, "
+        + $"{realPlan.FirstDate:dd-MM-yyyy} to {realPlan.LastDate:dd-MM-yyyy}");
+    Console.WriteLine(DiamondDesktop.SaleFileImport.ExceptionText(realPlan));
+    Check("REAL FILE · every grade label resolved",
+        !realPlan.Exceptions.Any(e => e.Message.Contains("grade")));
+    Check("REAL FILE · every size resolved", !realPlan.Exceptions.Any(e => e.Message.Contains("size")),
+        realPlan.Exceptions.FirstOrDefault()?.Message);
+    Check("REAL FILE · no row is skipped", realPlan.SkippedRows == 0,
+        $"skipped {realPlan.SkippedRows}");
+}
+
+// ── Import dialogs · they must actually load ────────────────────────────────
+// A XAML file compiles happily and still dies at runtime on a missing StaticResource. These build
+// both dialogs against the app's real resource dictionaries and lay them out, without showing
+// anything — the same failure that took the window down after sign-in would surface here.
+foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
+    Check(name, ok, detail);
 
 Console.WriteLine();
 Console.WriteLine(failed == 0 ? "All checks passed." : $"{failed} check(s) FAILED.");

@@ -10,7 +10,8 @@ namespace DiamondDesktop.UiTests;
 
 /// <summary>
 /// Launches the real app once for the whole test class and signs in.
-/// Needs DiamondApi on http://localhost:5000 — the login screen pre-fills owner/owner.
+/// Signs into Supabase with a real account — DiamondApi and its owner/owner login are retired
+/// (docs/12 §1). Nothing needs to be running locally; the project must be reachable.
 /// </summary>
 public sealed class AppFixture : IDisposable
 {

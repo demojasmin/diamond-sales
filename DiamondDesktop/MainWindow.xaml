@@ -20,11 +20,147 @@
     <Style TargetType="ComboBoxItem" BasedOn="{StaticResource FieldComboBoxItem}"/>
     <Style TargetType="PasswordBox" BasedOn="{StaticResource AppPasswordBox}"/>
 
-    <Style x:Key="Num" TargetType="TextBlock" BasedOn="{StaticResource NumericCellText}"/>
-    <Style x:Key="NumEdit" TargetType="TextBox" BasedOn="{StaticResource CellNumericTextBox}"/>
+    <!-- Left-aligned on request, headers and figures alike, across every grid in the app.
+         The convention this replaces put numbers on the right so their decimal points line up in a
+         column; noted, asked about, and decided otherwise. The mono/tabular figures are kept, so
+         digits still occupy equal width. -->
+    <Style x:Key="Num" TargetType="TextBlock" BasedOn="{StaticResource NumericCellText}">
+      <Setter Property="HorizontalAlignment" Value="Left"/>
+      <Setter Property="TextAlignment" Value="Left"/>
+    </Style>
+    <!-- The in-grid editor gets the same keystroke guard as the header fields: a bad character in
+         Weight or Price silently kept the previous value and recomputed Amount from it. -->
+    <Style x:Key="NumEdit" TargetType="TextBox" BasedOn="{StaticResource CellNumericTextBox}">
+      <Setter Property="local:NumericInput.IsNumeric" Value="True"/>
+      <!-- Same edge as the display style above, or the figure jumps sideways the moment you
+           start typing in the cell. -->
+      <Setter Property="HorizontalContentAlignment" Value="Left"/>
+      <Setter Property="TextAlignment" Value="Left"/>
+    </Style>
+
+    <local:EmptyToVisibilityConverter x:Key="Empty"/>
+
+    <!-- "Nothing here yet", shared so every grid says it the same way. Sits over the grid body:
+         a DataGrid with no rows is otherwise a header and a blank rectangle, which reads as a
+         failure rather than as an empty result. Bind Visibility to the grid's Items.Count. -->
+    <!-- Placeholder inside a grid cell. Not hit-testable, so it never intercepts the click that
+         opens the drop-down behind it; padding matches the combo's so the text does not shift
+         when a value replaces it. -->
+    <!-- A cell holding a ComboBox has three things competing for its width: the standard 14px cell
+         padding on each side, the combo's own 10/8 padding, and a 26px chevron. On a 90px Size
+         column that left about 18px for the text, so "+11" rendered as "+1". These cells give the
+         padding back — the combo supplies its own.
+         No EventSetter here, unlike the grid's CellStyle: Cell_Down only acts on text columns, and
+         these cells have CellCombo_Down on the ComboBox itself. -->
+    <Style x:Key="ComboCell" TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
+      <Setter Property="Padding" Value="4,0"/>
+    </Style>
+
+    <!-- Vertical rule between toolbar groups. The design package's Divider is the horizontal one;
+         this is the same hairline stood on its end, so a toolbar reads as related clusters rather
+         than one undifferentiated row of controls. -->
+    <Style x:Key="ToolbarSeparator" TargetType="Border">
+      <Setter Property="Width" Value="1"/>
+      <Setter Property="Height" Value="22"/>
+      <Setter Property="Margin" Value="4,0,14,0"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="Background" Value="{DynamicResource BorderBrush}"/>
+    </Style>
+
+    <Style x:Key="CellPlaceholder" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+      <Setter Property="Margin" Value="11,0,0,0"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="FontSize" Value="12.5"/>
+      <Setter Property="Opacity" Value="0.75"/>
+      <Setter Property="IsHitTestVisible" Value="False"/>
+    </Style>
+
+    <!-- Actions that operate on the selected row. They were always enabled, so clicking Print bill
+         with nothing selected just printed "Select an invoice first" to the status bar — which
+         reads as a broken button, not as a precondition. Disabled is the honest state. -->
+    <Style x:Key="NeedsRowButton" TargetType="Button" BasedOn="{StaticResource AppButton}">
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding SelectedItem, ElementName=InvoiceGrid}" Value="{x:Null}">
+          <Setter Property="IsEnabled" Value="False"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+    <Style x:Key="NeedsRowPrimary" TargetType="Button" BasedOn="{StaticResource AppPrimaryButton}">
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding SelectedItem, ElementName=InvoiceGrid}" Value="{x:Null}">
+          <Setter Property="IsEnabled" Value="False"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+    <!-- Same idea for the Stock page, whose action depends on a row in a different grid. -->
+    <Style x:Key="NeedsStockRow" TargetType="Button" BasedOn="{StaticResource AppButton}">
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding SelectedItem, ElementName=StockGrid}" Value="{x:Null}">
+          <Setter Property="IsEnabled" Value="False"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+
+    <Style x:Key="NeedsRowDanger" TargetType="Button" BasedOn="{StaticResource DangerButton}">
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding SelectedItem, ElementName=InvoiceGrid}" Value="{x:Null}">
+          <Setter Property="IsEnabled" Value="False"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+
+    <Style x:Key="EmptyHint" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+      <Setter Property="HorizontalAlignment" Value="Center"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="TextAlignment" Value="Center"/>
+      <Setter Property="Margin" Value="0,56,0,0"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="IsHitTestVisible" Value="False"/>
+    </Style>
+
+    <!-- Shared so the closed combo and its dropdown can never disagree. See the Size column for
+         why DisplayMemberPath is not used with this design's combo template. -->
+    <DataTemplate x:Key="SizeCodeTemplate">
+      <TextBlock Text="{Binding Code}"/>
+    </DataTemplate>
+    <DataTemplate x:Key="GradeNameTemplate">
+      <TextBlock Text="{Binding DisplayName}"/>
+    </DataTemplate>
+    <DataTemplate x:Key="NameTemplate">
+      <TextBlock Text="{Binding Name}"/>
+    </DataTemplate>
+
+    <!-- The accessible name has to live on the CONTAINER. WPF's ComboBoxItemAutomationPeer names an
+         item from the item itself, and with an ItemTemplate there is nothing to read, so it falls
+         back to ToString() on the model — a database wire type. Every entry in the Grade list
+         announced itself to a screen reader as "DiamondDesktop.Data.Grade", twenty-three times.
+         Putting the name on the TextBlock inside the template does NOT fix it; the peer never
+         looks there. Measured, not assumed. -->
+    <Style x:Key="GradeItemContainer" TargetType="ComboBoxItem" BasedOn="{StaticResource FieldComboBoxItem}">
+      <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}"/>
+    </Style>
+    <Style x:Key="SizeItemContainer" TargetType="ComboBoxItem" BasedOn="{StaticResource FieldComboBoxItem}">
+      <Setter Property="AutomationProperties.Name" Value="{Binding Code}"/>
+    </Style>
+    <Style x:Key="PartyItemContainer" TargetType="ComboBoxItem" BasedOn="{StaticResource FieldComboBoxItem}">
+      <Setter Property="AutomationProperties.Name" Value="{Binding Name}"/>
+    </Style>
     <Style x:Key="Lbl" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
       <Setter Property="Margin" Value="0,0,6,0"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+
+    <!-- Label + field, kept together so a wrap can never separate them. -->
+    <Style x:Key="FieldPair" TargetType="StackPanel">
+      <Setter Property="Orientation" Value="Horizontal"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="Margin" Value="0,0,18,0"/>
+    </Style>
+
+    <!-- ItemHeight gives every wrapped row the same pitch: 32px control + 8px gutter. Without it
+         a row containing the taller DatePicker sets its own height and the rows drift apart. -->
+    <Style x:Key="FieldRowPanel" TargetType="WrapPanel">
+      <Setter Property="ItemHeight" Value="40"/>
     </Style>
     <Style x:Key="Total" TargetType="TextBlock" BasedOn="{StaticResource MonoText}">
       <Setter Property="FontWeight" Value="SemiBold"/>
@@ -202,33 +338,58 @@
         <DockPanel Margin="8">
           <Border DockPanel.Dock="Top" Background="{DynamicResource Surface2Brush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
                   CornerRadius="{StaticResource RadiusCard}" Padding="14" Margin="0,0,0,8">
-            <WrapPanel>
+            <!-- Each label travels WITH its field inside a pair. A flat WrapPanel wrapped between a
+                 label and the control it names, so on a narrow window "Broker %" sat at the end of
+                 one line and its box at the start of the next. -->
+            <WrapPanel Style="{StaticResource FieldRowPanel}">
               <!-- Every header control is named. A bare <ComboBox/> here has no AutomationId and no
                    accessible name, so a screen reader announces it as "combo box" with no clue what
                    it edits, and automation cannot tell the three of them apart at all. -->
-              <TextBlock Text="Date" Style="{StaticResource Lbl}"/>
-              <DatePicker x:Name="InvoiceDatePicker" SelectedDate="{Binding InvoiceDate}"
-                          AutomationProperties.Name="Invoice date"
-                          Style="{StaticResource AppDatePicker}" Width="150" Margin="0,0,16,0"/>
-              <TextBlock Text="Buyer" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="BuyerPicker" ItemsSource="{Binding Buyers}" SelectedItem="{Binding SelectedBuyer}"
-                        AutomationProperties.Name="Buyer" Width="180" Margin="0,0,16,0"/>
-              <TextBlock Text="Broker" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="BrokerPicker" ItemsSource="{Binding Brokers}" SelectedItem="{Binding SelectedBroker}"
-                        AutomationProperties.Name="Broker" Width="160" Margin="0,0,16,0"/>
-              <TextBlock Text="Broker %" Style="{StaticResource Lbl}"/>
-              <TextBox x:Name="BrokerPctBox" Text="{Binding BrokerPct, UpdateSourceTrigger=PropertyChanged}" Width="70"
-                       AutomationProperties.Name="Broker percent"
-                       Style="{StaticResource AppNumericTextBox}" Margin="0,0,16,0"/>
-              <TextBlock Text="Terms" Style="{StaticResource Lbl}"/>
-              <TextBox x:Name="TermsBox" Text="{Binding TermsDays, UpdateSourceTrigger=PropertyChanged}" Width="70"
-                       AutomationProperties.Name="Terms in days"
-                       Style="{StaticResource AppNumericTextBox}" Margin="0,0,16,0"/>
-              <TextBlock Text="Type" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="DocTypePicker" ItemsSource="{Binding DocTypes}" SelectedItem="{Binding DocType}"
-                        AutomationProperties.Name="Document type" Width="80" Margin="0,0,16,0"/>
-              <TextBlock Text="Due" Style="{StaticResource Lbl}"/>
-              <TextBlock Text="{Binding DueDate, StringFormat=dd-MM-yyyy}" VerticalAlignment="Center" FontWeight="SemiBold"/>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Date" Style="{StaticResource Lbl}"/>
+                <DatePicker x:Name="InvoiceDatePicker" SelectedDate="{Binding InvoiceDate}"
+                            AutomationProperties.Name="Invoice date"
+                            CalendarOpened="InvoiceDatePicker_CalendarOpened"
+                            CalendarClosed="InvoiceDatePicker_CalendarClosed"
+                            Style="{StaticResource AppDatePicker}" Width="150"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <!-- Same weight and colour as every other label. Requiredness is carried by the
+                     validation message and by HelpText for screen readers — not by making one
+                     label look different from the six beside it. -->
+                <TextBlock Text="Buyer" Style="{StaticResource Lbl}"/>
+                <ComboBox x:Name="BuyerPicker" ItemsSource="{Binding Buyers}" SelectedItem="{Binding SelectedBuyer}"
+                          AutomationProperties.Name="Buyer"
+                          AutomationProperties.HelpText="Required" Width="180"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Broker" Style="{StaticResource Lbl}"/>
+                <ComboBox x:Name="BrokerPicker" ItemsSource="{Binding Brokers}" SelectedItem="{Binding SelectedBroker}"
+                          AutomationProperties.Name="Broker" Width="160"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Broker %" Style="{StaticResource Lbl}"/>
+                <TextBox x:Name="BrokerPctBox" Text="{Binding BrokerPct, UpdateSourceTrigger=PropertyChanged}" Width="70"
+                         AutomationProperties.Name="Broker percent"
+                         Style="{StaticResource AppNumericTextBox}"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Terms" Style="{StaticResource Lbl}"/>
+                <TextBox x:Name="TermsBox" Text="{Binding TermsDays, UpdateSourceTrigger=PropertyChanged}" Width="70"
+                         AutomationProperties.Name="Terms in days"
+                         Style="{StaticResource AppNumericTextBox}"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Type" Style="{StaticResource Lbl}"/>
+                <ComboBox x:Name="DocTypePicker" ItemsSource="{Binding DocTypes}" SelectedItem="{Binding DocType}"
+                          AutomationProperties.Name="Document type" Width="80"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Due" Style="{StaticResource Lbl}"/>
+                <TextBlock Text="{Binding DueDate, StringFormat=dd-MM-yyyy}" MinWidth="90" Height="32"
+                           Padding="0,7,0,0" FontWeight="SemiBold"
+                           AutomationProperties.Name="Due date"/>
+              </StackPanel>
             </WrapPanel>
           </Border>
 
@@ -260,12 +421,20 @@
             </Grid>
           </Border>
 
-          <!-- CanUserAddRows is OFF: WPF's placeholder row carries a sentinel object, so the
-               per-row Size list (which depends on that row's grade) binds to nothing on it.
-               Enter appends a real line instead — which is what SALES-001 asks for anyway. -->
-          <DataGrid x:Name="Grid" ItemsSource="{Binding Lines}" IsReadOnly="False"
-                    CanUserAddRows="False" CanUserDeleteRows="True" SelectionUnit="Cell"
-                    PreviewKeyDown="Grid_KeyDown" RowHeight="36" ColumnHeaderHeight="40"
+          <!-- One layer stack: grid at the bottom, then the "type a line" hint, then the
+               no-catalogue panel on top. These were siblings of the DockPanel before, which meant
+               the panel inherited DockPanel's default Dock=Left and would have rendered as a strip
+               down the left edge rather than centred over the grid. -->
+          <Grid>
+            <!-- CanUserAddRows is OFF: WPF's placeholder row carries a sentinel object, so the
+                 per-row Size list (which depends on that row's grade) binds to nothing on it.
+                 Enter appends a real line instead — which is what SALES-001 asks for anyway.
+                 CanUserDeleteRows is OFF too: Delete is handled in code so a typed line cannot
+                 vanish without being asked about. -->
+            <DataGrid x:Name="Grid" ItemsSource="{Binding Lines}" IsReadOnly="False"
+                    Visibility="{Binding Source={x:Static local:Catalogue.Grades}, Path=Count, Converter={StaticResource Empty}, ConverterParameter=Invert}"
+                    CanUserAddRows="False" CanUserDeleteRows="False" SelectionUnit="Cell"
+                    PreviewKeyDown="Grid_KeyDown" RowHeight="42" ColumnHeaderHeight="40"
                     HeadersVisibility="Column" GridLinesVisibility="None">
             <!-- A cell takes the first click to become current and only edits on the second, so on
                  a fresh screen the first figure typed goes nowhere. On a keyboard-first entry
@@ -276,34 +445,57 @@
               </Style>
             </DataGrid.CellStyle>
             <DataGrid.RowStyle>
+              <!-- Colour on HasConflict, not on Error. Every freshly started line has an Error
+                   ("Weight must be greater than 0") from the moment a grade is picked, so keying
+                   off Error painted the row you were currently typing into red. The tooltip still
+                   carries every message, including the not-yet-typed ones. -->
               <Style TargetType="DataGridRow">
-                <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
+                <Setter Property="Background" Value="Transparent"/>
                 <Setter Property="ToolTip" Value="{Binding Error}"/>
                 <Style.Triggers>
-                  <DataTrigger Binding="{Binding Error}" Value="{x:Null}">
-                    <Setter Property="Background" Value="Transparent"/>
-                    <Setter Property="ToolTip" Value="{x:Null}"/>
+                  <DataTrigger Binding="{Binding HasConflict}" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
                   </DataTrigger>
                 </Style.Triggers>
               </Style>
             </DataGrid.RowStyle>
             <DataGrid.Columns>
-              <DataGridTemplateColumn Header="Size" Width="90">
+              <!-- CellComboBox, not a bare ComboBox: the default field style is 32px and these sat a
+                   visible 4px taller than every other control in a 36px row. Same defect the
+                   Disposition dropdown had (docs/12 §3c). -->
+              <DataGridTemplateColumn Header="Size" Width="105" CellStyle="{StaticResource ComboCell}">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
-                    <ComboBox ItemsSource="{Binding AllowedSizes}" SelectedItem="{Binding Size, UpdateSourceTrigger=PropertyChanged}"
-                              DisplayMemberPath="Code" BorderThickness="0" Background="Transparent"
-                              PreviewMouseLeftButtonDown="CellCombo_Down"/>
+                    <!-- ItemTemplate, not DisplayMemberPath. The design's combo template draws its
+                         closed state from SelectionBoxItemTemplate, which DisplayMemberPath does
+                         not populate — so the list showed "+6.5" while the box showed the type
+                         name, clipped to "Di". An explicit template feeds both. -->
+                    <!-- An unset combo draws nothing but a chevron, so a fresh line looked broken
+                         rather than unfilled. The hint sits behind the drop-down and disappears
+                         the moment a size is chosen. -->
+                    <Grid>
+                      <ComboBox ItemsSource="{Binding AllowedSizes}" SelectedItem="{Binding Size, UpdateSourceTrigger=PropertyChanged}"
+                                ItemTemplate="{StaticResource SizeCodeTemplate}" ItemContainerStyle="{StaticResource SizeItemContainer}" Style="{StaticResource CellComboBox}"
+                                AutomationProperties.Name="Size"
+                                PreviewMouseLeftButtonDown="CellCombo_Down"/>
+                      <TextBlock Text="Size" Style="{StaticResource CellPlaceholder}"
+                                 Visibility="{Binding Size, Converter={StaticResource Empty}}"/>
+                    </Grid>
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTemplateColumn Header="Grade" Width="120">
+              <DataGridTemplateColumn Header="Grade" Width="195" CellStyle="{StaticResource ComboCell}">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
-                    <ComboBox ItemsSource="{Binding Source={x:Static local:Catalogue.Grades}}"
-                              SelectedItem="{Binding Grade, UpdateSourceTrigger=PropertyChanged}"
-                              DisplayMemberPath="DisplayName" BorderThickness="0" Background="Transparent"
-                              PreviewMouseLeftButtonDown="CellCombo_Down"/>
+                    <Grid>
+                      <ComboBox ItemsSource="{Binding Source={x:Static local:Catalogue.Grades}}"
+                                SelectedItem="{Binding Grade, UpdateSourceTrigger=PropertyChanged}"
+                                ItemTemplate="{StaticResource GradeNameTemplate}" ItemContainerStyle="{StaticResource GradeItemContainer}" Style="{StaticResource CellComboBox}"
+                                AutomationProperties.Name="Grade"
+                                PreviewMouseLeftButtonDown="CellCombo_Down"/>
+                      <TextBlock Text="Grade" Style="{StaticResource CellPlaceholder}"
+                                 Visibility="{Binding Grade, Converter={StaticResource Empty}}"/>
+                    </Grid>
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
@@ -313,104 +505,275 @@
                                   Binding="{Binding SelectionCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
               <DataGridTextColumn Header="Rejection" Width="95" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
                                   Binding="{Binding RejectionCt, StringFormat=N2, Mode=OneWay}" Foreground="{DynamicResource AccentBrush}"/>
-              <DataGridTextColumn Header="Price/ct" Width="100" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Price/ct" Width="120" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding PricePerCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Ex Rate" Width="70" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Ex Rate" Width="80" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding ExRate, UpdateSourceTrigger=LostFocus}"/>
               <DataGridTextColumn Header="Less 1" Width="65" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding Less1Pct, UpdateSourceTrigger=LostFocus}"/>
               <DataGridTextColumn Header="Less 2" Width="65" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding Less2Pct, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Amount" Width="130" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
+              <DataGridTextColumn Header="Amount" Width="155" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
                                   Binding="{Binding Amount, StringFormat=N2, Mode=OneWay}" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/>
               <DataGridTextColumn Header="Remark" Width="*" Binding="{Binding Remark, UpdateSourceTrigger=LostFocus}"/>
             </DataGrid.Columns>
-          </DataGrid>
+            </DataGrid>
+
+            <!-- Guidance while the invoice is still empty. The grid always shows one row, so it is
+                 never blank — but a single untouched row over a large empty area says nothing about
+                 what to do next. Hides itself the moment a real line exists. -->
+            <TextBlock Style="{StaticResource EmptyHint}"
+                       Visibility="{Binding LineCount, Converter={StaticResource Empty}}"
+                       Text="Pick a grade and size, then type the weight.&#10;Enter adds another line · Ctrl+S saves a draft."/>
+
+            <!-- With no catalogue the Grade and Size dropdowns open onto nothing, which reads as
+                 "this app is broken" rather than "it could not reach the database" — and a line can
+                 never be completed, so the grid underneath is not worth showing. -->
+            <Border Visibility="{Binding Source={x:Static local:Catalogue.Grades}, Path=Count, Converter={StaticResource Empty}}"
+                    Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="1" CornerRadius="{StaticResource RadiusCard}" Padding="28"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+              <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="No grades loaded" HorizontalAlignment="Center"
+                           FontWeight="SemiBold" FontSize="15" Foreground="{DynamicResource TextBrush}"/>
+                <TextBlock Text="Grades and sieve sizes come from the database. Without them a sale line cannot be completed."
+                           HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="380"
+                           Margin="0,6,0,14" Style="{StaticResource MutedText}"/>
+                <Button Content="Retry" Click="ReloadCatalogue_Click" HorizontalAlignment="Center"
+                        Style="{StaticResource AppPrimaryButton}"/>
+              </StackPanel>
+            </Border>
+          </Grid>
         </DockPanel>
       </TabItem>
 
       <!-- ══ SALES-002/004 · PAY-001/003 · invoices & receipts ═══════════ -->
       <TabItem Header="Invoices">
         <DockPanel Margin="8">
-          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-            <Button Content="Refresh" Click="LoadInvoices_Click"/>
-            <TextBlock Text="Receipt:" Style="{StaticResource Lbl}" Margin="16,0,6,0"/>
-            <TextBox x:Name="ReceiptAmount" Width="110" Style="{StaticResource AppNumericTextBox}" Margin="0,0,6,0"/>
-            <ComboBox x:Name="ReceiptMethod" Width="100" SelectedIndex="0" Margin="0,0,6,0">
-              <ComboBoxItem>CASH</ComboBoxItem><ComboBoxItem>RTGS</ComboBoxItem><ComboBoxItem>CHEQUE</ComboBoxItem>
-            </ComboBox>
-            <Button Content="Record receipt" Click="Receipt_Click"/>
-            <Button Content="Cancel invoice" Click="CancelInvoice_Click"/>
-            <Button Content="Print bill" Click="PrintInvoice_Click"/>
-            <Button Content="Export CSV" Click="ExportInvoices_Click"/>
-          </StackPanel>
-          <DataGrid x:Name="InvoiceGrid">
-            <DataGrid.Columns>
-              <DataGridTextColumn Header="No" Binding="{Binding InvoiceNo}" Width="100"/>
-              <DataGridTextColumn Header="Date" Binding="{Binding InvoiceDate, StringFormat=dd-MM-yyyy}" Width="100"/>
-              <DataGridTextColumn Header="Buyer" Binding="{Binding BuyerName}" Width="200"/>
-              <DataGridTemplateColumn Header="Status" Width="120" CellTemplate="{StaticResource StatusChip}"/>
-              <DataGridTextColumn Header="Amount" Binding="{Binding AmountTotal, StringFormat=N2}" Width="130" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-              <DataGridTextColumn Header="Outstanding" Binding="{Binding Outstanding, StringFormat=N2}" Width="130" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-              <DataGridTextColumn Header="Due" Binding="{Binding DueDate, StringFormat=dd-MM-yyyy}" Width="*"/>
-            </DataGrid.Columns>
-          </DataGrid>
+          <!-- Same card + wrapping toolbar as Sales entry. It was a bare horizontal StackPanel:
+               four of its buttons carried no margin at all so they touched, and on a narrow window
+               the row simply ran off the edge instead of wrapping. -->
+          <Border DockPanel.Dock="Top" Background="{DynamicResource Surface2Brush}"
+                  BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                  CornerRadius="{StaticResource RadiusCard}" Padding="14" Margin="0,0,0,8">
+            <WrapPanel Style="{StaticResource FieldRowPanel}">
+              <StackPanel Style="{StaticResource FieldPair}">
+                <Button x:Name="InvoiceRefresh" Content="Refresh" Click="LoadInvoices_Click" TabIndex="1"/>
+                <Border Style="{StaticResource ToolbarSeparator}"/>
+              </StackPanel>
+
+              <!-- The receipt fields belong together — a wrap between the amount and the button
+                   that banks it would be nonsense. Read left to right it now states the task:
+                   what is owed, how much is being paid, by what method, then the action. -->
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Receipt" Style="{StaticResource Lbl}"/>
+
+                <!-- The balance comes BEFORE the box. It is the figure the amount is measured
+                     against, and reading it after the button is reading it too late. Display only —
+                     it reads the row already on screen and calls nothing. -->
+                <!-- The box gave no clue what it wanted. An empty numeric field beside a currency
+                     dropdown could be a rate, a percentage or a count. -->
+                <Grid Margin="0,0,8,0">
+                  <TextBox x:Name="ReceiptAmount" Width="120" TabIndex="2"
+                           AutomationProperties.Name="Receipt amount"
+                           AutomationProperties.HelpText="Amount received against the selected invoice"
+                           Style="{StaticResource AppNumericTextBox}"/>
+                  <TextBlock Text="0.00" IsHitTestVisible="False" Margin="0,0,10,0"
+                             HorizontalAlignment="Right" VerticalAlignment="Center"
+                             FontFamily="{StaticResource MonoFont}" FontSize="13" Opacity="0.55"
+                             Foreground="{DynamicResource TextMutedBrush}"
+                             Visibility="{Binding Text, ElementName=ReceiptAmount, Converter={StaticResource Empty}}"/>
+                </Grid>
+
+                <!-- Labelled. "CASH" alone is only obvious once you already know the list holds
+                     payment methods; a screen reader announced it with no context at all. -->
+                <TextBlock Text="by" Style="{StaticResource Lbl}"/>
+                <ComboBox x:Name="ReceiptMethod" Width="105" SelectedIndex="0" Margin="0,0,8,0" TabIndex="3"
+                          AutomationProperties.Name="Receipt method"
+                          AutomationProperties.HelpText="How the payment was received">
+                  <ComboBoxItem>CASH</ComboBoxItem><ComboBoxItem>RTGS</ComboBoxItem><ComboBoxItem>CHEQUE</ComboBoxItem>
+                </ComboBox>
+                <Button x:Name="RecordReceipt" Content="Record receipt" Click="Receipt_Click" TabIndex="4"
+                        AutomationProperties.HelpText="Records the amount against the selected invoice"
+                        Style="{StaticResource NeedsRowPrimary}"/>
+                <Border Style="{StaticResource ToolbarSeparator}"/>
+              </StackPanel>
+
+              <StackPanel Style="{StaticResource FieldPair}">
+                <Button x:Name="PrintBill" Content="Print bill" Click="PrintInvoice_Click" Margin="0,0,8,0"
+                        Style="{StaticResource NeedsRowButton}"/>
+                <Button x:Name="ExportInvoices" Content="Export CSV" Click="ExportInvoices_Click" Margin="0,0,8,0"/>
+                <!-- Cancelling reverses stock and cannot be undone. It should not look like Export. -->
+                <Button x:Name="CancelInvoiceButton" Content="Cancel invoice" Click="CancelInvoice_Click"
+                        Style="{StaticResource NeedsRowDanger}"/>
+              </StackPanel>
+            </WrapPanel>
+          </Border>
+
+          <Grid>
+            <!-- Named for the same reason the buttons are: without it a screen reader reaches this
+                 table and announces "table", with no clue which of the app's eleven it landed on. -->
+            <DataGrid x:Name="InvoiceGrid"
+                      AutomationProperties.Name="Invoices"
+                      AutomationProperties.HelpText="Select an invoice to record a receipt, print or cancel it">
+              <DataGrid.Columns>
+                <DataGridTextColumn Header="No" Binding="{Binding InvoiceNo}" Width="150"/>
+                <DataGridTextColumn Header="Date" Binding="{Binding InvoiceDate, StringFormat=dd-MM-yyyy}" Width="105"/>
+                <!-- Buyer takes the slack, not Due. A date is a fixed 10 characters, so giving it
+                     the star width left a wide empty gutter while long buyer names were clipped. -->
+                <DataGridTextColumn Header="Buyer" Binding="{Binding BuyerName}" Width="*" MinWidth="180"/>
+                <DataGridTemplateColumn Header="Status" Width="120" CellTemplate="{StaticResource StatusChip}"/>
+                <DataGridTextColumn Header="Amount" Binding="{Binding AmountTotal, StringFormat=N2}" Width="155" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                <DataGridTextColumn Header="Outstanding" Binding="{Binding Outstanding, StringFormat=N2}" Width="155" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                <DataGridTextColumn Header="Due" Binding="{Binding DueDate, StringFormat=dd-MM-yyyy}" Width="105"/>
+              </DataGrid.Columns>
+            </DataGrid>
+
+            <TextBlock Style="{StaticResource EmptyHint}"
+                       Visibility="{Binding ItemsSource, ElementName=InvoiceGrid, Converter={StaticResource Empty}}"
+                       Text="No invoices yet.&#10;Post one from Sales entry, or press Refresh."/>
+          </Grid>
         </DockPanel>
       </TabItem>
 
       <!-- ══ PAY-002 · receivables ageing ════════════════════════════════ -->
       <TabItem Header="Receivables">
         <DockPanel Margin="8">
-          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-            <Button Content="Refresh" Click="LoadReceivables_Click"/>
-            <Button Content="Export CSV" Click="ExportReceivables_Click"/>
-            <TextBlock x:Name="ReceivablesSummary" VerticalAlignment="Center" Margin="16,0,0,0" FontWeight="SemiBold"/>
-          </StackPanel>
-          <DataGrid x:Name="ReceivablesGrid">
-            <DataGrid.Columns>
-              <DataGridTextColumn Header="No" Binding="{Binding InvoiceNo}" Width="100"/>
-              <DataGridTextColumn Header="Buyer" Binding="{Binding BuyerName}" Width="200"/>
-              <DataGridTextColumn Header="Due" Binding="{Binding DueDate, StringFormat=dd-MM-yyyy}" Width="100"/>
-              <DataGridTextColumn Header="Outstanding" Binding="{Binding Outstanding, StringFormat=N2}" Width="130" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-              <DataGridTextColumn Header="Days overdue" Binding="{Binding DaysOverdue}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-              <DataGridTemplateColumn Header="Bucket" Width="*" CellTemplate="{StaticResource BucketChip}"/>
-            </DataGrid.Columns>
-          </DataGrid>
+          <!-- Card + wrapping toolbar, matching Sales entry and Invoices. Two buttons with no
+               margin sat flush against each other, and the summary could wrap away from them. -->
+          <Border DockPanel.Dock="Top" Background="{DynamicResource Surface2Brush}"
+                  BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                  CornerRadius="{StaticResource RadiusCard}" Padding="14" Margin="0,0,0,8">
+            <WrapPanel Style="{StaticResource FieldRowPanel}">
+              <StackPanel Style="{StaticResource FieldPair}">
+                <Button x:Name="ReceivablesRefresh" Content="Refresh" Click="LoadReceivables_Click" Margin="0,0,8,0"/>
+                <Button x:Name="ReceivablesExport" Content="Export CSV" Click="ExportReceivables_Click"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <!-- No AutomationProperties.Name. On a TextBlock the Name IS what a screen reader
+                     announces, so a fixed label here replaced the totals and read out none of the
+                     figures. The text carries its own meaning: "Total … · 0-30 …". -->
+                <TextBlock x:Name="ReceivablesSummary" VerticalAlignment="Center" FontWeight="SemiBold"/>
+              </StackPanel>
+            </WrapPanel>
+          </Border>
+
+          <Grid>
+            <DataGrid x:Name="ReceivablesGrid"
+                      AutomationProperties.Name="Receivables"
+                      AutomationProperties.HelpText="Outstanding invoices by age">
+              <DataGrid.Columns>
+                <DataGridTextColumn Header="No" Binding="{Binding InvoiceNo}" Width="150"/>
+                <!-- Buyer takes the slack; the ageing chip is a fixed-width badge and looked
+                     stranded in a star column. -->
+                <DataGridTextColumn Header="Buyer" Binding="{Binding BuyerName}" Width="*" MinWidth="180"/>
+                <DataGridTextColumn Header="Due" Binding="{Binding DueDate, StringFormat=dd-MM-yyyy}" Width="105"/>
+                <DataGridTextColumn Header="Outstanding" Binding="{Binding Outstanding, StringFormat=N2}" Width="155" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                <DataGridTextColumn Header="Days overdue" Binding="{Binding DaysOverdue}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                <DataGridTemplateColumn Header="Bucket" Width="140" CellTemplate="{StaticResource BucketChip}"/>
+              </DataGrid.Columns>
+            </DataGrid>
+
+            <TextBlock Style="{StaticResource EmptyHint}"
+                       Visibility="{Binding ItemsSource, ElementName=ReceivablesGrid, Converter={StaticResource Empty}}"
+                       Text="Nothing outstanding.&#10;Either every invoice is settled, or none has been posted yet."/>
+          </Grid>
         </DockPanel>
       </TabItem>
 
       <!-- ══ INV-002/003 · stock position ════════════════════════════════ -->
       <TabItem Header="Stock">
         <DockPanel Margin="8">
-          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-            <Button Content="Refresh" Click="LoadStock_Click"/>
-            <Button Content="Show movements for selected row" Click="Movements_Click"/>
-            <Button Content="Run invariants" Click="Invariants_Click"/>
-            <Button Content="Export CSV" Click="ExportStock_Click"/>
-            <TextBlock x:Name="StockSummary" VerticalAlignment="Center" Margin="16,0,0,0" FontWeight="SemiBold"/>
-          </StackPanel>
+          <!-- Card + wrapping toolbar, as on every other page. It was a bare StackPanel whose four
+               buttons carried no margin, so they touched and ran off a narrow window. -->
+          <Border DockPanel.Dock="Top" Background="{DynamicResource Surface2Brush}"
+                  BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                  CornerRadius="{StaticResource RadiusCard}" Padding="14" Margin="0,0,0,8">
+            <WrapPanel Style="{StaticResource FieldRowPanel}">
+              <StackPanel Style="{StaticResource FieldPair}">
+                <Button x:Name="StockRefresh" Content="Refresh" Click="LoadStock_Click" Margin="0,0,8,0"/>
+                <Button x:Name="StockExport" Content="Export CSV" Click="ExportStock_Click"/>
+                <Border Style="{StaticResource ToolbarSeparator}"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <!-- "for selected row" was in the label because nothing else said so. The button
+                     now disables until a row is picked, which states the precondition without
+                     needing four extra words. -->
+                <Button x:Name="ShowMovements" Content="Show movements" Click="Movements_Click" Margin="0,0,8,0"
+                        AutomationProperties.HelpText="Lists every movement for the selected grade and size"
+                        Style="{StaticResource NeedsStockRow}"/>
+                <Button x:Name="RunInvariants" Content="Run invariants" Click="Invariants_Click"
+                        AutomationProperties.HelpText="Checks that stock moved out matches stock invoiced"/>
+                <Border Style="{StaticResource ToolbarSeparator}"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <!-- Most grade x size combinations have never been traded: 64 of 92 here. Showing
+                     them all buries the 28 that matter and makes "Show movements" look broken,
+                     because most rows a user lands on genuinely have no ledger. -->
+                <CheckBox x:Name="HideEmptyBuckets" Content="Hide empty buckets" IsChecked="True"
+                          VerticalAlignment="Center" Margin="0,0,8,0"
+                          Checked="HideEmpty_Changed" Unchecked="HideEmpty_Changed"
+                          AutomationProperties.HelpText="Hides grade and size combinations with no stock and no movements"/>
+                <Border Style="{StaticResource ToolbarSeparator}"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock x:Name="StockSummary" VerticalAlignment="Center" FontWeight="SemiBold"/>
+              </StackPanel>
+            </WrapPanel>
+          </Border>
+
           <Grid>
             <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="*" MinWidth="360"/>
+              <ColumnDefinition Width="*" MinWidth="360"/>
             </Grid.ColumnDefinitions>
-            <DataGrid x:Name="StockGrid" Grid.Column="0" Margin="0,0,4,0">
-              <DataGrid.Columns>
-                <DataGridTextColumn Header="Grade" Binding="{Binding GradeCode}" Width="110"/>
-                <DataGridTextColumn Header="Size" Binding="{Binding SizeCode}" Width="80"/>
-                <DataGridTextColumn Header="Balance ct" Binding="{Binding BalanceCt, StringFormat=N4}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                <DataGridTextColumn Header="Avg cost" Binding="{Binding AvgCost, StringFormat=N2}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                <DataGridTextColumn Header="Value" Binding="{Binding StockValue, StringFormat=N2}" Width="*" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-              </DataGrid.Columns>
-            </DataGrid>
-            <DataGrid x:Name="MovementGrid" Grid.Column="1" Margin="4,0,0,0">
-              <DataGrid.Columns>
-                <DataGridTextColumn Header="Date" Binding="{Binding MovementDate, StringFormat=dd-MM-yyyy}" Width="100"/>
-                <DataGridTextColumn Header="Type" Binding="{Binding MovementType}" Width="110"/>
-                <DataGridTextColumn Header="Weight ct" Binding="{Binding WeightCt, StringFormat=N4}" Width="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                <DataGridTextColumn Header="Price/ct" Binding="{Binding PricePerCt, StringFormat=N2}" Width="100" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                <DataGridTextColumn Header="Source" Binding="{Binding RefType}" Width="*"/>
-              </DataGrid.Columns>
-            </DataGrid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Two unlabelled grids side by side gave no clue which was which, or that the right
+                 one depends on a selection in the left. -->
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Stock position" Style="{StaticResource Lbl}"
+                       Margin="2,0,0,6" FontWeight="SemiBold"/>
+            <TextBlock Grid.Row="0" Grid.Column="1" Text="Movements" Style="{StaticResource Lbl}"
+                       Margin="6,0,0,6" FontWeight="SemiBold"/>
+
+            <Grid Grid.Row="1" Grid.Column="0" Margin="0,0,4,0">
+              <DataGrid x:Name="StockGrid"
+                        AutomationProperties.Name="Stock position"
+                        AutomationProperties.HelpText="Balance and value by grade and size">
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="Grade" Binding="{Binding GradeCode}" Width="110"/>
+                  <DataGridTextColumn Header="Size" Binding="{Binding SizeCode}" Width="80"/>
+                  <DataGridTextColumn Header="Balance ct" Binding="{Binding BalanceCt, StringFormat=N4}" Width="130" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                  <DataGridTextColumn Header="Avg cost" Binding="{Binding AvgCost, StringFormat=N2}" Width="155" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                  <DataGridTextColumn Header="Value" Binding="{Binding StockValue, StringFormat=N2}" Width="*" MinWidth="155" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                </DataGrid.Columns>
+              </DataGrid>
+              <TextBlock Style="{StaticResource EmptyHint}"
+                         Visibility="{Binding ItemsSource, ElementName=StockGrid, Converter={StaticResource Empty}}"
+                         Text="No stock positions.&#10;Press Refresh, or record an intake first."/>
+            </Grid>
+
+            <Grid Grid.Row="1" Grid.Column="1" Margin="4,0,0,0">
+              <DataGrid x:Name="MovementGrid"
+                        AutomationProperties.Name="Movements"
+                        AutomationProperties.HelpText="Ledger entries for the selected grade and size">
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="Date" Binding="{Binding MovementDate, StringFormat=dd-MM-yyyy}" Width="105"/>
+                  <DataGridTextColumn Header="Type" Binding="{Binding MovementType}" Width="120"/>
+                  <DataGridTextColumn Header="Weight ct" Binding="{Binding WeightCt, StringFormat=N4}" Width="130" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                  <DataGridTextColumn Header="Price/ct" Binding="{Binding PricePerCt, StringFormat=N2}" Width="120" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                  <DataGridTextColumn Header="Source" Binding="{Binding RefType}" Width="*" MinWidth="90"/>
+                </DataGrid.Columns>
+              </DataGrid>
+              <!-- Text is rewritten in Movements_Click: "nothing loaded yet" and "loaded, and this
+                   bucket has no movements" are both empty, and saying the same thing for each
+                   makes a finished load look like a button that did nothing. -->
+              <TextBlock x:Name="MovementHint" Style="{StaticResource EmptyHint}"
+                         Visibility="{Binding ItemsSource, ElementName=MovementGrid, Converter={StaticResource Empty}}"
+                         Text="Pick a grade and size on the left,&#10;then press Show movements."/>
+            </Grid>
           </Grid>
         </DockPanel>
       </TabItem>
@@ -494,7 +857,11 @@
                        Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,0,4"/>
             <DataGrid x:Name="DispositionGrid" Height="120" IsReadOnly="False" CanUserAddRows="True" Margin="0,0,0,14">
               <DataGrid.Columns>
-                <DataGridTextColumn Header="Weight ct" Binding="{Binding WeightCt}" Width="110"/>
+                <!-- Right-aligned like every other weight in the app. This was the one carat column
+                     that read left, which broke the eye's column down the page. -->
+                <DataGridTextColumn Header="Weight ct" Binding="{Binding WeightCt, StringFormat=N4}" Width="110"
+                                    ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
+                                    EditingElementStyle="{StaticResource NumEdit}"/>
                 <!-- Without these it falls back to WPF's own combo chrome and renders 20px tall
                      against the 32px every other input uses. -->
                 <DataGridComboBoxColumn Header="Outcome" SelectedValueBinding="{Binding Outcome}" Width="130"
@@ -537,79 +904,269 @@
 
       <!-- ══ MDM-001/002/004 · master data ═══════════════════════════════ -->
       <TabItem Header="Master data">
-        <Grid Margin="8">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <!-- The left column needs its own heading or its grid starts 22px above the right one,
-               which reads as a misalignment rather than as two columns. -->
-          <DockPanel Grid.Column="0" Margin="0,0,8,0">
-          <TextBlock DockPanel.Dock="Top" Text="Grades (MDM-001)" FontWeight="SemiBold" Margin="0,0,0,4"/>
-          <DataGrid x:Name="GradeGrid">
-            <DataGrid.Columns>
-              <DataGridTextColumn Header="Code" Binding="{Binding Code}" Width="110"/>
-              <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="110"/>
-              <DataGridTextColumn Header="Order" Binding="{Binding SortOrder}" Width="70"/>
-              <DataGridCheckBoxColumn Header="Active" Binding="{Binding Active}" Width="*"/>
-            </DataGrid.Columns>
-          </DataGrid>
-          </DockPanel>
-          <!-- Proportional rows, not fixed heights: three 180/150px grids plus their forms add up
-               to more than a short window has, and "Set price" was the piece that fell off the
-               bottom. Sharing the space means it fits at any height. -->
-          <Grid Grid.Column="1" Width="380">
-            <Grid.RowDefinitions>
-              <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
-              <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
-              <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
-            <TextBlock Grid.Row="0" Text="Buyers (MDM-002)" FontWeight="SemiBold" Margin="0,0,0,4"/>
-            <DataGrid Grid.Row="1" x:Name="BuyerGrid" Margin="0,0,0,6">
-              <DataGrid.Columns>
-                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="*"/>
-                <DataGridTextColumn Header="Terms" Binding="{Binding DefaultTermsDays}" Width="60"/>
-              </DataGrid.Columns>
-            </DataGrid>
-            <WrapPanel Grid.Row="2" Margin="0,0,0,14">
-              <TextBox x:Name="NewBuyerName" Width="150" Margin="0,0,6,0"/>
-              <TextBox x:Name="NewBuyerTerms" Width="50" Text="0" Style="{StaticResource AppNumericTextBox}" Margin="0,0,6,0"/>
-              <Button Content="Add buyer" Click="AddBuyer_Click"/>
-            </WrapPanel>
+        <Grid Margin="22,18,22,18">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
 
-            <TextBlock Grid.Row="3" Text="Brokers" FontWeight="SemiBold" Margin="0,0,0,4"/>
-            <DataGrid Grid.Row="4" x:Name="BrokerGrid" Margin="0,0,0,6">
-              <DataGrid.Columns>
-                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="*"/>
-                <DataGridTextColumn Header="Default %" Binding="{Binding DefaultBrokerPct}" Width="75"/>
-              </DataGrid.Columns>
-            </DataGrid>
-            <WrapPanel Grid.Row="5" Margin="0,0,0,14">
-              <TextBox x:Name="NewBrokerName" Width="150" Margin="0,0,6,0"/>
-              <TextBox x:Name="NewBrokerPct" Width="50" Text="1" Style="{StaticResource AppNumericTextBox}" Margin="0,0,6,0"/>
-              <Button Content="Add broker" Click="AddBroker_Click"/>
-            </WrapPanel>
+          <!-- ── Header ─────────────────────────────────────────────────────
+               The window chrome already carries the connection pill and profile
+               chip, so this adds the page identity only rather than repeating
+               them. -->
+          <StackPanel Grid.Row="0" Margin="2,0,2,16">
+            <TextBlock Text="Master Data" Style="{StaticResource PageTitle}"/>
+            <TextBlock Style="{StaticResource CardSubtitle}"
+                       Text="Manage diamond grades, buyers, brokers and pricing configuration"/>
+          </StackPanel>
 
-            <!-- MDM-003 · grade × size price list, effective-dated -->
-            <TextBlock Grid.Row="6" Text="Price list (MDM-003)" FontWeight="SemiBold" Margin="0,0,0,4"/>
-            <DataGrid Grid.Row="7" x:Name="PriceGrid" Margin="0,0,0,6">
-              <DataGrid.Columns>
-                <DataGridTextColumn Header="Grade" Binding="{Binding GradeCode}" Width="80"/>
-                <DataGridTextColumn Header="Size" Binding="{Binding SizeCode}" Width="60"/>
-                <DataGridTextColumn Header="Context" Binding="{Binding Context}" Width="80"/>
-                <DataGridTextColumn Header="Price/ct" Binding="{Binding PricePerCt, StringFormat=N2}" Width="*" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                <DataGridTextColumn Header="From" Binding="{Binding EffectiveFrom, StringFormat=dd-MM-yy}" Width="70"/>
-              </DataGrid.Columns>
-            </DataGrid>
-            <WrapPanel Grid.Row="8">
-              <ComboBox x:Name="PriceGradePicker" Width="95" Margin="0,0,4,0" SelectionChanged="PriceGrade_Changed"/>
-              <ComboBox x:Name="PriceSizePicker" Width="70" Margin="0,0,4,0"/>
-              <ComboBox x:Name="PriceContext" Width="90" SelectedIndex="0" Margin="0,0,4,0">
-                <ComboBoxItem>SALE</ComboBoxItem><ComboBoxItem>STOCK</ComboBoxItem><ComboBoxItem>REJECTION</ComboBoxItem>
-              </ComboBox>
-              <TextBox x:Name="PriceValue" Width="80" Style="{StaticResource AppNumericTextBox}" Margin="0,0,4,0"/>
-              <Button Content="Set price" Click="AddPrice_Click"/>
-            </WrapPanel>
+          <!-- ── Main · Grades 68% / sidebar 32% ────────────────────────────── -->
+          <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="68*" MinWidth="520"/>
+              <ColumnDefinition Width="18"/>
+              <ColumnDefinition Width="32*" MinWidth="360"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource CardContainer}">
+              <DockPanel>
+                <Grid DockPanel.Dock="Top" Margin="0,0,0,14">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+                  </Grid.ColumnDefinitions>
+                  <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <TextBlock Text="Grades" Style="{StaticResource CardTitle}"/>
+                    <Border Style="{StaticResource CountBadge}">
+                      <TextBlock x:Name="GradeCount" Text="0" Style="{StaticResource CountBadgeText}"/>
+                    </Border>
+                  </StackPanel>
+                  <!-- Overlaid rather than templated: a Button inside the TextBox
+                       ControlTemplate cannot carry a Click handler. -->
+                  <Grid Grid.Column="2" Width="230" Margin="0,0,10,0">
+                    <TextBox x:Name="GradeSearch" Style="{StaticResource SearchBar}"
+                             TextChanged="GradeFilter_Changed"
+                             AutomationProperties.Name="Search grades"/>
+                    <Button x:Name="GradeSearchClear" Content="&#xE711;" Click="ClearGradeSearch_Click"
+                            FontFamily="Segoe MDL2 Assets" FontSize="10" Width="20" Height="20"
+                            HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,7,0"
+                            Visibility="Collapsed" Cursor="Hand" BorderThickness="0"
+                            Background="Transparent" Foreground="{DynamicResource TextMutedBrush}"
+                            ToolTip="Clear search (Esc)" AutomationProperties.Name="Clear search"/>
+                  </Grid>
+                  <ComboBox Grid.Column="3" x:Name="GradeStatusFilter" SelectedIndex="0"
+                            Style="{StaticResource FilterDropdown}"
+                            SelectionChanged="GradeStatus_Changed" PreviewMouseWheel="NoWheelChange"
+                            AutomationProperties.Name="Filter grades by status">
+                    <ComboBoxItem>All statuses</ComboBoxItem>
+                    <ComboBoxItem>Active</ComboBoxItem>
+                    <ComboBoxItem>Inactive</ComboBoxItem>
+                  </ComboBox>
+                </Grid>
+
+                <TextBlock DockPanel.Dock="Bottom" Style="{StaticResource CardSubtitle}" Margin="2,10,0,0"
+                           Text="Aliases are the spellings a workbook may use for a grade, separated by ; — an import resolves through them. Double-click a cell to edit. Code, name and order are read-only: they are referenced by imported invoices."/>
+
+
+                <Grid>
+                  <DataGrid x:Name="GradeGrid" Style="{StaticResource DataTable}"
+                            ColumnHeaderStyle="{StaticResource TableHeader}"
+                            IsReadOnly="False" CellEditEnding="GradeAlias_Committed"
+                            AutomationProperties.Name="Grades">
+                    <DataGrid.Columns>
+                      <DataGridTextColumn Header="CODE" Binding="{Binding Code}" Width="110" IsReadOnly="True"/>
+                      <DataGridTextColumn Header="GRADE NAME" Binding="{Binding DisplayName}" Width="150" IsReadOnly="True"/>
+                      <DataGridTextColumn Header="ALIASES" Binding="{Binding Aliases}" Width="*"/>
+                      <DataGridTextColumn Header="ORDER" Binding="{Binding SortOrder}" Width="70" IsReadOnly="True"
+                                          ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                      <DataGridTemplateColumn Header="STATUS" Width="100" IsReadOnly="True"
+                                              CellTemplate="{StaticResource StatusBadgeTemplate}"/>
+                    </DataGrid.Columns>
+                  </DataGrid>
+                  <StackPanel VerticalAlignment="Center" IsHitTestVisible="False"
+                              Visibility="{Binding ItemsSource, ElementName=GradeGrid, Converter={StaticResource Empty}}">
+                    <TextBlock Style="{StaticResource EmptyStateTitle}" Text="No grades match"/>
+                    <TextBlock Style="{StaticResource EmptyStateBody}"
+                               Text="Clear the search box or change the status filter to see the full catalogue."/>
+                  </StackPanel>
+                </Grid>
+              </DockPanel>
+            </Border>
+
+            <!-- ── Sidebar · one card, two tabs ────────────────────────────────
+                 Two stacked cards each got half the height and both started
+                 scrolling after two rows. Tabs give the visible list all of it. -->
+            <Border Grid.Column="2" Style="{StaticResource CardContainerSoft}">
+              <TabControl Style="{StaticResource SectionTabs}" Padding="0,4,0,0">
+              <TabItem Header="Buyers" Style="{StaticResource SectionTabItem}">
+                <DockPanel Margin="0,6,0,0">
+                  <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
+                    <Border Style="{StaticResource CountBadge}" HorizontalAlignment="Left" Margin="0">
+                      <TextBlock x:Name="BuyerCount" Text="0" Style="{StaticResource CountBadgeText}"/>
+                    </Border>
+                    <Button Content="Add buyer" Click="AddBuyer_Click" HorizontalAlignment="Right"
+                            Style="{StaticResource SecondaryAction}" MinWidth="104"
+                            VerticalAlignment="Center"/>
+                  </Grid>
+                  <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                AutomationProperties.Name="Buyers">
+                    <ItemsControl x:Name="BuyerGrid">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border Style="{StaticResource PartyRow}">
+                            <Grid>
+                              <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                              </Grid.ColumnDefinitions>
+                              <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Name}" Style="{StaticResource PartyName}"/>
+                                <TextBlock Style="{StaticResource PartyMeta}"
+                                           Text="{Binding DefaultTermsDays, StringFormat={}Payment terms · {0} days}"/>
+                              </StackPanel>
+                              <ContentControl Grid.Column="1" Content="{Binding}" VerticalAlignment="Center"
+                                              ContentTemplate="{StaticResource StatusBadgeTemplate}"/>
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </ScrollViewer>
+                </DockPanel>
+              </TabItem>
+              <TabItem Header="Brokers" Style="{StaticResource SectionTabItem}">
+                <DockPanel Margin="0,6,0,0">
+                  <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
+                    <Border Style="{StaticResource CountBadge}" HorizontalAlignment="Left" Margin="0">
+                      <TextBlock x:Name="BrokerCount" Text="0" Style="{StaticResource CountBadgeText}"/>
+                    </Border>
+                    <Button Content="Add broker" Click="AddBroker_Click" HorizontalAlignment="Right"
+                            Style="{StaticResource SecondaryAction}" MinWidth="104"
+                            VerticalAlignment="Center"/>
+                  </Grid>
+                  <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                AutomationProperties.Name="Brokers">
+                    <ItemsControl x:Name="BrokerGrid">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border Style="{StaticResource PartyRow}">
+                            <Grid>
+                              <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                              </Grid.ColumnDefinitions>
+                              <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Name}" Style="{StaticResource PartyName}"/>
+                                <TextBlock Style="{StaticResource PartyMeta}"
+                                           Text="{Binding DefaultBrokerPct, StringFormat={}Commission · {0:N2}%}"/>
+                              </StackPanel>
+                              <ContentControl Grid.Column="1" Content="{Binding}" VerticalAlignment="Center"
+                                              ContentTemplate="{StaticResource StatusBadgeTemplate}"/>
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </ScrollViewer>
+                </DockPanel>
+              </TabItem>
+              </TabControl>
+            </Border>
           </Grid>
+
+          <!-- ── Bottom tabs ────────────────────────────────────────────────── -->
+          <Border Grid.Row="2" Style="{StaticResource CardContainer}" Margin="0,18,0,0" Height="320">
+            <TabControl Style="{StaticResource SectionTabs}">
+              <TabItem Header="Sieve Sizes" Style="{StaticResource SectionTabItem}">
+                <Grid Margin="0,4,0,0">
+                  <!-- Left-aligned and bounded: a star-width last column stretched four narrow
+                       columns across the full card and left a field of empty table. -->
+                  <DataGrid x:Name="SizeGrid" Style="{StaticResource DataTable}"
+                            ColumnHeaderStyle="{StaticResource TableHeader}" RowHeight="34"
+                            HorizontalAlignment="Left" Width="560"
+                            AutomationProperties.Name="Sieve sizes">
+                    <DataGrid.Columns>
+                      <DataGridTextColumn Header="CODE" Binding="{Binding Code}" Width="130"/>
+                      <DataGridTextColumn Header="ORDER" Binding="{Binding SortOrder}" Width="100"
+                                          ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                      <DataGridTextColumn Header="LOWER MM" Binding="{Binding LowerMm, StringFormat=N2}" Width="160"
+                                          ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                      <DataGridTextColumn Header="UPPER MM" Binding="{Binding UpperMm, StringFormat=N2}" Width="160"
+                                          ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                    </DataGrid.Columns>
+                  </DataGrid>
+                  <StackPanel VerticalAlignment="Center" IsHitTestVisible="False"
+                              Visibility="{Binding ItemsSource, ElementName=SizeGrid, Converter={StaticResource Empty}}">
+                    <TextBlock Style="{StaticResource EmptyStateTitle}" Text="No sieve sizes"/>
+                    <TextBlock Style="{StaticResource EmptyStateBody}" Text="Press Refresh to load the catalogue."/>
+                  </StackPanel>
+                </Grid>
+              </TabItem>
+
+              <TabItem Header="Price Configuration" Style="{StaticResource SectionTabItem}">
+                <Grid Margin="0,4,0,0">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="330"/><ColumnDefinition Width="*"/>
+                  </Grid.ColumnDefinitions>
+
+                  <!-- Left · what the price applies to. Right · the price itself. -->
+                  <!-- Two columns: stacked in one, PRICE PER CARAT and Save fell off the
+                       bottom of the card and could not be reached at all. -->
+                  <Grid Grid.Column="0" Margin="0,0,20,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                      <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,12">
+                      <TextBlock Text="GRADE" Style="{StaticResource FormLabel}"/>
+                      <ComboBox x:Name="PriceGradePicker" Height="34" SelectionChanged="PriceGrade_Changed"
+                                PreviewMouseWheel="NoWheelChange"/>
+                    </StackPanel>
+                    <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,12">
+                      <TextBlock Text="SIZE" Style="{StaticResource FormLabel}"/>
+                      <ComboBox x:Name="PriceSizePicker" Height="34" PreviewMouseWheel="NoWheelChange"/>
+                    </StackPanel>
+                    <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,12">
+                      <TextBlock Text="CONTEXT" Style="{StaticResource FormLabel}"/>
+                      <ComboBox x:Name="PriceContext" Height="34" SelectedIndex="0"
+                                PreviewMouseWheel="NoWheelChange">
+                        <ComboBoxItem>SALE</ComboBoxItem><ComboBoxItem>STOCK</ComboBoxItem><ComboBoxItem>REJECTION</ComboBoxItem>
+                      </ComboBox>
+                    </StackPanel>
+                    <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,12">
+                      <TextBlock Text="PRICE PER CARAT" Style="{StaticResource FormLabel}"/>
+                      <TextBox x:Name="PriceValue" MaxLength="12" Style="{StaticResource FormNumeric}"/>
+                    </StackPanel>
+                    <Button Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Content="Save price"
+                            Click="AddPrice_Click" HorizontalAlignment="Left"
+                            Style="{StaticResource PrimaryAction}"/>
+                  </Grid>
+
+                  <Grid Grid.Column="1">
+                    <DataGrid x:Name="PriceGrid" Style="{StaticResource DataTable}"
+                              ColumnHeaderStyle="{StaticResource TableHeader}" RowHeight="34"
+                              AutomationProperties.Name="Price list">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="GRADE" Binding="{Binding GradeCode}" Width="100"/>
+                        <DataGridTextColumn Header="SIZE" Binding="{Binding SizeCode}" Width="80"/>
+                        <DataGridTextColumn Header="CONTEXT" Binding="{Binding Context}" Width="100"/>
+                        <DataGridTextColumn Header="PRICE/CT" Binding="{Binding PricePerCt, StringFormat=N2}" Width="*"
+                                            ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                        <DataGridTextColumn Header="FROM" Binding="{Binding EffectiveFrom, StringFormat=dd-MM-yy}" Width="90"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                    <StackPanel VerticalAlignment="Center" IsHitTestVisible="False"
+                                Visibility="{Binding ItemsSource, ElementName=PriceGrid, Converter={StaticResource Empty}}">
+                      <TextBlock Style="{StaticResource EmptyStateTitle}" Text="No prices configured"/>
+                      <TextBlock Style="{StaticResource EmptyStateBody}"
+                                 Text="Choose a grade, size and context on the left, enter a price per carat, then press Save price."/>
+                    </StackPanel>
+                  </Grid>
+                </Grid>
+              </TabItem>
+            </TabControl>
+          </Border>
         </Grid>
       </TabItem>
 
@@ -634,7 +1191,8 @@
               <DatePicker x:Name="FromDate" Style="{StaticResource AppDatePicker}" Width="145" Margin="0,0,4,0" IsEnabled="False"/>
               <DatePicker x:Name="ToDate" Style="{StaticResource AppDatePicker}" Width="145" Margin="0,0,14,0" IsEnabled="False"/>
               <TextBlock Text="Buyer" Style="{StaticResource Lbl}"/>
-              <ComboBox x:Name="FilterBuyer" Width="150" Margin="0,0,14,0" DisplayMemberPath="Name"/>
+              <ComboBox x:Name="FilterBuyer" Width="150" Margin="0,0,14,0" ItemTemplate="{StaticResource NameTemplate}" ItemContainerStyle="{StaticResource PartyItemContainer}"
+                        AutomationProperties.Name="Filter by buyer"/>
               <TextBlock Text="Grade" Style="{StaticResource Lbl}"/>
               <ComboBox x:Name="FilterGrade" Width="120" Margin="0,0,14,0"/>
               <Button Content="Apply" Click="LoadDashboard_Click"/>
@@ -771,6 +1329,13 @@
             <TextBlock Text="Value for selected key:" Style="{StaticResource Lbl}" Margin="16,0,6,0"/>
             <TextBox x:Name="SettingValue" Width="180" Margin="0,0,6,0"/>
             <Button Content="Save (Owner)" Click="SaveSetting_Click"/>
+            <Border Style="{StaticResource ToolbarSeparator}"/>
+            <!-- Import lives here rather than on Invoices: it replaces a whole dataset, which is an
+                 administrative act, not day-to-day entry. -->
+            <Button x:Name="ImportExcel" Content="Import sales from Excel…" Click="ImportExcel_Click"
+                    AutomationProperties.HelpText="Validates a sale workbook, then replaces all previously imported sales with it"/>
+            <TextBlock x:Name="ImportStatus" VerticalAlignment="Center" Margin="10,0,0,0"
+                       Foreground="{DynamicResource TextMutedBrush}"/>
           </WrapPanel>
           <!-- No backup panel: Supabase takes and keeps the backups now. -->
           <DockPanel>

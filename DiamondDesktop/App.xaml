@@ -14,6 +14,8 @@
                 <ResourceDictionary Source="Styles/DataGridStyles.xaml"/>
                 <!-- App refinements last so they win -->
                 <ResourceDictionary Source="Styles/AppOverrides.xaml"/>
+                <!-- Last: several component styles derive from the ones above. -->
+                <ResourceDictionary Source="Styles/Components.xaml"/>
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Application.Resources>

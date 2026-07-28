@@ -19,10 +19,13 @@ public class Profile : BaseModel
 [Table("grade")]
 public class Grade : BaseModel
 {
-    // 'aliases' is intentionally unmapped - its Postgres type (text vs text[]) is unverified and a
-    // wrong guess breaks every read of this table. Map it once the DDL is confirmed.
     [PrimaryKey("grade_id", false)] public long GradeId { get; set; }
     [Column("code")] public string Code { get; set; } = "";
+
+    // Confirmed against the live table: plain text, semicolon-separated, e.g. "NO1;NO 1;1".
+    // These are the spellings the Excel workbooks use, and the import resolves through them so a
+    // legacy sheet does not have to be rewritten to load (docs/08 §4).
+    [Column("aliases")] public string? Aliases { get; set; }
     [Column("display_name")] public string? DisplayName { get; set; }
     [Column("sort_order")] public int SortOrder { get; set; }
     [Column("active")] public bool Active { get; set; } = true;
@@ -97,6 +100,29 @@ public class SalesInvoice : BaseModel
     [Column("created_by")] public Guid? CreatedBy { get; set; }
     [Column("updated_by")] public Guid? UpdatedBy { get; set; }
     [Column("client_ref")] public Guid? ClientRef { get; set; }
+}
+
+/// <summary>
+/// The same table as <see cref="SalesInvoice"/>, but with invoice_no writable. Migration assigns
+/// MIG- numbers itself (docs/08 §4) whereas live posting takes them from next_invoice_no(), so the
+/// main model marks the column ignoreOnInsert. Loosening it there would let the live path send a
+/// number it has no right to choose; a separate model keeps that door shut.
+/// </summary>
+[Table("sales_invoice")]
+public class ImportedInvoice : BaseModel
+{
+    [PrimaryKey("invoice_id", false)] public long InvoiceId { get; set; }
+    [Column("invoice_no")] public string? InvoiceNo { get; set; }
+    [Column("invoice_date")] public DateOnly InvoiceDate { get; set; }
+    [Column("buyer_id")] public long BuyerId { get; set; }
+    [Column("broker_id")] public long? BrokerId { get; set; }
+    [Column("broker_pct")] public decimal BrokerPct { get; set; }
+    [Column("terms_days")] public int TermsDays { get; set; }
+    [Column("doc_type")] public string DocType { get; set; } = "BILL";
+    [Column("currency_id")] public long CurrencyId { get; set; }
+    [Column("status")] public string Status { get; set; } = InvoiceStatus.POSTED;
+    [Column("created_by")] public Guid? CreatedBy { get; set; }
+    [Column("updated_by")] public Guid? UpdatedBy { get; set; }
 }
 
 [Table("sales_line")]

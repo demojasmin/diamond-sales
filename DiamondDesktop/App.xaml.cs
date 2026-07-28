@@ -12,6 +12,19 @@ public partial class App : Application
         base.OnStartup(e);
         UseThreeLetterDayNames();
 
+        // Without this, any unhandled exception closes the app with no window, no message and no
+        // log — from the user's side it just vanishes, which is indistinguishable from the sign-in
+        // having failed. Say what broke instead.
+        DispatcherUnhandledException += (_, args) =>
+        {
+            MessageBox.Show(
+                $"{args.Exception.GetType().Name}: {args.Exception.Message}\n\n" +
+                $"{args.Exception.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}",
+                "Solitaire Desk stopped", MessageBoxButton.OK, MessageBoxImage.Error);
+            args.Handled = true;
+            Shutdown();
+        };
+
         // WPF quits when the last window closes — and during login the login dialog IS the last
         // window. Closing it would shut the app down before MainWindow exists, so hold shutdown
         // open across the handover, then hand ownership to MainWindow.

@@ -173,9 +173,11 @@
         </Setter>
     </Style>
 
-    <!-- Compact borderless combo for in-grid Size selectors -->
+    <!-- Compact borderless combo for in-grid Size selectors.
+         32 matches the field height used everywhere else and centres in the design's 42px row;
+         at 28 it sat visibly small against the text cells beside it. -->
     <Style x:Key="CellComboBox" TargetType="ComboBox" BasedOn="{StaticResource FieldComboBox}">
-        <Setter Property="Height" Value="28"/>
+        <Setter Property="Height" Value="32"/>
         <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="BorderBrush" Value="Transparent"/>

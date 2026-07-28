@@ -18,6 +18,27 @@ public sealed record PostOutcome(bool Ok, bool NeedsOverride, string? InvoiceNo,
 /// <summary>Every read comes from a view or a plain table; every computed number is Postgres'.</summary>
 public static class Repo
 {
+    /// PostgREST answers with at most 1000 rows and gives no sign that more exist. Every read that
+    /// can outgrow that has to page, or it silently shows part of the truth.
+    private const int PageSize = 1000;
+
+    /// <summary>
+    /// Reads a query to the end, a page at a time. The query must carry an ordering that breaks
+    /// ties, otherwise rows can repeat or vanish between requests.
+    /// </summary>
+    private static async Task<List<T>> AllPagesAsync<T>(
+        Func<Supabase.Postgrest.Interfaces.IPostgrestTable<T>> query)
+        where T : Supabase.Postgrest.Models.BaseModel, new()
+    {
+        var all = new List<T>();
+        for (int offset = 0; ; offset += PageSize)
+        {
+            var page = (await query().Range(offset, offset + PageSize - 1).Get()).Models;
+            all.AddRange(page);
+            if (page.Count < PageSize) return all;
+        }
+    }
+
     // ---------- reads ----------
 
     public static async Task<List<Grade>> GradesAsync() =>
@@ -46,17 +67,33 @@ public static class Repo
             .Order("grade_id", Ordering.Ascending).Order("size_id", Ordering.Ascending)
             .Order("effective_from", Ordering.Descending).Get()).Models;
 
+    // Paged for the same reason as ImportedInvoiceIdsAsync: 1370 invoices exist after an import and
+    // an unpaged read returns 1000 of them with no indication that anything is missing. A screen
+    // that quietly drops the oldest 370 invoices is worse than one that is slow.
     public static async Task<List<VInvoice>> InvoicesAsync() =>
-        (await Db.Client.From<VInvoice>()
-            .Order("invoice_date", Ordering.Descending).Order("invoice_id", Ordering.Descending).Get()).Models;
+        await AllPagesAsync(() => Db.Client.From<VInvoice>()
+            .Order("invoice_date", Ordering.Descending).Order("invoice_id", Ordering.Descending));
 
     public static async Task<List<VSalesLine>> LinesAsync(long invoiceId) =>
         (await Db.Client.From<VSalesLine>().Filter("invoice_id", Operator.Equals, invoiceId)
             .Order("line_id", Ordering.Ascending).Get()).Models;
 
+    // size_id, not size_code: the codes sort as text, which puts "+11" before "+6.5" and reads as
+    // nonsense to anyone who knows a sieve. size_id follows size_bucket.sort_order (-2, -6.5,
+    // +6.5, +11), the same ordering PricesAsync already uses.
     public static async Task<List<VStockPosition>> StockAsync() =>
         (await Db.Client.From<VStockPosition>()
-            .Order("grade_code", Ordering.Ascending).Order("size_code", Ordering.Ascending).Get()).Models;
+            .Order("grade_code", Ordering.Ascending).Order("size_id", Ordering.Ascending).Get()).Models;
+
+    /// The grade × size buckets that have any ledger entry at all, for the Stock page's
+    /// "hide empty buckets" filter. Balance alone cannot answer this: a bucket sold down to zero,
+    /// or one whose only invoice was cancelled, still has a ledger worth reading.
+    // ponytail: pulls two columns for every movement and dedupes client-side, because PostgREST has
+    // no DISTINCT. Fine at ledger sizes measured in thousands; add a has_movements column to
+    // v_stock_position if this ever gets heavy.
+    public static async Task<HashSet<(string Grade, string Size)>> MovementBucketsAsync() =>
+        (await Db.Client.From<VStockMovement>().Select("grade_code,size_code").Get())
+            .Models.Select(m => (m.GradeCode, m.SizeCode)).ToHashSet();
 
     public static async Task<List<VStockMovement>> MovementsAsync(string gradeCode, string sizeCode) =>
         (await Db.Client.From<VStockMovement>()
@@ -65,11 +102,111 @@ public static class Repo
             .Order("movement_date", Ordering.Descending).Order("movement_id", Ordering.Descending).Get()).Models;
 
     public static async Task<List<VReceivablesAgeing>> ReceivablesAsync() =>
-        (await Db.Client.From<VReceivablesAgeing>().Order("due_date", Ordering.Ascending).Get()).Models;
+        await AllPagesAsync(() => Db.Client.From<VReceivablesAgeing>()
+            .Order("due_date", Ordering.Ascending).Order("invoice_id", Ordering.Ascending));
 
     public static async Task<List<VReconciliation>> ReconciliationAsync() =>
         (await Db.Client.From<VReconciliation>()
             .Order("grade_code", Ordering.Ascending).Order("size_code", Ordering.Ascending).Get()).Models;
+
+    // ---------- Excel import (docs/08 §4) ----------
+
+    /// Imported invoices are exactly those numbered MIG-. Live invoices take their numbers from
+    /// next_invoice_no(), so the two series can never overlap and a re-import can find its own
+    /// previous rows without touching anything a user typed.
+    private const string ImportedPrefix = "MIG-";
+    private const string InvoiceIdColumn = "invoice_id";
+
+    /// Unpaged, this silently missed 366 of 1366 imported invoices: a re-import then deleted 1000,
+    /// inserted 1366, and left the remainder behind as duplicate MIG- numbers.
+    public static async Task<List<long>> ImportedInvoiceIdsAsync()
+    {
+        var ids = new List<long>();
+        for (int offset = 0; ; offset += PageSize)
+        {
+            var page = (await Db.Client.From<ImportedInvoice>()
+                .Filter("invoice_no", Operator.Like, ImportedPrefix + "%")
+                .Select("invoice_id")
+                .Order("invoice_id", Ordering.Ascending)
+                .Range(offset, offset + PageSize - 1).Get()).Models;
+
+            ids.AddRange(page.Select(i => i.InvoiceId));
+            if (page.Count < PageSize) return ids;
+        }
+    }
+
+    /// <summary>
+    /// Clears a previous import: receipts, then lines, then the invoices themselves — children
+    /// first, so a failure part-way can never orphan a line against a deleted invoice.
+    /// Ids are deleted in batches because they travel in the URL.
+    /// </summary>
+    public static async Task<int> DeleteImportedAsync(IProgress<ImportProgress>? progress = null)
+    {
+        var ids = await ImportedInvoiceIdsAsync();
+        if (ids.Count == 0) return 0;
+
+        int done = 0;
+        foreach (var chunk in ids.Chunk(200))
+        {
+            var list = chunk.Select(id => id.ToString()).ToList();
+            done += chunk.Length;
+            progress?.Report(new ImportProgress(
+                $"Removing the previous import… {done:N0} of {ids.Count:N0}",
+                done, ids.Count));
+            await Db.Client.From<Receipt>().Filter(InvoiceIdColumn, Operator.In, list).Delete();
+            await Db.Client.From<SalesLine>().Filter(InvoiceIdColumn, Operator.In, list).Delete();
+            await Db.Client.From<ImportedInvoice>().Filter(InvoiceIdColumn, Operator.In, list).Delete();
+        }
+        return ids.Count;
+    }
+
+    /// <summary>Creates any buyer named in the file that the database does not have yet, seeding
+    /// default terms from the file (docs/08 §2.4). Returns name → id for every buyer needed.</summary>
+    public static async Task<(Dictionary<string, long> Map, int Created)> EnsureBuyersAsync(
+        IReadOnlyCollection<(string Name, int TermsDays)> wanted)
+    {
+        var existing = (await Db.Client.From<Buyer>().Get()).Models;
+        var map = existing.ToDictionary(b => b.Name.Trim(), b => b.BuyerId, StringComparer.OrdinalIgnoreCase);
+
+        var missing = wanted.Where(w => !map.ContainsKey(w.Name)).ToList();
+        if (missing.Count > 0)
+        {
+            var made = (await Db.Client.From<Buyer>().Insert(missing.Select(w => new Buyer
+            {
+                Name = w.Name, DefaultTermsDays = w.TermsDays, Active = true,
+            }).ToList())).Models;
+            foreach (var b in made) map[b.Name.Trim()] = b.BuyerId;
+        }
+        return (map, missing.Count);
+    }
+
+    public static async Task<(Dictionary<string, long> Map, int Created)> EnsureBrokersAsync(
+        IReadOnlyCollection<(string Name, decimal Pct)> wanted)
+    {
+        var existing = (await Db.Client.From<Broker>().Get()).Models;
+        var map = existing.ToDictionary(b => b.Name.Trim(), b => b.BrokerId, StringComparer.OrdinalIgnoreCase);
+
+        var missing = wanted.Where(w => !map.ContainsKey(w.Name)).ToList();
+        if (missing.Count > 0)
+        {
+            var made = (await Db.Client.From<Broker>().Insert(missing.Select(w => new Broker
+            {
+                Name = w.Name, DefaultBrokerPct = w.Pct, Active = true,
+            }).ToList())).Models;
+            foreach (var b in made) map[b.Name.Trim()] = b.BrokerId;
+        }
+        return (map, missing.Count);
+    }
+
+    public static async Task<List<ImportedInvoice>> InsertImportedInvoicesAsync(
+        List<ImportedInvoice> rows) =>
+        (await Db.Client.From<ImportedInvoice>().Insert(rows)).Models;
+
+    public static async Task InsertLinesAsync(List<SalesLine> rows) =>
+        await Db.Client.From<SalesLine>().Insert(rows);
+
+    public static async Task InsertReceiptsAsync(List<Receipt> rows) =>
+        await Db.Client.From<Receipt>().Insert(rows);
 
     public static async Task<List<AuditLog>> AuditAsync(int limit = 500) =>
         (await Db.Client.From<AuditLog>().Order("changed_at", Ordering.Descending).Limit(limit).Get()).Models;
@@ -323,6 +460,22 @@ public static class Repo
         try
         {
             await Db.Client.From<Buyer>().Insert(new Buyer { Name = name, DefaultTermsDays = termsDays, Active = true });
+            return null;
+        }
+        catch (Exception e) { return Err(e); }
+    }
+
+    /// <summary>
+    /// Saves an edited alias list for one grade. Only this column is writable from Master data:
+    /// code, name and sort order are referenced by imports and stock, and changing them from a
+    /// grid cell would be a schema-level act dressed up as a typo.
+    /// </summary>
+    public static async Task<string?> SetGradeAliasesAsync(long gradeId, string aliases)
+    {
+        try
+        {
+            await Db.Client.From<Grade>().Filter("grade_id", Operator.Equals, gradeId)
+                .Set(g => g.Aliases!, aliases.Length == 0 ? null! : aliases).Update();
             return null;
         }
         catch (Exception e) { return Err(e); }
