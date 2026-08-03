@@ -20,7 +20,7 @@
         <Setter Property="FontSize" Value="11.5"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Height" Value="40"/>
-        <Setter Property="Padding" Value="14,0"/>
+        <Setter Property="Padding" Value="10,0"/>
         <Setter Property="HorizontalContentAlignment" Value="Left"/>
         <Setter Property="VerticalContentAlignment" Value="Center"/>
         <Setter Property="SeparatorBrush" Value="Transparent"/>
@@ -63,7 +63,11 @@
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="BorderThickness" Value="0"/>
-        <Setter Property="Padding" Value="14,0"/>
+        <!-- 10, not 14. Padding is charged twice per column, so six columns spent 168px of the
+             Stock table's width on whitespace — enough on its own to push the table past its half
+             of the page and clip every cell in it. AppColumnHeader carries the same number; they
+             have to move together or the header stops sitting over its column. -->
+        <Setter Property="Padding" Value="10,0"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="DataGridCell">

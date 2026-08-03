@@ -74,6 +74,20 @@ public static class Repo
         await AllPagesAsync(() => Db.Client.From<VInvoice>()
             .Order("invoice_date", Ordering.Descending).Order("invoice_id", Ordering.Descending));
 
+    /// <summary>
+    /// Every posted sales line in a date range, paged to the end. The dashboard's grade filter
+    /// needs this: v_invoice carries no grade — grade lives on the line — so without the lines a
+    /// grade can only narrow the inventory charts, which is what it used to do.
+    ///
+    /// Ordered by line_id because AllPagesAsync needs a tie-breaking order to page safely.
+    /// </summary>
+    public static async Task<List<VSalesLine>> SalesLinesAsync(DateOnly from, DateOnly to) =>
+        await AllPagesAsync(() => Db.Client.From<VSalesLine>()
+            .Filter("status", Operator.Equals, InvoiceStatus.POSTED)
+            .Filter("invoice_date", Operator.GreaterThanOrEqual, D(from))
+            .Filter("invoice_date", Operator.LessThanOrEqual, D(to))
+            .Order("line_id", Ordering.Ascending));
+
     public static async Task<List<VSalesLine>> LinesAsync(long invoiceId) =>
         (await Db.Client.From<VSalesLine>().Filter("invoice_id", Operator.Equals, invoiceId)
             .Order("line_id", Ordering.Ascending).Get()).Models;

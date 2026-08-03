@@ -1,0 +1,138 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!-- Audit console styles. Cards, KPI tiles, headings, chips and the toolbar come from
+       Dashboard.xaml — this file adds only what the audit screen needs on top of them, so the two
+       consoles stay one design rather than two that drift apart.
+
+       Every colour here is an application token. There is no audit palette. -->
+
+  <!-- ── Action badge ─────────────────────────────────────────────────────────
+       Neutral by default and coloured per action, so a DELETE is findable by eye in a wall of
+       INSERTs. The default is deliberately the quiet one: an action this template has never seen
+       renders as plain text rather than borrowing a colour that would misreport it. -->
+  <DataTemplate x:Key="AuditActionBadge">
+    <Border x:Name="Chip" CornerRadius="999" Padding="10,2,10,3" BorderThickness="1"
+            HorizontalAlignment="Left" VerticalAlignment="Center"
+            Background="{DynamicResource DeskBrush}"
+            BorderBrush="{DynamicResource BorderBrush}">
+      <TextBlock x:Name="Word" FontSize="11" FontWeight="SemiBold"
+                 Foreground="{DynamicResource TextMutedBrush}"
+                 Text="{Binding Action}"/>
+    </Border>
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding Action}" Value="INSERT">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource SuccessSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource SuccessBorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding Action}" Value="UPDATE">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource WarningBorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding Action}" Value="DELETE">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource DangerBorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+      </DataTrigger>
+      <!-- IMPORT is templated because the brief asks for it. No trigger in the database writes it
+           today — imported rows are logged as INSERT — so this stays dormant until one does. -->
+      <DataTrigger Binding="{Binding Action}" Value="IMPORT">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource AccentStrongBrush}"/>
+      </DataTrigger>
+    </DataTemplate.Triggers>
+  </DataTemplate>
+
+  <!-- ── Timeline ─────────────────────────────────────────────────────────────
+       The rail is drawn by the row itself: a 1px line down the full height with a dot over it, so
+       the thread stays unbroken between entries without a separate connector element to keep in
+       step with row heights. -->
+  <Style x:Key="TimelineRail" TargetType="Border">
+    <Setter Property="Width" Value="1"/>
+    <Setter Property="Background" Value="{DynamicResource BorderBrush}"/>
+    <Setter Property="HorizontalAlignment" Value="Center"/>
+  </Style>
+
+  <Style x:Key="TimelineDot" TargetType="Border">
+    <Setter Property="Width" Value="9"/>
+    <Setter Property="Height" Value="9"/>
+    <Setter Property="CornerRadius" Value="999"/>
+    <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource SurfaceBrush}"/>
+    <Setter Property="BorderThickness" Value="2"/>
+    <Setter Property="VerticalAlignment" Value="Top"/>
+    <Setter Property="HorizontalAlignment" Value="Center"/>
+    <Setter Property="Margin" Value="0,5,0,0"/>
+  </Style>
+
+  <Style x:Key="TimelineTime" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="11"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="Margin" Value="0,0,0,2"/>
+  </Style>
+
+  <Style x:Key="TimelineTitle" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="12.5"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+  </Style>
+
+  <Style x:Key="TimelineMeta" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="11"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+    <Setter Property="Margin" Value="0,1,0,0"/>
+  </Style>
+
+  <!-- ── Expanded row detail ──────────────────────────────────────────────────
+       Replaces the flattened "k=v, k=v, …" string that ran off the edge of the old Before/After
+       columns. One row per field, before and after side by side, so a change is read rather than
+       decoded. -->
+  <Style x:Key="AuditDetailPanel" TargetType="Border">
+    <Setter Property="Background" Value="{DynamicResource Surface2Brush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+    <Setter Property="BorderThickness" Value="0,1,0,1"/>
+    <Setter Property="Padding" Value="18,12,18,14"/>
+  </Style>
+
+  <Style x:Key="AuditDetailHeader" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="10.5"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="Margin" Value="0,0,0,6"/>
+  </Style>
+
+  <Style x:Key="AuditFieldName" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="12"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="VerticalAlignment" Value="Top"/>
+    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+  </Style>
+
+  <Style x:Key="AuditFieldBefore" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="12"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="TextWrapping" Value="Wrap"/>
+    <Setter Property="VerticalAlignment" Value="Top"/>
+  </Style>
+
+  <Style x:Key="AuditFieldAfter" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="12"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="TextWrapping" Value="Wrap"/>
+    <Setter Property="VerticalAlignment" Value="Top"/>
+  </Style>
+
+  <!-- A changed field is worth finding at a glance; an unchanged one is context. -->
+  <Style x:Key="AuditFieldRow" TargetType="Border">
+    <Setter Property="Padding" Value="0,4"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+    <Setter Property="BorderThickness" Value="0,0,0,1"/>
+  </Style>
+
+</ResourceDictionary>

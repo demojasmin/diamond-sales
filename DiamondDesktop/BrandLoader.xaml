@@ -1,0 +1,163 @@
+<UserControl x:Class="DiamondDesktop.BrandLoader"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Name="Root"
+             TextElement.FontFamily="{StaticResource UiFont}"
+             TextOptions.TextFormattingMode="Ideal">
+
+  <!-- One loader for the whole product: the splash uses it with the wordmark, the pages use it
+       without. Two lookalike spinners drift apart the first time either is touched. -->
+  <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+
+    <Grid Width="132" Height="132" HorizontalAlignment="Center">
+
+      <!-- Outer ring · the track the arc runs on. Static, so the motion below has something to
+           be measured against. -->
+      <Ellipse Width="124" Height="124" StrokeThickness="2"
+               Stroke="{DynamicResource BorderBrush}" Opacity="0.7"/>
+
+      <!-- Accent arc, clockwise. Drawn as a dashed circle rather than an ArcSegment: the dash
+           pattern gives the gap, and rotating the whole ellipse needs no geometry maths. -->
+      <Ellipse Width="124" Height="124" StrokeThickness="3"
+               Stroke="{DynamicResource AccentBrush}"
+               StrokeDashArray="26 62" StrokeDashCap="Round"
+               RenderTransformOrigin="0.5,0.5">
+        <Ellipse.RenderTransform>
+          <RotateTransform x:Name="ArcSpin" Angle="0"/>
+        </Ellipse.RenderTransform>
+      </Ellipse>
+
+      <!-- Second arc, slower and anticlockwise, in the muted tone. Two speeds in opposition read
+           as motion; two at the same speed read as one thick ring. -->
+      <Ellipse Width="106" Height="106" StrokeThickness="2"
+               Stroke="{DynamicResource AccentStrongBrush}" Opacity="0.45"
+               StrokeDashArray="14 46" StrokeDashCap="Round"
+               RenderTransformOrigin="0.5,0.5">
+        <Ellipse.RenderTransform>
+          <RotateTransform x:Name="ArcSpinSlow" Angle="0"/>
+        </Ellipse.RenderTransform>
+      </Ellipse>
+
+      <!-- Halo behind the stone. -->
+      <Ellipse x:Name="Halo" Width="84" Height="84" Fill="{DynamicResource AccentSoftBrush}"
+               Opacity="0.5" RenderTransformOrigin="0.5,0.5">
+        <Ellipse.RenderTransform>
+          <ScaleTransform x:Name="HaloScale" ScaleX="1" ScaleY="1"/>
+        </Ellipse.RenderTransform>
+      </Ellipse>
+
+      <!-- The brilliant cut, from Components.xaml so the header and the loader draw one mark.
+           Both paths sit in a fixed 24x24 Canvas inside a Viewbox: scaling them separately would
+           fit each to its own bounds and the facets would drift off the stone. -->
+      <Viewbox Width="52" Height="52" HorizontalAlignment="Center" VerticalAlignment="Center"
+               RenderTransformOrigin="0.5,0.5">
+        <Viewbox.RenderTransform>
+          <ScaleTransform x:Name="StoneScale" ScaleX="1" ScaleY="1"/>
+        </Viewbox.RenderTransform>
+        <Viewbox.Effect>
+          <DropShadowEffect BlurRadius="14" ShadowDepth="2" Opacity="0.22" Color="#000000"/>
+        </Viewbox.Effect>
+        <Canvas Width="24" Height="24">
+          <Path Data="{StaticResource DiamondSilhouette}"
+                Fill="{DynamicResource AccentBrush}"
+                Stroke="{DynamicResource AccentStrongBrush}" StrokeThickness="0.4"
+                StrokeLineJoin="Round"/>
+          <!-- Facets are light on the stone, not outlines around it. Their opacity breathes,
+               which is the shimmer — the geometry never moves. -->
+          <Path x:Name="Facets" Data="{StaticResource DiamondFacets}"
+                Stroke="{DynamicResource OnAccentBrush}" StrokeThickness="0.5"
+                StrokeStartLineCap="Round" StrokeEndLineCap="Round" Opacity="0.45"/>
+        </Canvas>
+      </Viewbox>
+
+      <!-- Sparkles. Four-point stars, not dots: a dot beside a gemstone reads as a dead pixel.
+           Each twinkles on its own offset so they never pulse together — that synchrony is what
+           would make them look like a progress indicator. -->
+      <Path x:Name="Spark1" Data="M 6,0 L 7.4,4.6 L 12,6 L 7.4,7.4 L 6,12 L 4.6,7.4 L 0,6 L 4.6,4.6 Z"
+            Width="13" Height="13" Stretch="Uniform" Fill="{DynamicResource AccentBrush}"
+            HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,16,16,0" Opacity="0"/>
+      <Path x:Name="Spark2" Data="M 6,0 L 7.4,4.6 L 12,6 L 7.4,7.4 L 6,12 L 4.6,7.4 L 0,6 L 4.6,4.6 Z"
+            Width="9" Height="9" Stretch="Uniform" Fill="{DynamicResource AccentBrush}"
+            HorizontalAlignment="Left" VerticalAlignment="Center" Margin="14,0,0,26" Opacity="0"/>
+      <Path x:Name="Spark3" Data="M 6,0 L 7.4,4.6 L 12,6 L 7.4,7.4 L 6,12 L 4.6,7.4 L 0,6 L 4.6,4.6 Z"
+            Width="8" Height="8" Stretch="Uniform" Fill="{DynamicResource AccentBrush}"
+            HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,26,18" Opacity="0"/>
+    </Grid>
+
+    <!-- Wordmark · shown on the splash, hidden on a page loader. Collapsed rather than absent so
+         one control serves both and the layout stays centred either way. -->
+    <StackPanel x:Name="Wordmark" Margin="0,22,0,0">
+      <TextBlock Text="Solitaire Desk" FontSize="24" FontWeight="SemiBold"
+                 FontFamily="{StaticResource UiFontDisplay}"
+                 Foreground="{DynamicResource TextBrush}" HorizontalAlignment="Center"/>
+      <TextBlock Text="Diamond Sales &amp; Inventory" FontSize="13"
+                 Foreground="{DynamicResource TextMutedBrush}"
+                 HorizontalAlignment="Center" Margin="0,5,0,0"/>
+    </StackPanel>
+
+    <!-- Word plus three dots, and nothing else. No bar and no percentage: the work behind this is
+         a network read of unknown duration, and a bar that cannot report real progress is a lie
+         drawn at 60fps. -->
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,20,0,0">
+      <TextBlock Text="Loading" FontSize="13" Foreground="{DynamicResource TextMutedBrush}"/>
+      <TextBlock x:Name="Dot1" Text="." FontSize="13" Margin="1,0,0,0"
+                 Foreground="{DynamicResource TextMutedBrush}" Opacity="0"/>
+      <TextBlock x:Name="Dot2" Text="." FontSize="13"
+                 Foreground="{DynamicResource TextMutedBrush}" Opacity="0"/>
+      <TextBlock x:Name="Dot3" Text="." FontSize="13"
+                 Foreground="{DynamicResource TextMutedBrush}" Opacity="0"/>
+    </StackPanel>
+  </StackPanel>
+
+  <UserControl.Triggers>
+    <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+      <BeginStoryboard>
+        <Storyboard RepeatBehavior="Forever">
+          <DoubleAnimation Storyboard.TargetName="ArcSpin" Storyboard.TargetProperty="Angle"
+                           From="0" To="360" Duration="0:0:1.8"/>
+          <DoubleAnimation Storyboard.TargetName="ArcSpinSlow" Storyboard.TargetProperty="Angle"
+                           From="360" To="0" Duration="0:0:3.2"/>
+        </Storyboard>
+      </BeginStoryboard>
+
+      <BeginStoryboard>
+        <Storyboard RepeatBehavior="Forever">
+          <DoubleAnimation Storyboard.TargetName="StoneScale" Storyboard.TargetProperty="ScaleX"
+                           From="1" To="1.055" Duration="0:0:1.6" AutoReverse="True"/>
+          <DoubleAnimation Storyboard.TargetName="StoneScale" Storyboard.TargetProperty="ScaleY"
+                           From="1" To="1.055" Duration="0:0:1.6" AutoReverse="True"/>
+          <DoubleAnimation Storyboard.TargetName="HaloScale" Storyboard.TargetProperty="ScaleX"
+                           From="0.94" To="1.06" Duration="0:0:2.0" AutoReverse="True"/>
+          <DoubleAnimation Storyboard.TargetName="HaloScale" Storyboard.TargetProperty="ScaleY"
+                           From="0.94" To="1.06" Duration="0:0:2.0" AutoReverse="True"/>
+          <DoubleAnimation Storyboard.TargetName="Halo" Storyboard.TargetProperty="Opacity"
+                           From="0.32" To="0.66" Duration="0:0:2.0" AutoReverse="True"/>
+          <DoubleAnimation Storyboard.TargetName="Facets" Storyboard.TargetProperty="Opacity"
+                           From="0.3" To="0.85" Duration="0:0:1.4" AutoReverse="True"/>
+        </Storyboard>
+      </BeginStoryboard>
+
+      <BeginStoryboard>
+        <Storyboard RepeatBehavior="Forever" Duration="0:0:3.6">
+          <DoubleAnimation Storyboard.TargetName="Spark1" Storyboard.TargetProperty="Opacity"
+                           From="0" To="0.9" Duration="0:0:0.5" AutoReverse="True" BeginTime="0:0:0.2"/>
+          <DoubleAnimation Storyboard.TargetName="Spark2" Storyboard.TargetProperty="Opacity"
+                           From="0" To="0.75" Duration="0:0:0.5" AutoReverse="True" BeginTime="0:0:1.3"/>
+          <DoubleAnimation Storyboard.TargetName="Spark3" Storyboard.TargetProperty="Opacity"
+                           From="0" To="0.6" Duration="0:0:0.5" AutoReverse="True" BeginTime="0:0:2.2"/>
+        </Storyboard>
+      </BeginStoryboard>
+
+      <BeginStoryboard>
+        <Storyboard RepeatBehavior="Forever" Duration="0:0:1.5">
+          <DoubleAnimation Storyboard.TargetName="Dot1" Storyboard.TargetProperty="Opacity"
+                           To="1" Duration="0:0:0.25" AutoReverse="True" BeginTime="0:0:0.0"/>
+          <DoubleAnimation Storyboard.TargetName="Dot2" Storyboard.TargetProperty="Opacity"
+                           To="1" Duration="0:0:0.25" AutoReverse="True" BeginTime="0:0:0.2"/>
+          <DoubleAnimation Storyboard.TargetName="Dot3" Storyboard.TargetProperty="Opacity"
+                           To="1" Duration="0:0:0.25" AutoReverse="True" BeginTime="0:0:0.4"/>
+        </Storyboard>
+      </BeginStoryboard>
+    </EventTrigger>
+  </UserControl.Triggers>
+</UserControl>

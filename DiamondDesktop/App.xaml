@@ -16,6 +16,10 @@
                 <ResourceDictionary Source="Styles/AppOverrides.xaml"/>
                 <!-- Last: several component styles derive from the ones above. -->
                 <ResourceDictionary Source="Styles/Components.xaml"/>
+                <!-- Dashboard-scoped: keyed styles only, no implicit overrides. -->
+                <ResourceDictionary Source="Styles/Dashboard.xaml"/>
+                <!-- Audit console: builds on the dashboard card and KPI styles. -->
+                <ResourceDictionary Source="Styles/Audit.xaml"/>
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Application.Resources>

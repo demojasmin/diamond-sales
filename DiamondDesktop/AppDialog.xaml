@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         SizeToContent="Height" Width="560" MinHeight="200"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Icon="{StaticResource AppIcon}"
         ShowInTaskbar="False" WindowStyle="SingleBorderWindow"
         Background="{DynamicResource BgBrush}"
         TextElement.Foreground="{DynamicResource TextBrush}"

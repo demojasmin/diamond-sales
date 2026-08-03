@@ -1,7 +1,7 @@
 <Window x:Class="DiamondDesktop.LoginWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Sign in" SizeToContent="Height" Width="440" WindowStartupLocation="CenterScreen"
+        Icon="{StaticResource AppIcon}" Title="Sign in" SizeToContent="Height" Width="440" WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize" WindowStyle="SingleBorderWindow"
         Background="{DynamicResource BgBrush}"
         TextElement.Foreground="{DynamicResource TextBrush}"
@@ -19,10 +19,9 @@
     <Border Style="{StaticResource Card}" Margin="26" Padding="30">
       <StackPanel>
         <StackPanel Orientation="Horizontal" Margin="0,0,0,22">
-          <Rectangle Width="16" Height="16" Fill="{DynamicResource AccentBrush}" RadiusX="2" RadiusY="2"
-                     RenderTransformOrigin="0.5,0.5">
-            <Rectangle.RenderTransform><RotateTransform Angle="45"/></Rectangle.RenderTransform>
-          </Rectangle>
+          <!-- The app's stone, not a square turned 45°. This window is the first thing anyone
+               sees, and it was showing a different mark from every screen behind it. -->
+          <Rectangle Width="20" Height="20" Fill="{StaticResource BrandStone}"/>
           <TextBlock Text="Solitaire Desk" FontSize="15" FontWeight="SemiBold"
                      VerticalAlignment="Center" Margin="12,0,0,0"/>
         </StackPanel>

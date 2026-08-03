@@ -1,0 +1,494 @@
+# Solitaire Desk — beginner's testing guide
+
+Written for someone who has never used this app. Work through it page by page.
+
+**Before you start**
+
+- Sign in as an **owner** account. Some pages are hidden from other roles.
+- Every page has a **Refresh** button. If a screen looks empty, press it before assuming a bug.
+- The red line along the bottom of the window is where the app talks to you. Read it after every action.
+- "ct" means carats. Money has no currency symbol — the base currency is set in Settings (INR).
+- Large money is shortened: `1.25 K`, `1.25 M`, `1.25 B`. Carats are always shown in full.
+
+**How to read a test case**
+
+| Column | Meaning |
+|---|---|
+| Do this | The exact steps |
+| Expect | What a correct app does |
+| If you see something else | It is a bug — note the page, the steps and the message |
+
+---
+
+## 1 · Sales entry
+
+**Purpose.** Type a new sales invoice: who is buying, at what terms, and which parcels of
+diamonds at what price. Save it as a draft, then post it. Posting is what deducts stock and
+assigns the invoice number.
+
+**Fields**
+
+| Field | What it is | Rules the app enforces |
+|---|---|---|
+| Date | Invoice date | Defaults to today; any date allowed |
+| Buyer | Who is buying | **Required.** Must be picked from the list, not typed freely |
+| Broker | Optional agent | Optional |
+| Broker % | Their commission | Comes from the broker, editable per invoice |
+| Terms | Days until payment is due | **Cannot be negative.** Due date is calculated from it |
+| Type | BILL or other document type | Defaults to BILL |
+| Grade (line) | Diamond grade | **Required** |
+| Size (line) | Sieve size | **Required**, and must be a size that grade actually uses |
+| Weight ct | Gross weight of the parcel | **Must be greater than 0** |
+| Selection ct | Weight actually selected | Rejection = Weight − Selection, calculated for you |
+| Price/ct | Rate per carat | **Cannot be negative**. Zero is allowed |
+| Ex Rate, Less 1, Less 2 | Exchange rate and two discounts | Must be in range or the line shows an error |
+
+**Sample data**
+
+```
+Date        today
+Buyer       ABC Company
+Broker      (leave empty)
+Terms       45
+Line 1      Grade NO 1   Size -6.5   Weight 12.5   Selection 10.0   Price/ct 35000
+```
+
+**Positive tests**
+
+| Do this | Expect |
+|---|---|
+| Fill the sample above, press **Save draft** | "Draft saved · 1 line(s)" |
+| Press **Save draft** again without changing anything | Still one invoice, not two |
+| Press **Post** | A popup "Posted as MIG-xxxx", the form clears for a new invoice |
+| Go to **Invoices**, press Refresh | The new invoice is in the list with status POSTED |
+| Go to **Stock**, press Refresh | NO 1 × -6.5 balance has dropped by 10 carats |
+
+**Negative tests**
+
+| Do this | Expect |
+|---|---|
+| Leave Buyer empty, press Save draft | "Buyer is required", cursor jumps to the Buyer box |
+| Type Terms = −5 | "Terms cannot be negative" |
+| Delete every line, press Save draft | "An invoice needs at least one line" |
+| Set Weight = 0 | Line shows "Weight must be greater than 0" |
+| Pick grade NO 1 and a size NO 1 does not use | "NO 1 does not use size …" |
+| Type Price/ct = −100 | "Price cannot be negative" |
+| Type Weight = 50000 | Asks "That is 50,000 carats. Is that right?" — you can say No |
+| Post an invoice for more stock than exists | Warns "Negative stock", lists the shortfall, asks "Post anyway?" |
+| Double-click Post quickly | Only one invoice is created |
+
+**Behind the scenes.** `save_draft_invoice` and `post_invoice` (database functions).
+Tables: `invoice`, `sales_line`. The invoice number is assigned by the database, never by the app.
+
+---
+
+## 2 · Invoices
+
+**Purpose.** Find any invoice, look at its detail, record money received against it, cancel it,
+print it, or export the list.
+
+**Filters.** Status, Buyer, and a search box that matches **invoice no, buyer or amount**.
+
+**Sample data.** Use the invoice you just posted.
+
+**Positive tests**
+
+| Do this | Expect |
+|---|---|
+| Press Refresh | The list fills, the chip says how many |
+| Type an invoice number in Search | Only that invoice remains |
+| Press Escape in the search box | The search clears |
+| Click a row | A detail panel opens on the right |
+| Type 5000 in Receipt amount, press **Record receipt** | "Receipt recorded · 5,000.00 CASH", Outstanding drops |
+| Press **Export CSV** | A .csv file is written with full, unshortened numbers |
+| Select an invoice, press **Cancel invoice**, confirm, type a reason | "Cancelled … · stock returned" |
+
+**Negative tests**
+
+| Do this | Expect |
+|---|---|
+| Press Record receipt with nothing selected | "Select an invoice first" |
+| Record a receipt with the amount box empty | "Enter a receipt amount" |
+| Record a receipt of 0 or −100 | "Enter a receipt amount" |
+| Record a receipt against a **cancelled** invoice | "That invoice is cancelled — nothing can be received against it" |
+| Cancel an already-cancelled invoice | "That invoice is already cancelled" |
+| Cancel and leave the reason blank | "A cancellation reason is required" |
+
+**Behind the scenes.** View `v_invoice`; `cancel_invoice` function; receipts are inserted
+straight into the `receipt` table.
+
+---
+
+## 3 · Receivables
+
+**Purpose.** Who owes you money and how overdue it is, grouped into ageing buckets.
+
+**Positive tests**
+
+| Do this | Expect |
+|---|---|
+| Press Refresh | Buckets fill (Current, 1-30 days, and so on) |
+| Click a bucket card | The list narrows to that bucket |
+| Search a buyer name | Only their unpaid invoices remain |
+| Click a row | A panel shows that buyer's unpaid invoices and total |
+| Export CSV | Full numbers, not shortened |
+
+**Negative tests**
+
+| Do this | Expect |
+|---|---|
+| Search something that matches nothing | An empty state explains why, not a blank table |
+| Record a full receipt on Invoices, come back and Refresh | That invoice has left Receivables |
+
+**Behind the scenes.** View `v_receivables_ageing`. Read-only page — nothing here writes.
+
+---
+
+## 4 · Stock
+
+**Purpose.** How many carats you hold of each grade × sieve size, what they are worth, and the
+movement history of any one bucket.
+
+**Fields.** Grade filter, Size filter, Search (grade code, grade name or size),
+**Hide empty buckets** (on by default).
+
+**Positive tests**
+
+| Do this | Expect |
+|---|---|
+| Press Refresh | Buckets load; the four cards at the top fill |
+| Read "Carats held" | It equals the sum of the Balance ct column below |
+| Untick **Hide empty buckets** | Many more rows appear, most with 0.0000 |
+| Tick it again | Only buckets holding a balance remain |
+| Click a row | A Movements drawer opens on the right |
+| Press **Show movements** | That bucket's intakes, sales and adjustments appear |
+| Click a different row | The drawer clears — it never shows the old bucket's history |
+| Press **Run invariants** | A reconciliation check reports pass or fail |
+| Press Export CSV | Full numbers |
+
+**Negative tests**
+
+| Do this | Expect |
+|---|---|
+| Press Show movements with nothing selected | The button is greyed out |
+| Search "zzzz" | "No bucket matches these filters. Press Clear to see them all." |
+| Pick a grade with no stock | An empty state, not a blank table |
+
+**Behind the scenes.** Views `v_stock_position` and `v_stock_movement`. Read-only page.
+
+---
+
+## 5 · Intake & movements
+
+**Purpose.** Everything that puts carats **into** stock or moves them between buckets. Four
+separate operations on one page.
+
+### 5a · Rough intake
+
+| Field | Rules |
+|---|---|
+| Grade, Size | **Both required** |
+| Weight ct | **Must be greater than 0** |
+| Price/ct | **Required** — it sets the cost basis. Zero is allowed but must be typed |
+
+| Do this | Expect |
+|---|---|
+| Grade NO 1, Size -6.5, Weight 100, Price 35000, **Add intake** | "Intake recorded · 100.0000 ct"; weight and price boxes clear |
+| Check Stock | That bucket is 100 ct heavier |
+| Leave Price empty and press Add intake | "Enter the price per carat — it sets this parcel's cost basis" |
+| Weight = 0 | "Weight must be positive" |
+| No grade chosen | "Pick a grade and size" |
+| Weight = 20000 | Asks you to confirm |
+
+### 5b · Grade-to-grade conversion ("avelu")
+
+Moves carats from one bucket to another. **Total carats held must not change.**
+
+| Do this | Expect |
+|---|---|
+| From NO 1 -6.5 → To NO 2 -6.5, Weight 10, **Convert** | "Converted 10.0000 ct · total carats unchanged" |
+| Check Stock before and after | One bucket down 10, the other up 10, grand total identical |
+| Leave one side unpicked | "Pick both sides" |
+| Weight = 0 | "Weight must be positive" |
+| Price/ct = "abc" | "Price/ct must be a number, or left blank" |
+
+### 5c · Rejection with dispositions
+
+| Do this | Expect |
+|---|---|
+| Grade, Size, Weight 5, **Record rejection** | "Rejection recorded · 5.0000 ct" |
+| Add disposition rows then record | Warns that dispositions were **NOT saved** — there is no table for them yet |
+| Weight = 0 | "Weight must be positive" |
+
+### 5d · Stock adjustment
+
+| Do this | Expect |
+|---|---|
+| Weight −5 with a reason, **Adjust** | "Adjustment recorded — it stays visible in the ledger forever" |
+| Leave Reason blank | "An adjustment needs a reason" |
+| Weight = 0 | "Weight must be positive" |
+
+### 5e · Bucket ledger (right-hand panel)
+
+| Do this | Expect |
+|---|---|
+| Pick grade and size, press **Load** | Movements appear as entries with coloured type badges |
+| Record an intake into the bucket you are viewing | The panel refreshes by itself |
+| Pick a bucket that has never traded | "No movements for … Nothing has been taken in, sold or adjusted here." |
+
+**Behind the scenes.** Functions `record_intake`, `convert_stock`, `record_rejection`,
+`adjust_stock`. Views `v_stock_movement`, `v_sales_line`.
+
+---
+
+## 6 · Master data
+
+**Purpose.** The reference lists everything else depends on: grades and their alternative
+spellings, sieve sizes, buyers, brokers and prices.
+
+**Positive tests**
+
+| Do this | Expect |
+|---|---|
+| Search "NO 1" | The grade list narrows |
+| Press Ctrl+F | The cursor jumps to the search box |
+| Double-click an **Aliases** cell, add `;TEST1`, press Enter | Saved; the Audit page records the change |
+| **Add buyer**: name "Test Buyer", terms 45 | "Buyer 'Test Buyer' added" and they appear in Sales entry |
+| **Add broker**: name "Test Broker", 1.5 | Added and available in Sales entry |
+| Set a price: grade, size, SALE, 40000 | "… = 40,000.00 from today" |
+
+**Negative tests**
+
+| Do this | Expect |
+|---|---|
+| Add a buyer with a name already in the list | "… is already in the list." |
+| Add a buyer with a one-letter name | "That buyer name is too short." |
+| Add a buyer with terms 400 | "Terms must be between 0 and 365 days." |
+| Add a buyer with terms "abc" | "Terms must be a whole number of days." |
+| Add a broker with 150% | "Broker % must be between 0 and 100." |
+| Set a price with no grade chosen | "Pick a grade and size" |
+| Set a negative price | "Enter a price" |
+
+**Note.** Code, name and order are deliberately read-only — imported invoices refer to them.
+Prices are never edited in place; setting a new one closes the old one, so a valuation as of a
+past date still finds the price that applied then.
+
+**Behind the scenes.** Tables `grade`, `size_bucket`, `buyer`, `broker`, `price_list`.
+
+---
+
+## 7 · Dashboard
+
+**Purpose.** The owner's overview: what sold, what is owed, what is held.
+
+**Filters.** Range (or a custom From/To), Buyer, Grade, and a search box.
+
+**Positive tests**
+
+| Do this | Expect |
+|---|---|
+| Choose **All time**, press Apply | All eight cards fill; the trend chart draws |
+| Pick a **Buyer**, press Apply | Every number changes — cards, chart, breakdown and table |
+| Pick a **Grade**, press Apply | Every sales number becomes that grade's share; a note explains this |
+| Hover a point on the chart | A card shows that period's date, amount and share |
+| Switch the breakdown dropdown | Bars change to salesperson, buyer, broker, period, ageing or inventory |
+| Add up the AMOUNT column in the table | It equals the "Total sales" card above |
+| Press **Clear** | All filters reset and the totals return to the unfiltered figures |
+
+**Negative tests**
+
+| Do this | Expect |
+|---|---|
+| Choose Custom and leave both dates empty | "Custom range: pick a From and a To date, or choose a named range." |
+| Choose Custom with To before From | "Custom range: 'To' is before 'From'." |
+| Pick a range with no sales | Explains *why* — e.g. "The most recent sale was 31 Jul 2026 — try All time" |
+| Pick a buyer who bought nothing in the range | "No sales for … in …" |
+
+**Behind the scenes.** Views `v_invoice`, `v_sales_line`, `v_stock_position`,
+`v_receivables_ageing`. Read-only page.
+
+---
+
+## 8 · Audit
+
+**Purpose.** Who changed what, and when. Nothing here can be edited — that is the point.
+
+| Do this | Expect |
+|---|---|
+| Press Refresh | Recent changes listed newest first |
+| Make a change elsewhere (add a buyer), come back, Refresh | Your change is at the top with your name |
+| Search "buyer" | Only buyer rows |
+| Click a row | Before and after values for every changed field |
+
+**Negative tests**
+
+| Do this | Expect |
+|---|---|
+| Search "price" | Only rows whose entity/action/record match — **not** every row that happens to have a price column |
+| Try to edit a cell | Nothing happens; the page is read-only |
+
+**Behind the scenes.** Table `audit_log`.
+
+---
+
+## 9 · Users
+
+**Purpose.** Who can sign in and what role they hold. **Owner-only** — the tab is hidden from
+everyone else.
+
+| Do this | Expect |
+|---|---|
+| Sign in as owner | The Users tab is visible |
+| Sign in as a salesperson | The Users tab is **not** visible |
+| Press Refresh | The list of accounts with role and status |
+| Search a name | The list narrows |
+| Filter by role | Only that role remains |
+
+**Behind the scenes.** Table `profile`. **This page is read-only** — see the gaps list below.
+
+---
+
+## 10 · Settings
+
+**Purpose.** Policies and thresholds the rest of the app reads: overdue days, decimal places,
+company name, low-stock threshold.
+
+| Do this | Expect |
+|---|---|
+| Press Refresh | Settings grouped by category |
+| Change "Overdue after (days)" to 20 | "1 unsaved change" appears |
+| Press **Save (Owner)** | "Saved 1 setting" |
+| Change something, press **Discard changes** | The old value comes back |
+| Press Save with nothing changed | "Nothing has changed" |
+| Sign in as a non-owner and try to save | The database refuses; the message says so |
+| Search "overdue" | Only matching settings |
+| Press **Clear** | The search clears (it does **not** discard your edits) |
+
+**Behind the scenes.** Table `app_config`, one write per changed key.
+
+---
+
+# Gaps found — validation and functionality
+
+These are things I checked for and did **not** find. Ordered by how much they matter.
+
+## Likely to cause wrong data
+
+**1 · Receipts are not checked against what is owed.**
+Invoices page. An invoice with 5,000 outstanding will accept a receipt of 500,000. The app only
+checks the amount is a positive number, then inserts straight into the `receipt` table — there is
+no "amount exceeds outstanding" check anywhere in the app.
+*Test:* record a receipt far larger than Outstanding. If it is accepted, the buyer's balance goes
+negative. **Confirm whether the database has a constraint; if not, add one, and warn in the app.**
+
+**2 · A conversion can be made to the same bucket.**
+Intake page. Nothing stops From = NO 1 -6.5 and To = NO 1 -6.5. That writes a movement out and a
+movement in for the same bucket — noise in the ledger at best.
+*Test:* set both sides identical and press Convert. Expect it to be refused; today it probably is not.
+
+**3 · Settings values have no validation at all.**
+The value box is plain text. You can type "abc" into **Overdue after (days)** or **Carat decimal
+places** and press Save. Whether that is rejected depends entirely on the database column type,
+and a bad value here affects every page that reads it.
+*Test:* set `carat_precision` to "abc", or to 99, and save. Expect a clear refusal.
+
+**4 · Nothing checks the invoice date is sensible.**
+Sales entry accepts a date years in the future or the past. Your data already contains invoices
+dated 2026. There is no warning.
+
+## Missing functionality
+
+**5 · The Users page cannot do anything.**
+It lists accounts and filters them, and that is all. There is no way to change someone's role,
+deactivate a leaver, or invite a new user — even though the page is owner-only, which implies it
+was meant to manage them. Today that has to be done directly in Supabase.
+
+**6 · Buyers and brokers can be added but never edited or removed.**
+A typo in a buyer name is permanent from inside the app. There is no rename, no deactivate.
+
+**7 · Dispositions on the rejection form are typed and thrown away.**
+The app says so honestly after you record one, but the table does not exist. Either build it or
+remove the grid — as it stands, people will type into it and lose the work.
+
+**8 · There is no delete or edit for a posted invoice.**
+Cancel is the only reversal, which is correct accounting — worth knowing, not a bug.
+
+## A note on zero-value invoices and the dashboard
+
+`INV-2026-00004` (03 Aug 2026, KIRAN EXPORTS) was posted during testing with an amount of 0.00 and
+0.00 carats — a line whose parcel was rejected in full. It is valid data, and it makes the Dashboard
+look inconsistent for the month it falls in:
+
+- The **drill-down table** lists it, because it is a posted invoice in range.
+- The **trend chart** ignores it, because the chart plots money and it is worth none — so the chart
+  says *"No sales in 01 Aug 2026 to 03 Aug 2026"* directly above a table showing one row.
+
+This is not a regression; the chart has always plotted only invoices worth something. It is the
+visible consequence of allowing a zero-value invoice at all (see item C below). If you want the two
+to agree, the choice is either to warn before posting a zero-value invoice, or to have the chart say
+"no sales **worth anything**" — both are wording/behaviour decisions, so nothing has been changed.
+
+It also broke two test suites, which is worth recording because the cause was not obvious:
+
+| Suite | What failed | Why |
+|---|---|---|
+| `dashfix` | 4 checks about the empty-state message | The suite picked "This month" and assumed it was empty. Once a posted invoice existed today, the "most recent sale was …" branch could not fire — that branch only runs when the whole range sits *after* the last sale. |
+| `gradefilter` | "every listed invoice contributes something" | The invoice has a NO 1 line worth 0, so one of the 85 rows contributes nothing. The app is right: an invoice appears under a grade filter because it *has* a line of that grade. |
+
+Both were faults in the tests, not the app. `dashfix` now computes its range from the data
+(`last posted sale + 1 day`) instead of assuming the current month is empty, and `gradefilter` now
+asserts that no row contributes a *negative* amount, with the per-invoice comparison against
+`v_sales_line` doing the real work. Evidence for the diagnosis:
+
+```
+posted invoices in 01 Aug 2026 .. 03 Aug 2026 : 1
+    INV-2026-00004  03 Aug 2026  KIRAN EXPORTS  amount 0.00  carats 0.00
+of those worth 0.00 : 1        of those worth > 0 : 0
+NO 1 lines : 85 across 85 invoices, 1 of them worth 0
+```
+
+## Decisions taken, and why
+
+These three came out of testing Sales entry. All were reviewed and **deliberately left as they
+are** — none is a defect, and each would change how the screen is used. They are recorded here and
+in a comment at the code they describe, so the next person does not "fix" one by accident.
+
+**A · The line grid reads Size, then Grade.** Every other grid in the app reads Grade then Size,
+and this page's own empty-state hint says "Pick a grade and size". Swapping the columns changes the
+tab order on a keyboard-first entry screen, where people type without looking. That is a workflow
+decision for whoever uses it daily, not a bug. *Comment at the Size column in MainWindow.xaml.*
+
+**B · The line grid's headers are Title Case.** "Size", "Weight", "Price/ct" — every other grid uses
+UPPERCASE. Purely visual, one line to change, and equally a design decision. *Same comment.*
+
+**C · An invoice can be posted with a total of zero.** Weight must be above zero, but Selection is
+not checked, so a line where everything was rejected amounts to nothing — and if every line is like
+that, so does the invoice. This is correct: a parcel can be rejected in full, and that is a real
+trade worth recording. Whether the app should *warn* before posting a zero-value invoice is a
+business decision. It is how INV-2026-00004 came to show 0.00. *Comment at SaleLine.Validate.*
+
+## Smaller things
+
+**8a · The Remark column was squeezed to nothing.** *Fixed.* It was the only flexible column beside
+ten fixed ones, so below about a 1400px window it took the shortfall — 20px at 1010px, showing
+"Rema" and no remark text at all. It now has a 140px floor and the grid scrolls instead. Keyboard
+entry is unaffected: Tab still walks the cells and the grid scrolls the focused one into view.
+
+**9 · Terms are validated when adding a buyer (0–365) but not on the invoice itself.**
+Sales entry only refuses a negative. Terms of 9,999 days are accepted.
+
+**10 · Broker % is validated when adding a broker (0–100) but the per-invoice override is only
+range-checked by the calculation engine**, which reports "Broker % is out of range" rather than a
+plain-language limit.
+
+**11 · No confirmation before leaving an unsaved invoice.**
+Pressing **New** on Sales entry with a half-typed invoice discards it silently.
+
+**12 · The 1,000-row cap.** Fixed on the desktop — every list pages to the end. **Still open on
+the Android app**, where the owner would see only the first 1,000 invoices and no warning.
+
+## Known data problem, not a code bug
+
+**13 · One corrupt intake row.** There is an intake of 5,00,500 ct at 4,00,00,37,500 per carat in
+the database. It distorts Stock value and the Dashboard inventory card, and makes the Stock table
+wide. It needs a cleanup SQL statement, not a UI change.

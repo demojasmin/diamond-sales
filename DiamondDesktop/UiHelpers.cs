@@ -207,6 +207,12 @@ public static class Friendly
 /// <summary>
 /// Visible when a collection is null or empty — the switch behind every "nothing here yet" panel.
 /// Pass <c>Invert</c> as the parameter to show something only once there IS data.
+///
+/// Pass <c>Loaded</c> when the source is a grid's ItemsSource. There, null does not mean "the
+/// server returned nothing" — it means no load has finished yet, because the handlers assign
+/// ItemsSource only after their await returns. Treating the two alike made every grid state
+/// "No invoices yet" for the ~1.8s a full read takes, which is a claim about the data, not a
+/// progress indicator. With Loaded, the panel waits for a real answer before making one.
 /// </summary>
 public sealed class EmptyToVisibilityConverter : IValueConverter
 {
@@ -214,7 +220,7 @@ public sealed class EmptyToVisibilityConverter : IValueConverter
     {
         bool empty = value switch
         {
-            null => true,
+            null => !string.Equals(parameter as string, "Loaded", StringComparison.OrdinalIgnoreCase),
             int count => count == 0,
             System.Collections.ICollection c => c.Count == 0,
             System.Collections.IEnumerable e => !e.GetEnumerator().MoveNext(),
@@ -228,4 +234,417 @@ public sealed class EmptyToVisibilityConverter : IValueConverter
 
     public object ConvertBack(object? value, Type t, object? p, CultureInfo c)
         => throw new NotSupportedException();
+}
+
+/// <summary>
+/// The state a drill-down row is in, derived from figures the database already returned:
+/// overdue when the view says so, paid when nothing is outstanding, pending otherwise.
+///
+/// Presentation only — no rule is decided here. v_invoice computes is_overdue and outstanding;
+/// this just picks the word for them.
+/// </summary>
+public sealed class InvoiceStateConverter : IValueConverter
+{
+    /// <summary>
+    /// The word the badge shows. Public and static so the drill-down search can match exactly what
+    /// is on screen: the grid displays "Overdue" while that row's Status column holds "POSTED", so
+    /// a search over the raw field found nothing for the very word the user was reading.
+    /// Presentation only — the derivation is unchanged, it just has one home now.
+    /// </summary>
+    public static string State(DiamondDesktop.Data.VInvoice invoice) => invoice switch
+    {
+        { Status: "CANCELLED" } => "Cancelled",
+        { Status: "DRAFT" } => "Draft",
+        { IsOverdue: true } => "Overdue",
+        { Outstanding: <= 0 } => "Paid",
+        _ => "Pending",
+    };
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        // DrillRow wraps an invoice for the dashboard table; unwrapping here keeps the status
+        // badge working from one template whether it is handed the invoice or the row.
+        value switch
+        {
+            DiamondDesktop.Data.VInvoice invoice => State(invoice),
+            DrillRow row => State(row.Invoice),
+            _ => "",
+        };
+
+    public object ConvertBack(object? value, Type t, object? p, CultureInfo c) =>
+        throw new NotSupportedException();
+}
+
+/// <summary>
+/// One audited change, shaped for the screen. The query behind it is unchanged — Repo.AuditAsync
+/// still returns the same 500 rows — this only replaces the flattened "k=v, k=v, …" string the old
+/// grid showed with something a person can read and search.
+/// </summary>
+public sealed class AuditRow
+{
+    public DateTime ChangedAt { get; init; }
+    public string Entity { get; init; } = "";
+    public string Action { get; init; } = "";
+    public long? RecordId { get; init; }
+    public Guid? ChangedBy { get; init; }
+    public IReadOnlyList<AuditField> Fields { get; init; } = [];
+
+    public string When => ChangedAt.ToString("dd-MM-yyyy HH:mm:ss");
+    public string Time => ChangedAt.ToString("HH:mm:ss");
+    public string Record => RecordId is { } id ? $"#{id}" : "";
+    public string By => ChangedBy?.ToString() ?? "system";
+
+    /// <summary>
+    /// What kind of change this is, said once so the field list does not have to repeat it. An
+    /// insert has no previous values at all; a delete has nothing after it. Stating that here is
+    /// what lets the rows below drop the empty half without hiding anything.
+    /// </summary>
+    public string Nature => Action switch
+    {
+        "INSERT" => $"New record · {Fields.Count} value{(Fields.Count == 1 ? "" : "s")}, no previous values",
+        "DELETE" => $"Removed record · {Fields.Count} value{(Fields.Count == 1 ? "" : "s")} as they stood",
+        "UPDATE" => Fields.Count(f => f.Changed) is var n && n > 0
+            ? $"{n} of {Fields.Count} fields changed"
+            : "No field changed",
+        _ => FieldCount,
+    };
+    public string FieldCount => $"{Fields.Count} field{(Fields.Count == 1 ? "" : "s")}";
+
+    /// What changed, in a column's worth of room. An UPDATE names the fields that actually differ;
+    /// anything else reports its size, because listing every column of an INSERT says nothing.
+    public string Summary { get; init; } = "";
+
+    /// Lowercased haystack for the filter box: entity, action, record and every field name and
+    /// value, so searching for what is on screen finds it.
+    public string Search { get; init; } = "";
+
+    public static AuditRow From(DiamondDesktop.Data.AuditLog log)
+    {
+        var before = log.OldValues ?? new Dictionary<string, object>();
+        var after = log.NewValues ?? new Dictionary<string, object>();
+
+        var names = before.Keys.Concat(after.Keys).Distinct(StringComparer.Ordinal)
+                          .OrderBy(k => k, StringComparer.Ordinal).ToList();
+
+        var fields = names.Select(n => new AuditField(
+            n,
+            before.TryGetValue(n, out var b) ? Text(b) : "",
+            after.TryGetValue(n, out var a) ? Text(a) : "")).ToList();
+
+        var changed = fields.Where(f => f.Changed).Select(f => f.Name).ToList();
+        string summary = log.Action switch
+        {
+            "UPDATE" when changed.Count == 0 => "no field changed",
+            "UPDATE" when changed.Count <= 3 => string.Join(", ", changed),
+            "UPDATE" => $"{changed.Count} fields changed",
+            _ when fields.Count == 0 => "",
+            _ => $"{fields.Count} field{(fields.Count == 1 ? "" : "s")}",
+        };
+
+        return new AuditRow
+        {
+            ChangedAt = log.ChangedAt,
+            ChangedBy = log.ChangedBy,
+            Entity = log.AuditedTable,
+            Action = log.Action,
+            RecordId = log.RecordId,
+            Fields = fields,
+            Summary = summary,
+            // Entity, action and record only. Column names were the first mistake — "price"
+            // matched every sales_line row through price_per_ct — and searching the values was
+            // the second: a receipt whose amount happens to contain the digits typed is not what
+            // anyone means by a search result. The record is indexed bare and as "#1", because
+            // that is how the column displays it.
+            Search = string.Join(' ', new[]
+                {
+                    log.AuditedTable,
+                    log.Action,
+                    log.RecordId?.ToString() ?? "",
+                    log.RecordId is { } rid ? $"#{rid}" : "",
+                }
+                .Where(x => x.Length > 0))
+                .ToLowerInvariant(),
+        };
+    }
+
+    /// Values arrive as JSON tokens, so ToString on a null is not the same as an absent key.
+    private static string Text(object? value) => value?.ToString() ?? "";
+}
+
+/// <param name="Changed">True only when both sides are present and differ, so an INSERT does not
+/// light up every field as a change.</param>
+public sealed record AuditField(string Name, string Before, string After)
+{
+    public bool Changed => Before.Length > 0 && After.Length > 0 && Before != After;
+
+    /// <summary>
+    /// True when there are genuinely two sides to compare. Only then do BEFORE and AFTER labels
+    /// earn their space: on an insert every Before is empty, and nine rows of "BEFORE —" say
+    /// nothing the INSERT badge has not already said.
+    /// </summary>
+    public bool HasBoth => Before.Length > 0 && After.Length > 0;
+
+    /// The one value that exists, for the single-sided case — an insert's new value or a delete's
+    /// last value. Never hides anything: if both sides exist, HasBoth is true and both are shown.
+    public string OnlyValue => After.Length > 0 ? After : Before;
+
+    public string BeforeText => Before.Length > 0 ? Before : "\u2014";
+    public string AfterText => After.Length > 0 ? After : "\u2014";
+}
+
+/// <summary>
+/// "Asha Patel" to "AP". The same rule the window's profile chip uses, exposed as a converter so
+/// the user list can draw an avatar without a photo — the schema stores none.
+/// </summary>
+public sealed class InitialsConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        var words = (value as string ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return words.Length == 0 ? "?" : string.Concat(words.Take(2).Select(w => char.ToUpperInvariant(w[0])));
+    }
+
+    public object ConvertBack(object? value, Type t, object? p, CultureInfo c) =>
+        throw new NotSupportedException();
+}
+
+/// <summary>
+/// One row of app_config, dressed for the screen.
+///
+/// The key is never changed and never hidden — it is what <c>Repo.SetConfigAsync</c> writes and what
+/// a support call will ask for. The label is only how it is read.
+/// </summary>
+public sealed class SettingItem : System.ComponentModel.INotifyPropertyChanged
+{
+    public required string Key { get; init; }
+    public required string Label { get; init; }
+    public required string Description { get; init; }
+    public required string Category { get; init; }
+
+    /// The value as it was loaded. Save writes only rows where this and <see cref="Value"/> differ.
+    public required string OriginalValue { get; init; }
+
+    private string _value = "";
+    public string Value
+    {
+        get => _value;
+        set
+        {
+            if (_value == value) return;
+            _value = value;
+            Raise(nameof(Value));
+            Raise(nameof(IsDirty));
+        }
+    }
+
+    public bool IsDirty => Value != OriginalValue;
+
+    /// Lowercased haystack for the search box: label, key and description, so searching either the
+    /// friendly name or the raw key finds the row.
+    public string Search => $"{Label} {Key} {Description}".ToLowerInvariant();
+
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+    private void Raise(string name) =>
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
+
+    // ── The catalogue ───────────────────────────────────────────────────────────────────────────
+    // Every key documented in docs/03 §2.5. A key that is NOT listed here still appears, under
+    // "Other" — a settings screen that silently omits a row it does not recognise is worse than one
+    // that shows a raw key.
+    // ── The catalogue ───────────────────────────────────────────────────────────────────────────
+    // Keyed on what app_config actually contains, verified against the live table — docs/03 §2.5
+    // describes an earlier naming (money_dp, negative_stock_policy, lockout_attempts) that the
+    // database does not use. Those older names are kept as well, so a client database seeded from
+    // the document still reads properly.
+    //
+    // A key that is NOT listed here still appears, under "Other". A settings screen that silently
+    // omits a row it does not recognise is worse than one that shows a raw key.
+    private static readonly Dictionary<string, (string Category, string Label, string Description)> Known =
+        new(StringComparer.Ordinal)
+        {
+            // ── as the database has them ──
+            ["company_name"] = ("General", "Company name",
+                "The trading name shown on printed bills."),
+            ["base_currency"] = ("General", "Base currency",
+                "The currency every stored amount is expressed in."),
+            ["money_precision"] = ("General", "Money decimal places",
+                "How many decimals amounts are rounded and displayed to."),
+            ["carat_precision"] = ("General", "Carat decimal places",
+                "How many decimals weights are rounded and displayed to."),
+            ["alert_overdue_days"] = ("General", "Overdue after (days)",
+                "How many days past the due date an invoice is counted as overdue."),
+
+            ["negative_stock"] = ("Inventory", "Negative stock policy",
+                "What happens when a sale would take a bucket below zero — BLOCK, WARN or ALLOW."),
+            ["alert_low_stock_ct"] = ("Inventory", "Low stock threshold (ct)",
+                "A grade and size holding fewer carats than this is reported as low."),
+
+            ["session_timeout_min"] = ("Security", "Session timeout (minutes)",
+                "How long a signed-in session stays valid without activity."),
+            ["max_login_attempts"] = ("Security", "Lockout after failed attempts",
+                "How many failed sign-ins lock an account."),
+
+            // ── the names docs/03 §2.5 uses, in case a database is seeded from it ──
+            ["money_dp"] = ("General", "Money decimal places",
+                "How many decimals amounts are rounded and displayed to."),
+            ["carat_dp"] = ("General", "Carat decimal places",
+                "How many decimals weights are rounded and displayed to."),
+            ["rounding"] = ("General", "Rounding mode",
+                "How a half value is resolved — HALF_UP rounds it away from zero."),
+            ["settlement_write_off_threshold"] = ("General", "Settlement write-off threshold",
+                "An outstanding balance smaller than this closes the invoice and posts the residue "
+                + "as a rounding adjustment, instead of leaving a phantom receivable."),
+            ["negative_stock_policy"] = ("Inventory", "Negative stock policy",
+                "What happens when a sale would take a bucket below zero — BLOCK, WARN or ALLOW."),
+            ["auto_reject_on_post"] = ("Inventory", "Auto-reject on post",
+                "Whether posting an invoice also writes the rejection carats as a stock movement."),
+            ["lockout_attempts"] = ("Security", "Lockout after failed attempts",
+                "How many failed sign-ins lock an account."),
+            ["manager_sees_margin"] = ("Security", "Managers can see margin",
+                "Whether the margin figures are visible to managers as well as owners."),
+        };
+
+    public static readonly string[] Categories = ["General", "Inventory", "Security", "Other"];
+
+    public static SettingItem From(string key, string value)
+    {
+        var known = Known.TryGetValue(key, out var k)
+            ? k
+            : ("Other", Humanise(key), "Not one of the documented settings — shown so it cannot be missed.");
+
+        return new SettingItem
+        {
+            Key = key,
+            Category = known.Item1,
+            Label = known.Item2,
+            Description = known.Item3,
+            OriginalValue = value,
+            Value = value,
+        };
+    }
+
+    /// "some_unknown_key" to "Some unknown key" — a fallback label, not a translation.
+    private static string Humanise(string key) =>
+        key.Length == 0 ? key
+            : char.ToUpperInvariant(key[0]) + key[1..].Replace('_', ' ');
+}
+
+/// <summary>
+/// The word on a stock bucket's badge. A converter rather than a computed property on
+/// VStockPosition, because that type mirrors the database view and gains nothing from knowing how
+/// a badge reads.
+///
+/// Zero and negative are deliberately different: zero is a bucket that has sold out, negative means
+/// stock left that never arrived — a reconciliation fault, not a level.
+/// </summary>
+public sealed class StockStateConverter : IValueConverter
+{
+    public static string State(decimal balance) =>
+        balance < 0 ? "Negative" : balance == 0 ? "Empty" : "In stock";
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is decimal balance ? State(balance) : "";
+
+    public object ConvertBack(object? value, Type t, object? p, CultureInfo c) =>
+        throw new NotSupportedException();
+}
+
+/// <summary>
+/// International short form for money: 125,000 reads as "125.00 K", 12,500,000 as "12.50 M",
+/// 1,250,000,000 as "1.25 B".
+///
+/// Display only — every caller keeps the decimal it was given. Sorting binds to the model
+/// property, filtering matches against the exact figure, and the CSV export reads the property
+/// rather than the rendered text, so ordering, search, exports and APIs are all untouched.
+///
+/// Money only, deliberately. Carat weights stay exact: a parcel weight is reconciled against a
+/// physical packet, and "60.00 K ct" cannot be checked against anything.
+/// </summary>
+public static class Money
+{
+    private const decimal Billion = 1_000_000_000m, Million = 1_000_000m, Thousand = 1_000m;
+
+    public static string Short(decimal value)
+    {
+        decimal size = Math.Abs(value);
+        // Below a thousand there is nothing to shorten, and rounding a small figure to two decimals
+        // is what every other number on the screen already does.
+        if (size < Thousand) return value.ToString("N2");
+
+        (decimal unit, string suffix) = size >= Billion ? (Billion, " B")
+                                      : size >= Million ? (Million, " M")
+                                                        : (Thousand, " K");
+
+        // Two decimals on the quotient: 1.25 M, not 1.3 M, so the figure still carries the
+        // precision someone would read out loud.
+        //
+        // Invariant grouping on the quotient, not the machine's: the app runs under en-IN, whose
+        // groups are 2,10,00,000 — pairing a lakh-grouped quotient with a "B" suffix reads as two
+        // different systems in one figure. This only shows at all past a thousand billion.
+        return (value / unit).ToString("N2", CultureInfo.InvariantCulture) + suffix;
+    }
+
+    public static string Short(decimal? value) => value is { } v ? Short(v) : "—";
+}
+
+/// Binds the short form to a money column or label. ConverterParameter="Exact" gives the plain
+/// figure back, for the places that need to stay reconcilable.
+public sealed class ShortMoneyConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is null) return "—";
+        if (value is not decimal d)
+        {
+            if (!decimal.TryParse(System.Convert.ToString(value, culture), NumberStyles.Any, culture, out d))
+                return value.ToString() ?? "";
+        }
+        return string.Equals(parameter as string, "Exact", StringComparison.OrdinalIgnoreCase)
+            ? d.ToString("N2")
+            : Money.Short(d);
+    }
+
+    public object ConvertBack(object? value, Type t, object? p, CultureInfo c)
+        => Binding.DoNothing;
+}
+
+
+/// <summary>
+/// One row of the dashboard's drill-down table. It wraps the invoice rather than replacing it, so
+/// the STATUS template and the sort paths still read the same properties, and adds the one figure
+/// the table could not carry: what this invoice contributes under the current filters. With a
+/// grade set that is the grade's share; without one it is the invoice total.
+/// </summary>
+public sealed class DrillRow
+{
+    public required DiamondDesktop.Data.VInvoice Invoice { get; init; }
+    public required decimal ScopedAmount { get; init; }
+
+    public string? InvoiceNo => Invoice.InvoiceNo;
+    public string BuyerName => Invoice.BuyerName;
+    public DateOnly InvoiceDate => Invoice.InvoiceDate;
+    public decimal Outstanding => Invoice.Outstanding;
+    public bool IsOverdue => Invoice.IsOverdue;
+    public string Status => Invoice.Status;
+}
+
+/// <summary>
+/// "1 line", "2 lines" — a count with a noun that agrees with it. The rest of the app builds these
+/// in code with a ternary; a chip bound straight to a count in XAML cannot, and read "1 lines".
+/// Pass the singular noun as the parameter.
+/// </summary>
+public sealed class CountLabelConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        string noun = parameter as string ?? "item";
+        int count = value switch
+        {
+            int i => i,
+            System.Collections.ICollection c => c.Count,
+            _ => int.TryParse(System.Convert.ToString(value, culture), out int n) ? n : 0,
+        };
+        return $"{count:N0} {noun}{(count == 1 ? "" : "s")}";
+    }
+
+    public object ConvertBack(object? value, Type t, object? p, CultureInfo c) => Binding.DoNothing;
 }

@@ -757,6 +757,74 @@ if (File.Exists(realBook))
 foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
     Check(name, ok, detail);
 
+// ── Empty-state panels · "nothing here" must not be said before anything was read ───────────
+// A grid's ItemsSource is null until its load finishes, so a null that reads as "empty" makes
+// every screen claim it has no data for as long as the fetch takes.
+{
+    var empty = new DiamondDesktop.EmptyToVisibilityConverter();
+    object Vis(object? v, string? p = null) =>
+        empty.Convert(v, typeof(System.Windows.Visibility), p, System.Globalization.CultureInfo.InvariantCulture);
+
+    Check("EMPTY · grid not loaded yet says nothing",
+        Vis(null, "Loaded").Equals(System.Windows.Visibility.Collapsed));
+    Check("EMPTY · grid loaded and genuinely empty shows the panel",
+        Vis(new List<int>(), "Loaded").Equals(System.Windows.Visibility.Visible));
+    Check("EMPTY · grid with rows shows no panel",
+        Vis(new List<int> { 1 }, "Loaded").Equals(System.Windows.Visibility.Collapsed));
+    Check("EMPTY · a null cell value still counts as empty",
+        Vis(null).Equals(System.Windows.Visibility.Visible));
+    Check("EMPTY · Invert still reports the opposite",
+        Vis(new List<int>(), "Invert").Equals(System.Windows.Visibility.Collapsed));
+}
+
+// ── Short money · K / M / B ────────────────────────────────────────────────
+// Display formatting only. It is checked here, next to the calculations, because the one thing it
+// must never do is change a figure — a bad boundary would misreport money on every screen at once.
+{
+    string S(decimal v) => DiamondDesktop.Money.Short(v);
+
+    Check("MONEY · under a thousand is left alone", S(999.5m) == "999.50", S(999.5m));
+    Check("MONEY · a thousand is the first K", S(1_000m) == "1.00 K", S(1_000m));
+    Check("MONEY · 125,000 reads as K", S(125_000m) == "125.00 K", S(125_000m));
+    Check("MONEY · a million is the first M", S(1_000_000m) == "1.00 M", S(1_000_000m));
+    Check("MONEY · 12,500,000 reads as M", S(12_500_000m) == "12.50 M", S(12_500_000m));
+    Check("MONEY · a billion is the first B", S(1_000_000_000m) == "1.00 B", S(1_000_000_000m));
+    Check("MONEY · 1.25 billion reads as B", S(1_250_000_000m) == "1.25 B", S(1_250_000_000m));
+
+    // A hair under each boundary must not round up into the next unit and read 1000 of it.
+    Check("MONEY · 999,999 stays in K", S(999_999m).EndsWith(" K"), S(999_999m));
+    Check("MONEY · 999,999,999 stays in M", S(999_999_999m).EndsWith(" M"), S(999_999_999m));
+
+    Check("MONEY · negatives keep their sign", S(-2_500_000m) == "-2.50 M", S(-2_500_000m));
+    Check("MONEY · zero is not shortened", S(0m) == "0.00", S(0m));
+    Check("MONEY · nothing at all reads as a dash", DiamondDesktop.Money.Short((decimal?)null) == "—");
+
+    // The quotient uses invariant grouping, not the machine's: the app runs under en-IN, and a
+    // lakh-grouped quotient beside a "B" suffix would be two numbering systems in one figure.
+    Check("MONEY · a huge figure groups in threes",
+        S(2_002_075_466_700_000_000m) == "2,002,075,466.70 B", S(2_002_075_466_700_000_000m));
+
+    // The whole point: the formatter is told a decimal and hands back text. Nothing it does can
+    // reach the value a grid sorts on, a filter matches against, or an export writes.
+    decimal original = 12_345_678.90m;
+    _ = S(original);
+    Check("MONEY · formatting does not touch the value", original == 12_345_678.90m);
+}
+
+// ── Count labels · a noun that agrees with its number ────────────────────────────────
+{
+    var label = new DiamondDesktop.CountLabelConverter();
+    string L(object v) => (string)label.Convert(v, typeof(string), "line",
+        System.Globalization.CultureInfo.InvariantCulture);
+
+    Check("COUNT · one is singular", L(1) == "1 line", L(1));
+    Check("COUNT · two is plural", L(2) == "2 lines", L(2));
+    Check("COUNT · none is plural", L(0) == "0 lines", L(0));
+    Check("COUNT · a collection is counted, not printed", L(new List<int> { 1, 2, 3 }) == "3 lines",
+        L(new List<int> { 1, 2, 3 }));
+    Check("COUNT · thousands are grouped", L(1500) == "1,500 lines", L(1500));
+}
+
 Console.WriteLine();
 Console.WriteLine(failed == 0 ? "All checks passed." : $"{failed} check(s) FAILED.");
 return failed == 0 ? 0 : 1;

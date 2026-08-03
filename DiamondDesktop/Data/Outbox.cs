@@ -11,8 +11,9 @@ namespace DiamondDesktop.Data;
 /// so one code path covers both. `payloadJson` is the raw body, client_ref already inside it.
 public static class Outbox
 {
-    private const string Url = "https://nzcvjaixgqoliyrotstz.supabase.co";
-    private const string AnonKey = "sb_publishable_bkIjJlfcQZDrXD6-l7i1uQ_v6OLf9Un";
+    // Same source as Db, so the two can never point at different projects.
+    private static string Url => AppSettings.Current.Url;
+    private static string AnonKey => AppSettings.Current.AnonKey;
 
     private static readonly string DbPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SolitaireDesk", "outbox.db");

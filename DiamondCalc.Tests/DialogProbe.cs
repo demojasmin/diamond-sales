@@ -29,7 +29,8 @@ public static class DialogProbe
                              "Themes/LightTheme.xaml", "Themes/Typography.xaml",
                              "Styles/Buttons.xaml", "Styles/Inputs.xaml",
                              "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
-                             "Styles/AppOverrides.xaml", "Styles/Components.xaml",
+                             "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
+                             "Styles/Audit.xaml",
                          })
                 {
                     try

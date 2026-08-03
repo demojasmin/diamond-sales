@@ -184,6 +184,10 @@ public sealed class SaleLine : Notifier
     /// </summary>
     private (string? Message, bool Incomplete) Validate()
     {
+        // Selection is deliberately NOT required to be above zero. A parcel can be rejected in
+        // full, which is a real trade and leaves the line — and the whole invoice — at zero value.
+        // That is why a zero-amount invoice can be posted (docs/11 §Gaps, item 4). Whether the app
+        // should warn before posting one is a business decision, not a validation bug.
         if (Grade is null) return ("Grade is required", true);
         if (Size is null) return ("Size is required", true);
         if (GrossWeightCt <= 0) return ("Weight must be greater than 0", true);

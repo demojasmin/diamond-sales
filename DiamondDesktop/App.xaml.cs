@@ -30,15 +30,35 @@ public partial class App : Application
         // open across the handover, then hand ownership to MainWindow.
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
-        // Sign in first: nothing in this app happens un-attributed (AUTH-001).
-        // Db.CurrentUser, not login.SignedIn — a session restored from disk skips the sign-in click.
-        var login = new LoginWindow();
-        if (login.ShowDialog() != true || Db.CurrentUser is null) { Shutdown(); return; }
+        // The splash covers the one unavoidable wait at startup: LoginWindow restores and refreshes
+        // a saved session in its Loaded handler, which is a network round trip. Presentation only —
+        // the sign-in sequence below is unchanged, and nothing waits on the splash.
+        var splash = new SplashWindow();
+        splash.Show();
 
-        var main = new MainWindow();
-        MainWindow = main;
-        ShutdownMode = ShutdownMode.OnMainWindowClose;
-        main.Show();
+        try
+        {
+            // Sign in first: nothing in this app happens un-attributed (AUTH-001).
+            // Db.CurrentUser, not login.SignedIn — a session restored from disk skips the sign-in click.
+            var login = new LoginWindow();
+
+            // Two ways out, and the splash has to clear on both: the form appears and asks for a
+            // password, or a restored session closes the window before it ever renders.
+            login.ContentRendered += (_, _) => splash.Dismiss();
+
+            if (login.ShowDialog() != true || Db.CurrentUser is null) { Shutdown(); return; }
+
+            var main = new MainWindow();
+            MainWindow = main;
+            ShutdownMode = ShutdownMode.OnMainWindowClose;
+            main.Show();
+        }
+        finally
+        {
+            // Close, not Dismiss: by here the app either has its main window or is shutting down,
+            // and a splash left alive would hold the process open under OnExplicitShutdown.
+            splash.Close();
+        }
     }
 
     /// <summary>

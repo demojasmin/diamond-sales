@@ -234,6 +234,10 @@
     <!-- ========================= CHECKBOX ========================= -->
     <Style x:Key="FieldCheckBox" TargetType="CheckBox">
         <Setter Property="Cursor" Value="Hand"/>
+        <!-- The stock focus visual is a dotted rectangle drawn around the whole control, label and
+             all. Every other input in the app suppresses it and shows focus on its own border
+             instead; this one was still drawing it. -->
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
         <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
         <Setter Property="VerticalContentAlignment" Value="Center"/>
         <Setter Property="Template">
@@ -253,6 +257,12 @@
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="tick" Property="Visibility" Value="Visible"/>
                             <Setter TargetName="box" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                        </Trigger>
+                        <!-- Focus still has to be visible to anyone using the keyboard — it moves
+                             onto the box, the same way the text fields show it on their border. -->
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="box" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            <Setter TargetName="box" Property="BorderThickness" Value="2"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>

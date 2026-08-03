@@ -13,8 +13,10 @@ namespace DiamondDesktop.Data;
 /// and every request rides the signed-in user's token.
 public static class Db
 {
-    private const string Url = "https://nzcvjaixgqoliyrotstz.supabase.co";
-    private const string AnonKey = "sb_publishable_bkIjJlfcQZDrXD6-l7i1uQ_v6OLf9Un";
+    // Read from appsettings.json beside the executable, with the shipped values as the fallback.
+    // See AppConfig for why the anon key is fine in a plain file and what must never join it.
+    private static string Url => AppSettings.Current.Url;
+    private static string AnonKey => AppSettings.Current.AnonKey;
     private const string Offline = "No connection to the server.";
 
     private static readonly IGotrueSessionPersistence<Session> Sessions = new EncryptedSession();

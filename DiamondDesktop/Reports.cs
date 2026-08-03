@@ -72,33 +72,55 @@ public static class Reports
         doc.Blocks.Add(Heading(companyName, 20));
         doc.Blocks.Add(Heading($"{invoice.DocType} · {invoice.InvoiceNo ?? "DRAFT"}", 14));
 
+        // The bill is the complete record of the invoice now. The drawer on screen shows a summary
+        // and sends the rest here, so everything it stopped showing has to be on this page.
         doc.Blocks.Add(new Paragraph(new Run(
             $"Date {invoice.InvoiceDate:dd-MM-yyyy}\nBuyer {invoice.BuyerName}\n" +
-            $"Terms {invoice.TermsDays} days · Due {invoice.DueDate:dd-MM-yyyy}"))
+            $"Terms {invoice.TermsDays} days · Due {invoice.DueDate:dd-MM-yyyy}\n" +
+            $"Salesperson {invoice.Salesperson ?? "—"}"
+            + (string.IsNullOrWhiteSpace(invoice.BrokerName) ? "" : $"\nBroker {invoice.BrokerName}")))
         { Margin = new Thickness(0, 0, 0, 14) });
 
+        // Rejection and Ex rate are on the line and were not printed before. A bill that cannot be
+        // checked against the parcel it describes is not much of a bill.
         var table = new Table { CellSpacing = 0 };
-        for (int i = 0; i < 7; i++) table.Columns.Add(new TableColumn());
+        for (int i = 0; i < 9; i++) table.Columns.Add(new TableColumn());
         var body = new TableRowGroup();
         table.RowGroups.Add(body);
 
-        body.Rows.Add(Row(bold: true, "Grade", "Size", "Weight", "Selection", "Price/ct", "Less", "Amount"));
+        body.Rows.Add(Row(bold: true, "Grade", "Size", "Weight ct", "Selection ct", "Rejection ct",
+                                      "Price/ct", "Ex rate", "Less 1/2", "Amount"));
         foreach (var l in lines)
             body.Rows.Add(Row(false, l.GradeCode, l.SizeCode, N(l.GrossWeightCt), N(l.SelectionCt),
-                              N(l.PricePerCt), $"{l.Less1Pct}/{l.Less2Pct}", N(l.Amount)));
+                              N(l.RejectionCt), N(l.PricePerCt), N(l.ExRate),
+                              $"{l.Less1Pct}/{l.Less2Pct}", N(l.Amount)));
+
+        // A totals row under the columns it totals, so the carats can be checked by eye.
+        body.Rows.Add(Row(bold: true, "Total", "", N(lines.Sum(l => l.GrossWeightCt)),
+                          N(lines.Sum(l => l.SelectionCt)), N(lines.Sum(l => l.RejectionCt)),
+                          "", "", "", N(invoice.AmountTotal)));
 
         doc.Blocks.Add(table);
 
-        doc.Blocks.Add(new Paragraph(new Bold(new Run($"Total  {N(invoice.AmountTotal)}")))
-        { TextAlignment = TextAlignment.Right, Margin = new Thickness(0, 12, 0, 0) });
+        var summary = new Table { CellSpacing = 0, Margin = new Thickness(0, 14, 0, 0) };
+        summary.Columns.Add(new TableColumn());
+        summary.Columns.Add(new TableColumn());
+        var totals = new TableRowGroup();
+        summary.RowGroups.Add(totals);
+
+        totals.Rows.Add(Row(false, "Carats sold", N(invoice.CaratsSold)));
+        totals.Rows.Add(Row(false, "Blended rate / ct", invoice.BlendedRate is { } rate ? N(rate) : "—"));
+        totals.Rows.Add(Row(false, "Broker %", N(invoice.BrokerPct)));
+        totals.Rows.Add(Row(false, "Broker payable", N(invoice.BrokerPayable)));
+        totals.Rows.Add(Row(bold: true, "Invoice total", N(invoice.AmountTotal)));
+        totals.Rows.Add(Row(false, "Received", N(invoice.Received)));
+        totals.Rows.Add(Row(bold: true, "Outstanding", N(invoice.Outstanding)));
+        doc.Blocks.Add(summary);
 
         if (invoice.BrokerPct > 0)
             doc.Blocks.Add(new Paragraph(new Run(
                 $"Broker {invoice.BrokerPct}% is already deducted from the amount above."))
             { FontSize = 10, Foreground = System.Windows.Media.Brushes.Gray });
-
-        doc.Blocks.Add(new Paragraph(new Run($"Outstanding  {N(invoice.Outstanding)}"))
-        { TextAlignment = TextAlignment.Right });
 
         try { dialog.PrintDocument(((IDocumentPaginatorSource)doc).DocumentPaginator, $"Invoice {invoice.InvoiceNo}"); }
         catch (Exception e) { return $"Could not print {invoice.InvoiceNo} — {e.Message}"; }
