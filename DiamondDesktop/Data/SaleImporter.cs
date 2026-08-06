@@ -1,4 +1,4 @@
-namespace DiamondDesktop.Data;
+﻿namespace DiamondDesktop.Data;
 
 /// <summary>
 /// A progress report. Total is 0 while the step has no countable work, which the dialog shows as an
@@ -47,87 +47,66 @@ public static class SaleImporter
         var (buyerMap, buyersCreated) = await Repo.EnsureBuyersAsync(buyerDefaults);
         var (brokerMap, brokersCreated) = await Repo.EnsureBrokersAsync(brokerDefaults);
 
-        // Replace, not merge: a previous import is cleared before anything new lands, so a
-        // re-import of a corrected file cannot leave yesterday's rows behind it.
-        int deleted = await Repo.DeleteImportedAsync(progress);
+        // Replace, not merge — but as ONE transaction now, through replace_imported_sales (0018).
+        //
+        // It used to be a delete loop followed by an insert loop over separate HTTP calls. Between
+        // them the old dataset was gone and the new one had not arrived, and anything failing in
+        // that gap — a dropped connection, a rejected row — left the database holding neither. The
+        // delete now lives inside the function, so a refusal of any kind rolls the whole thing back
+        // and yesterday's import is still there.
+        progress?.Report(new ImportProgress(
+            $"Replacing the sale history… {plan.Invoices.Count:N0} invoice(s)", 0, plan.Invoices.Count));
 
-        Guid? user = Db.UserId;
-        int invoices = 0, lines = 0, receipts = 0;
-
-        foreach (var chunk in plan.Invoices.Chunk(100))
+        var payload = new Dictionary<string, object?>
         {
-            progress?.Report(new ImportProgress(
-                $"Importing invoices… {invoices:N0} of {plan.Invoices.Count:N0}",
-                invoices, plan.Invoices.Count));
-
-            var toInsert = chunk.Select(inv => new ImportedInvoice
+            ["currency_id"] = currencyId,
+            ["invoices"] = plan.Invoices.Select(inv => new Dictionary<string, object?>
             {
-                InvoiceNo = inv.InvoiceNo,
-                InvoiceDate = inv.Date,
-                BuyerId = buyerMap[inv.Buyer],
-                BrokerId = inv.Broker is null ? null : brokerMap[inv.Broker],
-                BrokerPct = inv.BrokerPct,
-                TermsDays = inv.TermsDays,
-                DocType = inv.DocType,
-                CurrencyId = currencyId,
-                Status = InvoiceStatus.POSTED,
-                CreatedBy = user,
-                UpdatedBy = user,
-            }).ToList();
+                ["invoice_no"] = inv.InvoiceNo,
+                ["invoice_date"] = inv.Date.ToString("yyyy-MM-dd"),
+                ["buyer_id"] = buyerMap[inv.Buyer],
+                ["broker_id"] = inv.Broker is null ? null : brokerMap[inv.Broker],
+                ["broker_pct"] = inv.BrokerPct,
+                ["terms_days"] = inv.TermsDays,
+                ["doc_type"] = inv.DocType,
 
-            var saved = await Repo.InsertImportedInvoicesAsync(toInsert);
-            invoices += saved.Count;
+                // Capped at the invoice total, exactly as the row-by-row importer did. The
+                // workbook's Rec. Amt is rounded to whole rupees while the amount is recomputed by
+                // Postgres from the lines, so a paid invoice can arrive with 1,39,865.00 received
+                // against 1,39,864.73 owed. Left as-is that is an outstanding of -0.27 for ever,
+                // and the Dashboard and Invoices page then disagree because one floors at zero and
+                // the other does not. The residue is rounding, not money.
+                ["received"] = inv.Received <= 0 ? 0m
+                             : inv.Total > 0 ? Math.Min(inv.Received, inv.Total)
+                             : inv.Received,
 
-            // Insert returns rows in the order they were sent, but pairing by invoice_no rather
-            // than by position means a reordered response cannot silently attach lines to the
-            // wrong document.
-            var idByNo = saved.Where(s => s.InvoiceNo is not null)
-                .ToDictionary(s => s.InvoiceNo!, s => s.InvoiceId, StringComparer.Ordinal);
-
-            var lineRows = new List<SalesLine>();
-            var receiptRows = new List<Receipt>();
-            foreach (var inv in chunk)
-            {
-                if (!idByNo.TryGetValue(inv.InvoiceNo, out long id)) continue;
-
-                lineRows.AddRange(inv.Lines.Select(l => new SalesLine
+                ["lines"] = inv.Lines.Select(l => new Dictionary<string, object?>
                 {
-                    InvoiceId = id,
-                    GradeId = grades[l.GradeCode],
-                    SizeId = sizes[l.SizeCode],
-                    GrossWeightCt = l.GrossCt,
-                    SelectionCt = l.SelectionCt,
-                    PricePerCt = l.PricePerCt,
-                    ExRate = l.ExRate,
-                    Less1Pct = l.Less1Pct,
-                    Less2Pct = l.Less2Pct,
-                }));
+                    ["grade_id"] = grades[l.GradeCode],
+                    ["size_id"] = sizes[l.SizeCode],
+                    ["gross_weight_ct"] = l.GrossCt,
+                    ["selection_ct"] = l.SelectionCt,
+                    ["price_per_ct"] = l.PricePerCt,
+                    ["ex_rate"] = l.ExRate,
+                    ["less1_pct"] = l.Less1Pct,
+                    ["less2_pct"] = l.Less2Pct,
+                }).ToList(),
+            }).ToList(),
+        };
 
-                // The sheet records no payment date, so the invoice date stands in — an assumption,
-                // and docs/08 §5 says to declare it rather than bury it.
-                if (inv.Received > 0)
-                    receiptRows.Add(new Receipt
-                    {
-                        InvoiceId = id,
-                        ReceiptDate = inv.Date,
-                        Amount = inv.Received,
-                        Method = "IMPORTED",
-                    });
-            }
+        var outcome = await Repo.ReplaceImportedSalesAsync(payload);
 
-            foreach (var part in lineRows.Chunk(500))
-            {
-                await Repo.InsertLinesAsync(part.ToList());
-                lines += part.Length;
-            }
-            foreach (var part in receiptRows.Chunk(500))
-            {
-                await Repo.InsertReceiptsAsync(part.ToList());
-                receipts += part.Length;
-            }
-        }
+        progress?.Report(new ImportProgress("Sale history replaced",
+                                            plan.Invoices.Count, plan.Invoices.Count));
 
-        return new ImportResult(deleted, invoices, lines, receipts, buyersCreated, brokersCreated);
+        // A short count means rows were dropped. Because this was one transaction there is nothing
+        // half-written to clean up — but it still has to be said rather than reported as success.
+        if (outcome.Invoices != plan.Invoices.Count)
+            throw new InvalidOperationException(
+                $"Sent {plan.Invoices.Count} invoice(s) but the database wrote {outcome.Invoices}.");
+
+        return new ImportResult(outcome.Deleted, outcome.Invoices, outcome.Lines, outcome.Receipts,
+                                buyersCreated, brokersCreated);
     }
 
     private static T Commonest<T>(IEnumerable<T> values) where T : notnull =>

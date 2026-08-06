@@ -42,7 +42,12 @@ public static class Xlsx
         string rid = (string?)sheet.Attribute(R + "id") ?? "";
         string target = Part(zip, "xl/_rels/workbook.xml.rels").Descendants(PR + "Relationship")
             .First(e => (string?)e.Attribute("Id") == rid).Attribute("Target")!.Value;
-        string part = "xl/" + target.TrimStart('/');
+        // A relationship Target beginning with "/" is package-absolute; anything else is relative
+        // to the part that declared it, which for workbook.xml.rels means "xl/". Prefixing both
+        // alike produced "xl/xl/worksheets/sheet1.xml" and rejected the file as corrupt. Excel
+        // writes the relative form, so this never showed on a hand-made workbook — openpyxl and
+        // several other writers use the absolute one.
+        string part = target.StartsWith('/') ? target.TrimStart('/') : "xl/" + target;
 
         // Shared strings are optional: a sheet can carry every string inline.
         var shared = zip.GetEntry("xl/sharedStrings.xml") is null

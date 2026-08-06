@@ -3,6 +3,12 @@
 Status: **draft**
 Covers [02 §14](02-requirement-analysis.md) deliverables 1, 6 and 7: solution structure,
 non-functional design (auth, audit, offline outbox, backup), and deployment topology.
+
+> **Offline outbox — designed, not built (05 Aug 2026).** An `Outbox.cs` existed in the desktop app
+> implementing a SQLite queue and replay, with no call site anywhere in the repository; it was
+> removed rather than left to imply a capability that was not there. A write during a network drop
+> currently fails and the work is lost. Everything below describing the outbox is the intended
+> design, not the shipped behaviour.
 Data model and calculation rules are in [03-domain-model.md](03-domain-model.md).
 
 > **Stance.** Ten users, ~3,000 sale lines and ~10,000 stock movements a year. Nothing here is

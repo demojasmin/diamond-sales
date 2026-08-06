@@ -143,6 +143,13 @@ foreach (var (code, order) in new[] { ("NO 1", 1), ("NO 1 BB", 2), ("NO II", 3) 
     DiamondDesktop.Catalogue.Grades.Add(
         new DiamondDesktop.Data.Grade { GradeId = order, Code = code, DisplayName = code, SortOrder = order });
 
+// grade_size, as the live table has it: NO 1 takes all four, everyone else drops -2.
+DiamondDesktop.Catalogue.SetGradeSizes(
+    from g in DiamondDesktop.Catalogue.Grades
+    from s in DiamondDesktop.Catalogue.AllSizes
+    where s.Code != "-2" || g.Code is "NO 1" or "NO 1 BB"
+    select new DiamondDesktop.Data.GradeSize { GradeId = g.GradeId, SizeId = s.SizeId });
+
 var uiMinus2 = DiamondDesktop.Catalogue.AllSizes.First(s => s.Code == "-2");
 var uiPlus65 = DiamondDesktop.Catalogue.AllSizes.First(s => s.Code == "+6.5");
 var uiPlus11 = DiamondDesktop.Catalogue.AllSizes.First(s => s.Code == "+11");
@@ -184,6 +191,25 @@ line.SelectionCt = 112.89m;
 // grade_size, enforced at entry (docs/04 §3.4)
 Check("SALES-001 NO 1 offers four sizes",
     DiamondDesktop.Catalogue.SizesFor(GradeOf("NO 1")).Count == 4);
+
+// Size is the first column on the grid, so the picker is normally opened before a grade exists.
+// Answering that with the whole size_bucket table offered 0.2 and 0.25 — kept only so the sales
+// importer can resolve them, traded by no grade.
+{
+    var junk = new DiamondDesktop.Data.SizeBucket { SizeId = 99, Code = "0.25", SortOrder = 99 };
+    DiamondDesktop.Catalogue.AllSizes.Add(junk);
+
+    var noGrade = DiamondDesktop.Catalogue.SizesFor(null);
+    Check("SALES-001 no grade yet offers only sizes some grade trades",
+        !noGrade.Contains(junk), string.Join(",", noGrade.Select(s => s.Code)));
+    Check("SALES-001 and still offers the real ones", noGrade.Count == 4);
+
+    // A grade that trades it would still show it — the rule is "unsold", not a blacklist.
+    Check("SALES-001 a picked grade is unaffected by the fallback",
+        !DiamondDesktop.Catalogue.SizesFor(GradeOf("NO II")).Contains(junk));
+
+    DiamondDesktop.Catalogue.AllSizes.Remove(junk);
+}
 Check("SALES-001 NO II offers three — the -2 bucket is not on the list",
     !DiamondDesktop.Catalogue.SizesFor(GradeOf("NO II")).Contains(uiMinus2));
 
@@ -725,9 +751,12 @@ if (File.Exists(realBook))
     var realGrades = DiamondDesktop.SaleFileImport.AliasMap(
         [("NO 1", "NO1;NO 1;1"), ("NO 1 BB", "1BB;1 BB;NO1BB;NO 1BB"), ("NO 2", "NO2;2;NO-2"),
          ("NO 2 BB", "2BB;2 BB;NO2BB"), ("NO II", "II;NOII;NO2SPOT"),
-         ("NO DX", "DX;NODX;DELUXE;NO-DX"), ("EX 1", null), ("NO 3", "NO3;3;NO-3"),
+         // "Ex1" and "T COLOR" are the spellings Sale File Sample-1 brought in on 04 Aug 2026.
+         // Without them three rows were skipped silently — real sales dropped from the import.
+         // Added to the database by migration 0018; mirrored here so the two cannot drift.
+         ("NO DX", "DX;NODX;DELUXE;NO-DX"), ("EX 1", "Ex1"), ("NO 3", "NO3;3;NO-3"),
          ("NO 4", "NO4;4;NO-4"), ("NO 5", "NO5;5;NO-5"), ("NO 6", "NO6;6;NO-6"),
-         ("NO 7", "NO7;7;NO-7"), ("TOP-COL", null), ("COL", null), ("OW", null),
+         ("NO 7", "NO7;7;NO-7"), ("TOP-COL", "T COLOR"), ("COL", null), ("OW", null),
          ("LC 1", "LC1;L C 1;LC-1"), ("LC 2", "LC2;L C 2;LC-2"), ("LC 3", "LC3;L C 3;LC-3"),
          ("GH", null), ("LB 1", "LB1;L B 1;LB-1"), ("LB 2", "LB2;L B 2;LB-2"), ("+14", null),
          ("EXTRA", null)]);
@@ -809,6 +838,152 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
     decimal original = 12_345_678.90m;
     _ = S(original);
     Check("MONEY · formatting does not touch the value", original == 12_345_678.90m);
+}
+
+// ── SETTINGS · the four that saved and did nothing ──────────────────────────
+// Each of these settings was written by the Settings page and read by no one. The checks below
+// are deliberately about the READING side: that a value in app_config reaches the code that acts
+// on it, which is the whole of what was broken.
+{
+    Dictionary<string, string> Config(params (string Key, string Value)[] kv) =>
+        kv.ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
+
+    // ── 1 · money_precision ──
+    DiamondDesktop.Data.Policy.Apply(Config(("money_precision", "0")));
+    Check("SET-1 money_precision 0 drops the decimals",
+        DiamondDesktop.Money.Exact(1_234.56m) == "1,235", DiamondDesktop.Money.Exact(1_234.56m));
+
+    DiamondDesktop.Data.Policy.Apply(Config(("money_precision", "1")));
+    Check("SET-1 money_precision 1 is honoured",
+        DiamondDesktop.Money.Exact(1_234.56m) == "1,234.6", DiamondDesktop.Money.Exact(1_234.56m));
+
+    // Out of range is clamped, not obeyed: numeric(_,2) is what the schema stores.
+    DiamondDesktop.Data.Policy.Apply(Config(("money_precision", "9")));
+    Check("SET-1 money_precision is clamped to the 2 the schema stores",
+        DiamondDesktop.Data.Policy.MoneyPrecision == 2);
+
+    // The short form keeps 2 decimals whatever the setting says — at precision 0 "1.25 B" would
+    // otherwise collapse to "1 B" and lose a quarter of a billion rupees.
+    DiamondDesktop.Data.Policy.Apply(Config(("money_precision", "0")));
+    Check("SET-1 the short form still carries 2 decimals",
+        DiamondDesktop.Money.Short(1_250_000_000m) == "1.25 B", DiamondDesktop.Money.Short(1_250_000_000m));
+
+    // The rounding boundary is NOT the display setting. Amounts are computed and stored at 2 dp
+    // (BR-ROUND-6) no matter what the screen shows.
+    Check("SET-1 money_precision does not move the rounding boundary",
+        DiamondCalc.Calc.MoneyDp == 2 && DiamondCalc.Calc.RoundMoney(1.005m) == 1.01m);
+
+    DiamondDesktop.Data.Policy.Apply(Config(("money_precision", "2")));
+
+    // ── 2 · alert_low_stock_ct ──
+    string State(decimal ct) => DiamondDesktop.StockStateConverter.State(ct);
+
+    DiamondDesktop.Data.Policy.Apply(Config(("alert_low_stock_ct", "40")));
+    Check("SET-2 a bucket under the threshold is Low", State(39.9m) == "Low", State(39.9m));
+    Check("SET-2 the threshold itself is Low", State(40m) == "Low", State(40m));
+    Check("SET-2 above it is In stock", State(40.1m) == "In stock", State(40.1m));
+    Check("SET-2 zero is still Empty, not Low", State(0m) == "Empty", State(0m));
+    Check("SET-2 negative is still Negative, not Low", State(-5m) == "Negative", State(-5m));
+
+    // Raising the threshold re-bands the same figure — the setting is read live, not baked in.
+    DiamondDesktop.Data.Policy.Apply(Config(("alert_low_stock_ct", "100")));
+    Check("SET-2 raising the threshold re-bands a bucket", State(40.1m) == "Low", State(40.1m));
+
+    // 0 turns the band off rather than marking every bucket in the book low.
+    DiamondDesktop.Data.Policy.Apply(Config(("alert_low_stock_ct", "0")));
+    Check("SET-2 a threshold of 0 disables the band", State(0.0001m) == "In stock", State(0.0001m));
+
+    // ── 3 · max_login_attempts ──
+    DiamondDesktop.Data.Policy.Apply(Config(("max_login_attempts", "3")));
+    Check("SET-3 max_login_attempts is read", DiamondDesktop.Data.Policy.MaxLoginAttempts == 3);
+
+    // The rename: DiamondApi read lockout_attempts while the page wrote max_login_attempts, so the
+    // number on screen could never reach the code enforcing it. Both keys resolve now.
+    DiamondDesktop.Data.Policy.Apply(Config(("lockout_attempts", "7")));
+    Check("SET-3 the pre-rename lockout_attempts key still resolves",
+        DiamondDesktop.Data.Policy.MaxLoginAttempts == 7);
+
+    DiamondDesktop.Data.Policy.Apply(Config(("max_login_attempts", "3"), ("lockout_attempts", "7")));
+    Check("SET-3 max_login_attempts wins when both are present",
+        DiamondDesktop.Data.Policy.MaxLoginAttempts == 3);
+
+    DiamondDesktop.Data.Policy.Apply(Config(("max_login_attempts", "0")));
+    Check("SET-3 zero attempts is clamped to 1, never a locked-out-forever database",
+        DiamondDesktop.Data.Policy.MaxLoginAttempts == 1);
+
+    // ── 4 · session_timeout_min ──
+    DiamondDesktop.Data.Policy.Apply(Config(("session_timeout_min", "15")));
+    Check("SET-4 session_timeout_min is read", DiamondDesktop.Data.Policy.SessionTimeoutMin == 15);
+
+    DiamondDesktop.Data.Policy.Apply(Config(("session_timeout_min", "0")));
+    Check("SET-4 a timeout of 0 is clamped to 1, not an instant sign-out loop",
+        DiamondDesktop.Data.Policy.SessionTimeoutMin == 1);
+
+    DiamondDesktop.Data.Policy.Apply(Config(("session_timeout_min", "99999")));
+    Check("SET-4 an absurd timeout is capped at a day",
+        DiamondDesktop.Data.Policy.SessionTimeoutMin == 1440);
+
+    // A garbled value keeps the previous policy rather than falling to some default nobody chose.
+    DiamondDesktop.Data.Policy.Apply(Config(("session_timeout_min", "abc")));
+    Check("SET-4 an unparseable value keeps the last good one",
+        DiamondDesktop.Data.Policy.SessionTimeoutMin == 1440);
+
+    // An empty table must not brick the app: every setting falls back to the shipped policy.
+    DiamondDesktop.Data.Policy.Apply(Config());
+    Check("SETTINGS · an empty app_config leaves a usable policy",
+        DiamondDesktop.Data.Policy.MoneyPrecision is >= 0 and <= 2
+        && DiamondDesktop.Data.Policy.SessionTimeoutMin >= 1
+        && DiamondDesktop.Data.Policy.MaxLoginAttempts >= 1);
+
+    // Changed is what re-renders the open grids; without it a saved change showed nothing until
+    // the page was reloaded.
+    int raised = 0;
+    void Count() => raised++;
+    DiamondDesktop.Data.Policy.Changed += Count;
+    DiamondDesktop.Data.Policy.Apply(Config(("money_precision", "2")));
+    DiamondDesktop.Data.Policy.Changed -= Count;
+    Check("SETTINGS · applying config raises Changed so open screens re-render", raised == 1);
+
+    DiamondDesktop.Data.Policy.Apply(Config(("money_precision", "2"), ("alert_low_stock_ct", "40")));
+
+    // The import report states the gap between the workbook and the position. A custom format with
+    // sections formats the ABSOLUTE value in the negative section, so the minus has to be written
+    // in literally — get it wrong and a shortfall reads as a surplus.
+    string Gap(decimal g) => g.ToString("+#,##0.0000;-#,##0.0000");
+    Check("SET · a position above the workbook reads as a surplus", Gap(3.25m) == "+3.2500", Gap(3.25m));
+    Check("SET · a position below it reads as a shortfall", Gap(-205.3494m) == "-205.3494", Gap(-205.3494m));
+
+    // The Invoices and Receivables headers split their count into imported and entered, so the
+    // page reconciles with the import dialog instead of quietly disagreeing with it. The number
+    // is the only thing that says which is which.
+    bool Imported(string? no) => DiamondDesktop.Data.Repo.IsImported(no);
+    Check("SPLIT · a MIG- number is an imported invoice", Imported("MIG-1431"));
+    Check("SPLIT · a split MIG- number is too", Imported("MIG-3-2"));
+    Check("SPLIT · an app number is not", !Imported("INV-2026-00004"));
+    Check("SPLIT · a draft with no number yet is not", !Imported(null) && !Imported(""));
+    // The two series can never overlap, which is what makes the split safe without a query.
+    Check("SPLIT · the app series cannot be mistaken for the imported one",
+        !Imported("INV-" + DiamondDesktop.Data.Repo.ImportedPrefix));
+
+    // WHO on the audit page. Misattributing a change is worse than not naming anyone, so each
+    // fallback is pinned: no user at all, a known user, and a user who has since been deleted.
+    var known = Guid.Parse("012c2cce-2271-442c-bed2-6e5651632789");
+    var gone = Guid.Parse("99999999-1111-2222-3333-444444444444");
+    var nameless = Guid.Parse("88888888-1111-2222-3333-444444444444");
+    DiamondDesktop.AuditRow.Names = new Dictionary<Guid, string>
+    {
+        [known] = "Jasmin Unadkat",
+        [nameless] = "   ",            // a profile row that exists but carries no full_name
+    };
+
+    string Who(Guid? id) => new DiamondDesktop.AuditRow { ChangedBy = id }.By;
+
+    Check("WHO · a signed-in user is named", Who(known) == "Jasmin Unadkat", Who(known));
+    Check("WHO · no user is System, not blank or 'unknown'", Who(null) == "System", Who(null));
+    Check("WHO · a deleted user shows a short id, never a bare empty cell",
+        Who(gone) == "99999999" && Who(gone).Length == 8, Who(gone));
+    // A profile row with a blank name must not render as an empty WHO cell either.
+    Check("WHO · a blank display name falls back to the short id", Who(nameless) == "88888888");
 }
 
 // ── Count labels · a noun that agrees with its number ────────────────────────────────

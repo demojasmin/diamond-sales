@@ -68,9 +68,26 @@ public sealed record PostResult(bool Ok, string? ErrorCode, string? Message,
 
 public static class Invoices
 {
+    /// <summary>
+    /// What an invoice owes. Matches v_invoice after migration 0017: a CANCELLED invoice owes
+    /// nothing — its stock went back through compensating ADJUST rows, but the money never did.
+    ///
+    /// Guarded here rather than in each caller. Most callers happened to be right already because
+    /// they filter to POSTED for their own reasons; the two that had no reason to filter — the
+    /// invoice list and detail DTOs, which are exactly what a read-only client consumes — returned
+    /// a cancelled invoice's full amount as a live debt.
+    ///
+    /// Calc.Outstanding stays a pure function over amounts. The status rule belongs where the
+    /// invoice is known.
+    /// </summary>
     public static decimal Outstanding(DiamondDb db, Guid invoiceId)
-        => Calc.Outstanding(db.Lines.Where(l => l.InvoiceId == invoiceId).Select(l => l.Amount).AsEnumerable(),
-                            db.Receipts.Where(r => r.InvoiceId == invoiceId).Select(r => r.Amount).AsEnumerable());
+    {
+        if (db.Invoices.Any(i => i.InvoiceId == invoiceId && i.Status == InvoiceStatus.Cancelled))
+            return 0m;
+
+        return Calc.Outstanding(db.Lines.Where(l => l.InvoiceId == invoiceId).Select(l => l.Amount).AsEnumerable(),
+                                db.Receipts.Where(r => r.InvoiceId == invoiceId).Select(r => r.Amount).AsEnumerable());
+    }
 
     public static decimal Total(DiamondDb db, Guid invoiceId)
         => Calc.InvoiceTotal(db.Lines.Where(l => l.InvoiceId == invoiceId).Select(l => l.Amount).AsEnumerable());
@@ -136,7 +153,9 @@ public static class Invoices
                 return new(false, "NEGATIVE_STOCK", "Confirm to post over a negative balance", warnings, expected, null);
         }
 
-        invoice.InvoiceNo ??= NextInvoiceNo(db);
+        // Numbered on the invoice's own date, matching post_invoice()'s next_invoice_no(v_date) —
+        // an invoice dated 31 Dec posted on 1 Jan belongs to the year on the document.
+        invoice.InvoiceNo ??= NextInvoiceNo(db, invoice.InvoiceDate);
         invoice.Status = InvoiceStatus.Posted;
         invoice.PostedAt = DateTime.UtcNow;
         invoice.PostedBy = actor.UserId;
@@ -253,10 +272,30 @@ public static class Invoices
         return (receipt, settled, warnings);
     }
 
-    public static string NextInvoiceNo(DiamondDb db)
+    /// <summary>
+    /// The same series Postgres mints in next_invoice_no(): INV-{year}-{5 digits}, per year.
+    ///
+    /// This used to return INV-00001 — no year, and derived from a COUNT of existing rows, so a
+    /// single deleted invoice made the next one collide with a number already issued. Two
+    /// generators disagreeing on the format of an accounting document series is worse still: the
+    /// desktop posts through Supabase, so both could write into the same table.
+    ///
+    /// Taking max+1 of the current year's numbers matches the database function exactly. The
+    /// advisory lock that makes it concurrency-safe lives there; this path is single-writer.
+    /// </summary>
+    public static string NextInvoiceNo(DiamondDb db, DateOnly? on = null)
     {
-        int next = db.Invoices.Count(i => i.InvoiceNo != null && !i.InvoiceNo.StartsWith("MIG-")) + 1;
-        return $"INV-{next:D5}";
+        int year = (on ?? DateOnly.FromDateTime(DateTime.Today)).Year;
+        string prefix = $"INV-{year}-";
+
+        int next = db.Invoices
+            .Where(i => i.InvoiceNo != null && i.InvoiceNo.StartsWith(prefix))
+            .AsEnumerable()
+            .Select(i => int.TryParse(i.InvoiceNo!.AsSpan(prefix.Length), out int n) ? n : 0)
+            .DefaultIfEmpty(0)
+            .Max() + 1;
+
+        return $"{prefix}{next:D5}";
     }
 
     /// Deterministic, so a client can echo it back without the server storing state.

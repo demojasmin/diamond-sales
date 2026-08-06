@@ -41,6 +41,14 @@ public class SizeBucket : BaseModel
     [Column("sort_order")] public int SortOrder { get; set; }
 }
 
+/// Which sieve sizes a grade actually trades in. +14 uses +14/+18/+23, nobody else does.
+[Table("grade_size")]
+public class GradeSize : BaseModel
+{
+    [PrimaryKey("grade_id", false)] public long GradeId { get; set; }
+    [PrimaryKey("size_id", false)] public long SizeId { get; set; }
+}
+
 [Table("buyer")]
 public class Buyer : BaseModel
 {
@@ -265,6 +273,12 @@ public class VInvoice : BaseModel
     [Column("received")] public decimal Received { get; set; }
     [Column("outstanding")] public decimal Outstanding { get; set; }
     [Column("blended_rate")] public decimal? BlendedRate { get; set; }
+
+    // 0019. Nullable on purpose: null is "no cost basis", which is not the same as a zero cost.
+    // Migrated MIG- invoices write no stock movements, so they can never carry one.
+    [Column("cost_total")] public decimal? CostTotal { get; set; }
+    [Column("margin")] public decimal? Margin { get; set; }
+    [Column("cost_coverage")] public decimal CostCoverage { get; set; }
     [Column("broker_payable")] public decimal BrokerPayable { get; set; }
     [Column("due_date")] public DateOnly DueDate { get; set; }
     [Column("is_overdue")] public bool IsOverdue { get; set; }
@@ -300,6 +314,9 @@ public class VStockMovement : BaseModel
     [Column("price_per_ct")] public decimal? PricePerCt { get; set; }
     [Column("ref_type")] public string? RefType { get; set; }
     [Column("ref_id")] public long? RefId { get; set; }
+    /// Mandatory on ADJUST (migration 0009) and the only record of why a correction was made.
+    /// It was collected and enforced at three layers, then never read back by anything.
+    [Column("reason")] public string? Reason { get; set; }
     [Column("counterparty_grade_code")] public string? CounterpartyGradeCode { get; set; }
     [Column("created_at")] public DateTime CreatedAt { get; set; }
     [Column("updated_at")] public DateTime UpdatedAt { get; set; }
@@ -347,6 +364,22 @@ public sealed class DashboardSummary
     [JsonProperty("overdue_count")]     public long OverdueCount { get; set; }
     [JsonProperty("stock_value")]       public decimal StockValue { get; set; }
     [JsonProperty("stock_carats")]      public decimal StockCarats { get; set; }
+}
+
+/// <summary>
+/// public.margin_summary (0019). Both counts travel with the figures: a margin computed over 3 of
+/// 1,438 invoices is not wrong, but shown without its denominator it reads as the whole book.
+/// </summary>
+public sealed class MarginSummary
+{
+    [JsonProperty("revenue_total")]   public decimal RevenueTotal { get; set; }
+    [JsonProperty("cost_total")]      public decimal CostTotal { get; set; }
+    [JsonProperty("margin_total")]    public decimal MarginTotal { get; set; }
+    [JsonProperty("margin_pct")]      public decimal MarginPct { get; set; }
+    [JsonProperty("invoices_costed")] public long InvoicesCosted { get; set; }
+    [JsonProperty("invoices_total")]  public long InvoicesTotal { get; set; }
+    /// Migrated MIG- invoices, which write no stock movements and so can never carry a cost (0024).
+    [JsonProperty("invoices_uncostable")] public long InvoicesUncostable { get; set; }
 }
 
 // Check constraint values. Wrong case = rejected insert, so never hand-type these strings.

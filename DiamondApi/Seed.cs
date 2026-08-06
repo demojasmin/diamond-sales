@@ -53,7 +53,8 @@ public static class Seed
         ("rounding", "HALF_UP"),
         ("negative_stock_policy", "WARN"),          // Q10 assumption
         ("session_timeout_min", "60"),
-        ("lockout_attempts", "5"),
+        ("max_login_attempts", "5"),                // renamed from lockout_attempts — see Auth.cs
+        ("lockout_minutes", "15"),
         ("auto_reject_on_post", "false"),
         ("manager_sees_margin", "false"),
         ("settlement_write_off_threshold", "1.00"), // docs/03 V-4

@@ -35,7 +35,12 @@ public static class Auth
     public static LoginResult Login(DiamondDb db, string username, string password)
     {
         var user = db.Users.FirstOrDefault(u => u.Username == username);
-        int lockoutAttempts = Settings.Int(db, "lockout_attempts", 5);
+        // max_login_attempts is the key the Settings page writes; lockout_attempts is what this
+        // file read for its whole life, so the configured number never reached the code enforcing
+        // it. One name, both readers — the old key stays as a fallback for databases seeded before
+        // the rename (mirrored in public.max_login_attempts(), migration 0025).
+        int lockoutAttempts = Settings.Int(db, "max_login_attempts",
+                              Settings.Int(db, "lockout_attempts", 5));
 
         if (user is null || !user.Active)
         {

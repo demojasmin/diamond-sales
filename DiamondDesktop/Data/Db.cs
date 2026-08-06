@@ -30,8 +30,14 @@ public static class Db
 
     public static Profile? CurrentUser { get; private set; }
     public static Guid? UserId => Guid.TryParse(Client.Auth.CurrentUser?.Id, out var id) ? id : null;
-    public static bool IsManagerOrOwner => CurrentUser?.Role is "manager" or "owner";
-    public static bool IsOwner => CurrentUser?.Role is "owner";
+    // Compared case- and whitespace-insensitively. profile.role is free text with no CHECK
+    // constraint behind it, so a row seeded as "Owner" or "OWNER " used to match nothing and
+    // silently stripped a real owner of every permission — imports greyed out, no explanation.
+    // It fails closed, which is the safe direction, but it is still the wrong answer.
+    public static bool IsManagerOrOwner => Role is "manager" or "owner";
+    public static bool IsOwner => Role is "owner";
+
+    private static string? Role => CurrentUser?.Role?.Trim().ToLowerInvariant();
     public static bool IsOnline { get; private set; } = true;
 
     /// Cached so initialisation happens exactly once however many callers race for it. Sign-in awaits

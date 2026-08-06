@@ -28,8 +28,15 @@ public static class Reports
         };
         if (dialog.ShowDialog() != true) return null;
 
-        var columns = grid.Columns.OfType<DataGridBoundColumn>()
-            .Select(c => (Header: c.Header?.ToString() ?? "", Path: (c.Binding as System.Windows.Data.Binding)?.Path.Path))
+        // Every column, not just the bound ones. A DataGridTemplateColumn — STATUS on Invoices and
+        // Stock, BUCKET on Receivables — is not a DataGridBoundColumn, so filtering on that type
+        // dropped it from the file silently: a CANCELLED invoice exported identical to a POSTED one,
+        // same amount, no marker. ClipboardContentBinding is WPF's own answer to "what is this
+        // column's value when it leaves the screen"; DataGridBoundColumn sets it from Binding
+        // automatically, and the template columns declare it in the markup.
+        var columns = grid.Columns
+            .Select(c => (Header: c.Header?.ToString() ?? "",
+                          Path: (c.ClipboardContentBinding as System.Windows.Data.Binding)?.Path.Path))
             .Where(c => c.Path is not null)
             .ToList();
 
@@ -83,22 +90,25 @@ public static class Reports
 
         // Rejection and Ex rate are on the line and were not printed before. A bill that cannot be
         // checked against the parcel it describes is not much of a bill.
+        // Remark is typed per line on the entry screen and stored on sales_line, but until now no
+        // screen or document read it back — the note was captured and then unreachable. The bill is
+        // where it belongs: it is the one place that claims to be the complete record of the line.
         var table = new Table { CellSpacing = 0 };
-        for (int i = 0; i < 9; i++) table.Columns.Add(new TableColumn());
+        for (int i = 0; i < 10; i++) table.Columns.Add(new TableColumn());
         var body = new TableRowGroup();
         table.RowGroups.Add(body);
 
         body.Rows.Add(Row(bold: true, "Grade", "Size", "Weight ct", "Selection ct", "Rejection ct",
-                                      "Price/ct", "Ex rate", "Less 1/2", "Amount"));
+                                      "Price/ct", "Ex rate", "Less 1/2", "Amount", "Remark"));
         foreach (var l in lines)
             body.Rows.Add(Row(false, l.GradeCode, l.SizeCode, N(l.GrossWeightCt), N(l.SelectionCt),
                               N(l.RejectionCt), N(l.PricePerCt), N(l.ExRate),
-                              $"{l.Less1Pct}/{l.Less2Pct}", N(l.Amount)));
+                              $"{l.Less1Pct}/{l.Less2Pct}", N(l.Amount), l.Remark ?? ""));
 
         // A totals row under the columns it totals, so the carats can be checked by eye.
         body.Rows.Add(Row(bold: true, "Total", "", N(lines.Sum(l => l.GrossWeightCt)),
                           N(lines.Sum(l => l.SelectionCt)), N(lines.Sum(l => l.RejectionCt)),
-                          "", "", "", N(invoice.AmountTotal)));
+                          "", "", "", N(invoice.AmountTotal), ""));
 
         doc.Blocks.Add(table);
 
@@ -115,6 +125,14 @@ public static class Reports
         totals.Rows.Add(Row(bold: true, "Invoice total", N(invoice.AmountTotal)));
         totals.Rows.Add(Row(false, "Received", N(invoice.Received)));
         totals.Rows.Add(Row(bold: true, "Outstanding", N(invoice.Outstanding)));
+
+        // Cost is stamped at posting (0019) and only exists for invoices posted through this app.
+        // "Cost not available" rather than a zero: a nil cost would print as a 100% margin on a
+        // parcel whose purchase price simply was never recorded.
+        totals.Rows.Add(Row(false, "Cost of goods",
+            invoice.CostTotal is { } cost ? N(cost) : "Cost not available"));
+        totals.Rows.Add(Row(bold: true, "Margin",
+            invoice.Margin is { } m ? N(m) : "Cost not available"));
         doc.Blocks.Add(summary);
 
         if (invoice.BrokerPct > 0)
@@ -145,13 +163,30 @@ public static class Reports
 
     private static string N(decimal value) => value.ToString("N2", CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// CSV escaping, plus the formula guard. Excel treats a cell opening with = + - @ (or a control
+    /// character) as a formula, so a buyer named <c>=cmd|'/c calc'!A1</c> — and buyer, broker and
+    /// remark are all free text the app itself accepts — executed on open. An apostrophe in front
+    /// makes Excel show the text and evaluate nothing.
+    ///
+    /// Numbers are left exactly as they are: <c>-1500.00</c> opens with '-' and would otherwise be
+    /// quoted into a string, which is the one thing an export of money must never do.
+    /// </summary>
     private static string Quote(string? value)
     {
         value ??= "";
+
+        if (value.Length > 0 && Risky.Contains(value[0])
+            && !decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out _))
+            value = "'" + value;
+
         return value.Contains(',') || value.Contains('"') || value.Contains('\n')
             ? $"\"{value.Replace("\"", "\"\"")}\""
             : value;
     }
+
+    /// The characters Excel and LibreOffice read as "this cell is a formula".
+    private static readonly char[] Risky = ['=', '+', '-', '@', '\t', '\r'];
 
     private static string ValueOf(object row, string path)
     {

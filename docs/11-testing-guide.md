@@ -374,23 +374,24 @@ These are things I checked for and did **not** find. Ordered by how much they ma
 
 ## Likely to cause wrong data
 
-**1 · Receipts are not checked against what is owed.**
-Invoices page. An invoice with 5,000 outstanding will accept a receipt of 500,000. The app only
-checks the amount is a positive number, then inserts straight into the `receipt` table — there is
-no "amount exceeds outstanding" check anywhere in the app.
-*Test:* record a receipt far larger than Outstanding. If it is accepted, the buyer's balance goes
-negative. **Confirm whether the database has a constraint; if not, add one, and warn in the app.**
+**1 · Receipts are not checked against what is owed.** *Fixed.*
+The Invoices page now refuses any receipt above the outstanding balance, naming the figure:
+*"That is more than is owed. INV-… has 9,805,373.16 outstanding"*. It also refuses a receipt
+against a DRAFT or CANCELLED invoice. A buyer's balance can no longer be driven negative from
+the app. *Test I10 in docs/13 was rewritten to match — it used to expect the over-payment to
+land.*
 
-**2 · A conversion can be made to the same bucket.**
-Intake page. Nothing stops From = NO 1 -6.5 and To = NO 1 -6.5. That writes a movement out and a
-movement in for the same bucket — noise in the ledger at best.
-*Test:* set both sides identical and press Convert. Expect it to be refused; today it probably is not.
+**2 · A conversion can be made to the same bucket.** *Fixed.*
+Convert refuses both sides identical: *"From and To are the same bucket — a conversion has to
+move carats somewhere else"*.
 
-**3 · Settings values have no validation at all.**
-The value box is plain text. You can type "abc" into **Overdue after (days)** or **Carat decimal
-places** and press Save. Whether that is rejected depends entirely on the database column type,
-and a bad value here affects every page that reads it.
-*Test:* set `carat_precision` to "abc", or to 99, and save. Expect a clear refusal.
+**3 · Settings values have no validation at all.** *Fixed.*
+Every documented key is now range-checked before anything is written, and the message names the
+setting: `carat_precision` takes 0-4, `money_precision` 0-2, `alert_overdue_days` 0-3650,
+`negative_stock` one of BLOCK / WARN / ALLOW, and so on. An unrecognised key is still shown
+under "Other" and still passes through unchecked — the database stays the authority on those.
+*Test:* set **Carat decimal places** to `abc`, or to `99`, and press Save. Expect a refusal
+naming the field, with nothing written.
 
 **4 · Nothing checks the invoice date is sensible.**
 Sales entry accepts a date years in the future or the past. Your data already contains invoices
@@ -403,12 +404,22 @@ It lists accounts and filters them, and that is all. There is no way to change s
 deactivate a leaver, or invite a new user — even though the page is owner-only, which implies it
 was meant to manage them. Today that has to be done directly in Supabase.
 
-**6 · Buyers and brokers can be added but never edited or removed.**
-A typo in a buyer name is permanent from inside the app. There is no rename, no deactivate.
+**6 · Buyers and brokers can be added but never edited or removed.** *Fixed.*
+Every buyer and broker row now carries an **Edit** button: rename, change the default terms or
+commission, and set Active to yes/no. The row is edited in place — `buyer_id` never changes, so
+every invoice ever raised still points at the same record and a rename rewrites no history.
+Deactivating takes the party out of the Sales entry pickers without deleting anything. Duplicate
+names are refused, excluding the party's own current name.
+*Test:* rename a buyer with an invoice against it, then open Invoices — the invoice shows the new
+name and its figures are untouched.
 
-**7 · Dispositions on the rejection form are typed and thrown away.**
-The app says so honestly after you record one, but the table does not exist. Either build it or
-remove the grid — as it stands, people will type into it and lose the work.
+**7 · Dispositions on the rejection form are typed and thrown away.** *Fixed.*
+`rejection_disposition` exists (migration 0018) and `record_rejection` writes the dispositions in
+the **same transaction** as the movement they describe, so a disposition without its rejection is
+not expressible. The confirmation now reads *"Rejection recorded · 12.0000 ct — 3 disposition(s)
+saved"*.
+*Test:* type dispositions totalling more than the rejected weight and press Add rejection. Expect
+*"The dispositions come to 15.0000 ct but only 12.0000 ct was rejected"*, with nothing written.
 
 **8 · There is no delete or edit for a posted invoice.**
 Cancel is the only reversal, which is correct accounting — worth knowing, not a bug.
@@ -423,10 +434,11 @@ look inconsistent for the month it falls in:
 - The **trend chart** ignores it, because the chart plots money and it is worth none — so the chart
   says *"No sales in 01 Aug 2026 to 03 Aug 2026"* directly above a table showing one row.
 
-This is not a regression; the chart has always plotted only invoices worth something. It is the
-visible consequence of allowing a zero-value invoice at all (see item C below). If you want the two
-to agree, the choice is either to warn before posting a zero-value invoice, or to have the chart say
-"no sales **worth anything**" — both are wording/behaviour decisions, so nothing has been changed.
+*Resolved in the wording, not the behaviour.* The chart still plots only invoices worth something —
+that is correct — but when every invoice in range is worth 0.00 it now says so explicitly:
+*"No sales worth anything in 01 Aug 2026 to 03 Aug 2026. 1 invoice posted in this period, every one
+of them 0.00 — fully rejected parcels. They are listed below."* The two panels no longer contradict
+each other. Posting a zero-value invoice is still allowed, deliberately (item C below).
 
 It also broke two test suites, which is worth recording because the cause was not obvious:
 
@@ -474,15 +486,23 @@ ten fixed ones, so below about a 1400px window it took the shortfall — 20px at
 "Rema" and no remark text at all. It now has a 140px floor and the grid scrolls instead. Keyboard
 entry is unaffected: Tab still walks the cells and the grid scrolls the focused one into view.
 
-**9 · Terms are validated when adding a buyer (0–365) but not on the invoice itself.**
-Sales entry only refuses a negative. Terms of 9,999 days are accepted.
+**9 · Terms are validated when adding a buyer (0–365) but not on the invoice itself.** *Fixed.*
+`InvoiceEntry.Validate()` applies the same 0–365 rule, and the caret jumps to the Terms box.
+*Test:* Terms `9999` → *"Terms must be between 0 and 365 days"*.
 
 **10 · Broker % is validated when adding a broker (0–100) but the per-invoice override is only
-range-checked by the calculation engine**, which reports "Broker % is out of range" rather than a
-plain-language limit.
+range-checked by the calculation engine.** *Fixed.*
+The header field is validated in its own right, in the same words the Add broker dialog uses, and
+focus goes to the Broker % box. Previously the engine threw once per line, so an out-of-range
+header value reddened every row with *"Broker % is out of range"* and sent people hunting through
+the grid for a fault that was in the header.
+*Test:* Broker % `150` → *"Broker % must be between 0 and 100"*, caret in the Broker % box, rows
+not reddened.
 
-**11 · No confirmation before leaving an unsaved invoice.**
-Pressing **New** on Sales entry with a half-typed invoice discards it silently.
+**11 · No confirmation before leaving an unsaved invoice.** *Fixed.*
+**New** asks first when there are unsaved lines: *"This invoice has 3 line(s) that have not been
+saved. Start a new one and lose them?"* A saved draft has an id and is not at risk, so it is not
+asked about.
 
 **12 · The 1,000-row cap.** Fixed on the desktop — every list pages to the end. **Still open on
 the Android app**, where the owner would see only the first 1,000 invoices and no warning.
@@ -492,3 +512,117 @@ the Android app**, where the owner would see only the first 1,000 invoices and n
 **13 · One corrupt intake row.** There is an intake of 5,00,500 ct at 4,00,00,37,500 per carat in
 the database. It distorts Stock value and the Dashboard inventory card, and makes the Stock table
 wide. It needs a cleanup SQL statement, not a UI change.
+
+---
+
+# Regression round · 05 Aug 2026
+
+Everything below was found by a full code-level audit and fixed in the same pass. Migration
+**0018** carries the database half.
+
+## Critical
+
+**14 · Both imports could destroy data and put nothing back.** *Fixed.*
+Sale import and stock import are "replace, not merge", and both did it as a delete loop followed
+by an insert loop over separate HTTP calls, with no transaction around them. Anything failing
+between the two left the database holding neither dataset.
+
+This is not theoretical — it happened during this session. 133 `stock_movement` rows were deleted
+at 14:26:05, the replacement never landed, and the stock position collapsed from 62 buckets /
+2,344.34 ct to 5 buckets / **−220.85 ct with three negative balances**. The SALE rows survived
+because the ledger refuses DELETE to `authenticated`; only the intakes they subtract from vanished.
+
+Both replacements now happen inside one SECURITY DEFINER function —
+`replace_imported_stock(date, jsonb)` and `replace_imported_sales(jsonb)` — so they are one
+transaction. Any failure rolls back and the previous import is still there. Each can only delete
+rows it can prove are its own (`ref_type = 'stock_import'`, `invoice_no LIKE 'MIG-%'`), so a
+hand-entered intake and a live invoice remain unreachable.
+*Test:* re-run an import and pull the network cable mid-write. Expect the previous dataset intact
+and an error, never an empty Stock page.
+
+## High
+
+**15 · CSV export silently dropped every templated column.** *Fixed.*
+`ExportGrid` filtered on `DataGridBoundColumn`, which a `DataGridTemplateColumn` is not — so
+**STATUS** was missing from the Invoices export and a CANCELLED invoice exported identical to a
+POSTED one, same amount, no marker. Same defect on Receivables (BUCKET) and Stock (STATUS). Export
+now reads `ClipboardContentBinding`, WPF's own "what is this column's value off-screen", and the
+three template columns declare it.
+*Test:* cancel an invoice, Export CSV, open the file. Expect a STATUS column reading `CANCELLED`.
+
+**16 · CSV formula injection.** *Fixed.*
+Buyer, broker and remark are free text the app accepts, and a value opening with `=` `+` `-` `@`
+is executed by Excel on open. Such values are now prefixed with an apostrophe. Numbers are
+deliberately exempt — `-1500.00` opens with `-` and must stay a number.
+*Test:* add a buyer named `=1+1`, post an invoice for them, export, open in Excel. Expect the
+literal text, not `2`.
+
+**17 · The offline outbox was dead code.** *Removed.*
+`Outbox.cs` implemented a SQLite queue and replay — 181 lines, and **not one call site anywhere in
+the repository**. Writes during a network drop simply failed, while `ClientRef` claimed to be
+"offline-safe". The file and its `Microsoft.Data.Sqlite` dependency are gone.
+**Offline support does not exist.** See *Still open* below.
+
+## Medium
+
+**18 · Remark was write-only.** *Fixed.* Typed per line and stored on `sales_line`, but read back
+by no screen or document. It is now a column on the printed bill, which is the one artefact that
+claims to be the complete record of the line.
+
+**19 · No receipt history anywhere.** *Fixed.* The `receipt` table was written to and never read,
+so two receipts of 25,000 looked exactly like one of 50,000. The invoice detail drawer now lists
+every receipt with its date, method and amount, under the summary.
+
+**20 · Three dialogs could open behind the main window.** *Fixed.* The negative-stock prompt, the
+posted-as confirmation, the cancel confirmation and the remove-line prompt were unowned
+`MessageBox.Show` calls — the exact hazard `ConfirmLarge` documents and guards against. All now
+pass `this`. The crash handler in `App.xaml.cs` stays unowned deliberately: by then the window may
+be gone.
+
+**21 · Role matching was case-sensitive.** *Fixed.* `profile.role` has no CHECK constraint behind
+it, so a row seeded `Owner` matched nothing and silently stripped a real owner of every permission
+— imports greyed out with no explanation. Compared case- and whitespace-insensitively now, on the
+Users page counts as well.
+
+**22 · Grade × size was enforced only in the WPF client.** *Fixed.* `grade_size` now exists with a
+`BEFORE INSERT OR UPDATE` trigger on `sales_line`, seeded from the rule in docs/04 §3.4 plus every
+pairing that already carries stock or history — so no existing row is invalidated. The API, the
+Android app and psql are all held to it now.
+
+**23 · Three sale rows were being skipped on import.** *Fixed.* `Sale File Sample-1.xlsx` (merged
+04 Aug 2026) introduced the spellings `Ex1` and `T COLOR`, which resolved to no grade, so the
+importer dropped those rows — real sales, lost quietly. Aliases added in 0018 and mirrored in the
+regression suite. The real workbook now plans **1,438 invoices / 1,447 lines / 0 skipped**, up from
+1,436 / 1,444 / 3 skipped.
+
+## Low
+
+**24 · Stock KPI cards silently described a filtered subset.** *Fixed.* The cards total what is on
+screen while the header totals all 207 buckets. Both were unlabelled, so a grade filter made them
+look like a contradiction. The captions now read "across 3 of 207 buckets · filtered".
+
+**25 · Audit's 500-row cap was invisible.** *Fixed.* A full page looked like a complete history, so
+"it is not in the audit trail" was being read as "it never happened". The subtitle now says
+"newest 500 only, older entries not loaded" when the window is full.
+
+**26 · The API minted a different invoice series from the database.** *Fixed.* `NextInvoiceNo`
+returned `INV-00001` — no year — and derived it from a COUNT, so one deleted invoice made the next
+collide with a number already issued. It now matches `next_invoice_no()` exactly: max+1 within the
+invoice's own year, formatted `INV-{yyyy}-{00000}`.
+
+## Still open
+
+**27 · Dashboard Margin is "—".** Not fixable at this level: margin needs a cost basis per sold
+parcel and no view exposes one. `v_stock_position` carries `avg_cost` per bucket, but nothing
+records what the carats on a given sales line cost when they came in. It needs a schema change —
+cost captured onto the line at post — not a UI change.
+
+**28 · The Users page is still read-only.** Creating, deactivating or re-roling an account needs
+the Supabase `service_role` key, which must never ship inside a desktop binary. This one cannot be
+fixed in the WPF app at all; it needs a server endpoint that holds the key, or it stays in the
+Supabase dashboard.
+
+**29 · Offline support does not exist.** The dead outbox was removed rather than wired up: doing it
+properly needs connectivity detection, replay-on-reconnect, conflict handling and a pending-count
+UI, which is a feature, not a bug fix. Until it is built, a write during a network drop fails and
+the work is lost. `docs/06` lists the outbox in the architecture — that claim is now aspirational.

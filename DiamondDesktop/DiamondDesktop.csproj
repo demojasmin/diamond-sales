@@ -20,6 +20,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Backs the offline outbox (SYNC-001 / FR-SYNC-1): queued writes live in a local SQLite file
+         so a post survives the app being closed while the network is down. -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
     <PackageReference Include="Supabase" Version="1.4.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.10" />

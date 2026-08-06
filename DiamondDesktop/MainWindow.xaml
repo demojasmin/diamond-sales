@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:DiamondDesktop"
         Icon="{StaticResource AppIcon}" Title="Solitaire Desk — Diamond Sales &amp; Inventory" Height="880" Width="1440"
-        MinHeight="700" MinWidth="1120" WindowStartupLocation="CenterScreen"
+        MinHeight="700" MinWidth="1160" WindowStartupLocation="CenterScreen"
         Background="{DynamicResource BgBrush}" UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Ideal"
         TextElement.Foreground="{DynamicResource TextBrush}"
@@ -35,6 +35,11 @@
          Weight or Price silently kept the previous value and recomputed Amount from it. -->
     <Style x:Key="NumEdit" TargetType="TextBox" BasedOn="{StaticResource CellNumericTextBox}">
       <Setter Property="local:NumericInput.IsNumeric" Value="True"/>
+      <!-- The field style's 7px side padding costs 14px of a 29px cell, leaving 13px — one glyph.
+           Typing "12.5" into Less 1 scrolled every character but the last out of sight, which
+           reads as a field that will not accept input. Narrower padding buys 8px back in every
+           numeric editor without moving a single column. -->
+      <Setter Property="Padding" Value="3,0,3,0"/>
       <!-- Same edge as the display style above, or the figure jumps sideways the moment you
            start typing in the cell. -->
       <Setter Property="HorizontalContentAlignment" Value="Left"/>
@@ -139,8 +144,13 @@
          entry, Intake, the ledger, the dashboard filter and the price editor. The Stock filter
          builds its own strings and matches this deliberately, so a grade reads the same wherever
          it is picked. The code stays in the tables, which is where it is needed. -->
+    <!-- No TextTrimming here. This template feeds the combo's CLOSED state as well as its list, and
+         in the closed state it renders inside a presenter that reports almost no width while
+         measuring — with trimming on, the whole name was ellipsised away and the cell came out
+         blank. The column is sized to fit the longest grade name instead; the tooltip covers a
+         longer one arriving later. -->
     <DataTemplate x:Key="GradeNameTemplate">
-      <TextBlock Text="{Binding DisplayName}"/>
+      <TextBlock Text="{Binding DisplayName}" ToolTip="{Binding DisplayName}"/>
     </DataTemplate>
     <DataTemplate x:Key="NameTemplate">
       <TextBlock Text="{Binding Name}"/>
@@ -412,7 +422,7 @@
                 <DatePicker x:Name="InvoiceDatePicker" SelectedDate="{Binding InvoiceDate}"
                             AutomationProperties.Name="Invoice date"
                             CalendarOpened="InvoiceDatePicker_CalendarOpened"
-                            CalendarClosed="InvoiceDatePicker_CalendarClosed"
+                            CalendarClosed="DatePicker_CalendarClosed"
                             Style="{StaticResource AppDatePicker}" Width="150"/>
               </StackPanel>
               <StackPanel Style="{StaticResource FieldPair}">
@@ -519,6 +529,13 @@
                  Enter appends a real line instead — which is what SALES-001 asks for anyway.
                  CanUserDeleteRows is OFF too: Delete is handled in code so a typed line cannot
                  vanish without being asked about. -->
+            <!-- Every column is proportional with a floor, so the eleven of them always fit.
+                 They used to be fixed and demanded 1210px; the window's own MinWidth is 1120,
+                 which leaves the grid about 880px, so at any normal size the grid scrolled
+                 sideways. Two symptoms came out of that one cause: reaching Remark scrolled Size
+                 and Grade off the left edge, and freezing that pair then hid Weight behind them.
+                 Sized to fit, nothing scrolls and nothing hides — the floors total 800px, inside
+                 the 808px of viewport the narrowest supported window leaves. -->
             <DataGrid x:Name="Grid" ItemsSource="{Binding Lines}" IsReadOnly="False"
                     Visibility="{Binding Source={x:Static local:Catalogue.Grades}, Path=Count, Converter={StaticResource Empty}, ConverterParameter=Invert}"
                     CanUserAddRows="False" CanUserDeleteRows="False" SelectionUnit="Cell"
@@ -559,7 +576,7 @@
                    2. These headers are Title Case; every other grid uses UPPERCASE. Purely
                       visual, and equally a design decision.
                    Neither affects what is saved. -->
-              <DataGridTemplateColumn Header="Size" Width="105" MinWidth="105" CellStyle="{StaticResource ComboCell}">
+              <DataGridTemplateColumn Header="Size" Width="92*" MinWidth="86" CellStyle="{StaticResource ComboCell}">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <!-- ItemTemplate, not DisplayMemberPath. The design's combo template draws its
@@ -580,7 +597,7 @@
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTemplateColumn Header="Grade" Width="195" MinWidth="195" CellStyle="{StaticResource ComboCell}">
+              <DataGridTemplateColumn Header="Grade" Width="152*" MinWidth="120" CellStyle="{StaticResource ComboCell}">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <Grid>
@@ -595,37 +612,71 @@
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTextColumn Header="Weight" Width="95" MinWidth="95" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Weight" Width="84*" MinWidth="66" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding GrossWeightCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Selection" Width="95" MinWidth="95" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Selection" Width="84*" MinWidth="68" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding SelectionCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Rejection" Width="95" MinWidth="95" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
+              <!-- Read-only and never wider than "999.99", so it can afford the floor that the two
+                   Less columns need. -->
+              <DataGridTextColumn Header="Rejection" Width="84*" MinWidth="60" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
                                   Binding="{Binding RejectionCt, StringFormat=N2, Mode=OneWay}" Foreground="{DynamicResource AccentBrush}"/>
-              <DataGridTextColumn Header="Price/ct" Width="120" MinWidth="120" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
-                                  Binding="{Binding PricePerCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Ex Rate" Width="80" MinWidth="80" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Price/ct" Width="148*" MinWidth="78" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding PricePerCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}">
+                <DataGridTextColumn.ElementStyle>
+                  <Style TargetType="TextBlock" BasedOn="{StaticResource Num}">
+                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                    <Setter Property="ToolTip" Value="{Binding PricePerCt, StringFormat=N2}"/>
+                  </Style>
+                </DataGridTextColumn.ElementStyle>
+              </DataGridTextColumn>
+              <DataGridTextColumn Header="Ex Rate" Width="84*" MinWidth="62" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding ExRate, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Less 1" Width="65" MinWidth="65" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <!-- 52*/46 gave the editor 13px of text room — one character — so a percentage like
+                   12.5 scrolled out of sight as it was typed and the field looked dead. These two
+                   hold the same shape of figure as Ex Rate and are sized to match it. -->
+              <DataGridTextColumn Header="Less 1" Width="74*" MinWidth="58" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding Less1Pct, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Less 2" Width="65" MinWidth="65" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Less 2" Width="74*" MinWidth="58" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding Less2Pct, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Amount" Width="155" MinWidth="155" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
-                                  Binding="{Binding Amount, StringFormat=N2, Mode=OneWay}" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/>
+              <DataGridTextColumn Header="Amount" Width="165*" MinWidth="96" IsReadOnly="True" HeaderStyle="{StaticResource AppNumericHeader}"
+                                  Binding="{Binding Amount, StringFormat=N2, Mode=OneWay}" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}">
+                <DataGridTextColumn.ElementStyle>
+                  <Style TargetType="TextBlock" BasedOn="{StaticResource Num}">
+                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                    <Setter Property="ToolTip" Value="{Binding Amount, StringFormat=N2}"/>
+                  </Style>
+                </DataGridTextColumn.ElementStyle>
+              </DataGridTextColumn>
               <!-- MinWidth, because a star column with none is the column that pays for everything
                    else: below about a 1400px window the ten fixed columns took all the room and
                    this one was squeezed to 20px, showing "Rema" and no remark at all. With a floor
                    the grid scrolls instead, which keyboard entry is unaffected by — Tab still
                    walks the cells and the DataGrid scrolls the focused one into view. -->
-              <DataGridTextColumn Header="Remark" Width="*" MinWidth="140"
-                                  Binding="{Binding Remark, UpdateSourceTrigger=LostFocus}"/>
+              <!-- Free text that already trims to an ellipsis and carries its full value in a
+                   tooltip, so it is the one column that can give room to Less 1 and Less 2. -->
+              <DataGridTextColumn Header="Remark" Width="162*" MinWidth="50"
+                                  Binding="{Binding Remark, UpdateSourceTrigger=LostFocus}">
+                <DataGridTextColumn.ElementStyle>
+                  <Style TargetType="TextBlock">
+                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                    <Setter Property="VerticalAlignment" Value="Center"/>
+                    <!-- Free text has no ceiling, so however wide the column is something can
+                         outrun it. Hovering shows the whole remark rather than a sliced one. -->
+                    <Setter Property="ToolTip" Value="{Binding Remark}"/>
+                  </Style>
+                </DataGridTextColumn.ElementStyle>
+              </DataGridTextColumn>
             </DataGrid.Columns>
             </DataGrid>
 
             <!-- Guidance while the invoice is still empty. The grid always shows one row, so it is
                  never blank — but a single untouched row over a large empty area says nothing about
-                 what to do next. Hides itself the moment a real line exists. -->
+                 what to do next.
+                 Bound to EntriesStarted, not LineCount: a blank row is not a line, so keying off
+                 LineCount left this sitting on top of nine empty rows once Enter had been pressed
+                 nine times. Adding a row counts as starting, typed into or not. -->
             <TextBlock Style="{StaticResource EmptyHint}"
-                       Visibility="{Binding LineCount, Converter={StaticResource Empty}}"
+                       Visibility="{Binding EntriesStarted, Converter={StaticResource Empty}}"
                        Text="Pick a grade and size, then type the weight.&#10;Enter adds another line · Ctrl+S saves a draft."/>
 
             <!-- With no catalogue the Grade and Size dropdowns open onto nothing, which reads as
@@ -799,7 +850,10 @@
                            it the star width left a wide empty gutter while long buyer names were
                            clipped. -->
                       <DataGridTextColumn x:Name="ColBuyer" Header="BUYER" Binding="{Binding BuyerName}" Width="*" MinWidth="160"/>
+                      <!-- ClipboardContentBinding is what CSV export reads. Without it the column
+                           is skipped and a CANCELLED invoice exports as though it were POSTED. -->
                       <DataGridTemplateColumn Header="STATUS" Width="110" MinWidth="110" SortMemberPath="Outstanding"
+                                              ClipboardContentBinding="{Binding Status}"
                                               CellTemplate="{StaticResource StatusChip}"/>
                       <DataGridTextColumn Header="AMOUNT" Binding="{Binding AmountTotal, Converter={StaticResource Money}}" Width="135" MinWidth="135" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
                       <DataGridTextColumn x:Name="ColOutstanding" Header="OUTSTANDING" Binding="{Binding Outstanding, Converter={StaticResource Money}}" Width="135" MinWidth="135" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
@@ -1113,6 +1167,7 @@
                       <DataGridTextColumn Header="OUTSTANDING" Binding="{Binding Outstanding, Converter={StaticResource Money}}" Width="140" MinWidth="140" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
                       <DataGridTextColumn Header="DAYS OVERDUE" Binding="{Binding DaysOverdue}" Width="110" MinWidth="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
                       <DataGridTemplateColumn Header="BUCKET" Width="120" MinWidth="120" SortMemberPath="DaysOverdue"
+                                              ClipboardContentBinding="{Binding AgeBucket}"
                                               CellTemplate="{StaticResource BucketChip}"/>
                     </DataGrid.Columns>
                   </DataGrid>
@@ -1383,6 +1438,14 @@
                     <TextBlock Text="Stock position" Style="{StaticResource DashHeading}"/>
                     <TextBlock x:Name="StockCount" Style="{StaticResource DashSubheading}"
                                Text="Balance and value by grade and size"/>
+                    <!-- Says which of two numbers this page is. A stock import replaces only the
+                         movements it created, so on a book that has traded these totals are NOT
+                         the workbook's — and the import dialog's figures were being read as the
+                         position. Stated where the totals are read, not in a dialog that has
+                         already been dismissed. -->
+                    <TextBlock Style="{StaticResource DashSubheading}" TextWrapping="Wrap"
+                               Margin="0,4,0,0" Opacity="0.85"
+                               Text="Current stock includes all movements after the last import. Workbook totals and bucket counts may differ."/>
                   </StackPanel>
                   <!-- The action moved here with the list it acts on: it is the selected row's
                        ledger it loads, and it was sitting in a panel that said nothing until it
@@ -1419,6 +1482,7 @@
                       <DataGridTextColumn Header="GRADE" Binding="{Binding GradeCode}" Width="0.9*" MinWidth="66"/>
                       <DataGridTextColumn Header="SIZE" Binding="{Binding SizeCode}" Width="0.7*" MinWidth="54"/>
                       <DataGridTemplateColumn Header="STATUS" Width="0.9*" MinWidth="90" SortMemberPath="BalanceCt"
+                                              ClipboardContentBinding="{Binding BalanceCt, Converter={StaticResource StockState}}"
                                               CellTemplate="{StaticResource StockStatusBadge}"/>
                       <DataGridTextColumn Header="BALANCE CT" Binding="{Binding BalanceCt, StringFormat=N4}" Width="1.2*" MinWidth="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
                       <DataGridTextColumn Header="AVG COST" Binding="{Binding AvgCost, Converter={StaticResource Money}}" Width="1.1*" MinWidth="105" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
@@ -1501,6 +1565,12 @@
                                          Style="{StaticResource Num}" Margin="0,2,0,0"/>
                               <TextBlock Text="{Binding RefType}" Style="{StaticResource TimelineMeta}"
                                          Margin="0,4,0,0"/>
+                              <!-- Mandatory on an adjustment and previously shown nowhere at all,
+                                   so a correction could never be explained after the fact.
+                                   Collapsed on the movement types that carry no reason. -->
+                              <TextBlock Text="{Binding Reason}" Style="{StaticResource TimelineMeta}"
+                                         TextWrapping="Wrap" Margin="0,4,0,0"
+                                         Visibility="{Binding Reason, Converter={StaticResource Empty}, ConverterParameter=Invert}"/>
                             </StackPanel>
                           </Border>
                         </DataTemplate>
@@ -1547,6 +1617,7 @@
             <Grid>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
               </Grid.ColumnDefinitions>
               <ContentControl Grid.Column="0" Style="{StaticResource BrandMark}"/>
               <StackPanel Grid.Column="1" VerticalAlignment="Center">
@@ -1559,6 +1630,13 @@
                 <TextBlock x:Name="MoveSummary" Style="{StaticResource DashSubheading}"
                            Text="Everything that puts carats into stock, moves them between buckets, or takes them out"/>
               </StackPanel>
+
+              <!-- Reloads the catalogue behind the pickers and re-reads the bucket ledger on the
+                   right. The session counters are deliberately left alone: they report what THIS
+                   session recorded, and a refresh that zeroed them would erase the only trace. -->
+              <Button Grid.Column="2" Content="Refresh" Click="RefreshMovements_Click"
+                      Style="{StaticResource DashButton}" VerticalAlignment="Center"
+                      AutomationProperties.HelpText="Reloads the catalogue and the bucket ledger"/>
             </Grid>
           </Border>
 
@@ -1670,7 +1748,7 @@
                       </StackPanel>
                       <StackPanel Style="{StaticResource OpField}">
                         <TextBlock Text=" " Style="{StaticResource OpLabel}"/>
-                        <Button Content="Add intake" Click="Intake_Click" Height="34" MinWidth="120"
+                        <Button x:Name="IntakeButton" Content="Add intake" Click="Intake_Click" Height="34" MinWidth="120"
                                 Style="{StaticResource AppPrimaryButton}"/>
                       </StackPanel>
                     </WrapPanel>
@@ -1719,7 +1797,7 @@
                       </StackPanel>
                       <StackPanel Style="{StaticResource OpField}">
                         <TextBlock Text=" " Style="{StaticResource OpLabel}"/>
-                        <Button Content="Convert" Click="Convert_Click" Height="34" MinWidth="120"/>
+                        <Button x:Name="ConvertButton" Content="Convert" Click="Convert_Click" Height="34" MinWidth="120"/>
                       </StackPanel>
                     </WrapPanel>
                   </StackPanel>
@@ -1757,7 +1835,7 @@
                       </StackPanel>
                       <StackPanel Style="{StaticResource OpField}">
                         <TextBlock Text=" " Style="{StaticResource OpLabel}"/>
-                        <Button Content="Record rejection" Click="Reject_Click" Height="34" MinWidth="140"/>
+                        <Button x:Name="RejectButton" Content="Record rejection" Click="Reject_Click" Height="34" MinWidth="140"/>
                       </StackPanel>
                     </WrapPanel>
 
@@ -1768,15 +1846,28 @@
                         <TextBlock Text="DISPOSITIONS" Style="{StaticResource OpLabel}"/>
                         <TextBlock Style="{StaticResource DashSubheading}" Margin="0,0,0,8"
                                    Text="Weights must sum to the rejection (docs/04 §2.5). Leave empty to record a plain rejection."/>
-                        <!-- Not stored anywhere yet: there is no dispositions table, and the
-                             handler says so out loud rather than swallowing what was typed. -->
-                        <DataGrid x:Name="DispositionGrid" Height="132" IsReadOnly="False" CanUserAddRows="True"
+                        <!-- Stored since 0018: record_rejection writes these to rejection_disposition
+                             in the same transaction as the movement they describe. -->
+                        <DataGrid x:Name="DispositionGrid" Height="132" IsReadOnly="False" CanUserAddRows="False"
                                   AutomationProperties.Name="Dispositions">
                           <DataGrid.Columns>
-                            <!-- Right-aligned like every other weight in the app. -->
-                            <DataGridTextColumn Header="WEIGHT CT" Binding="{Binding WeightCt, StringFormat=N4}" Width="Auto" MinWidth="110"
-                                                ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
-                                                EditingElementStyle="{StaticResource NumEdit}"/>
+                            <!-- Template columns, not text columns. A DataGridTextColumn rests as a
+                                 TextBlock and only becomes a box once clicked, so beside OUTCOME —
+                                 whose ElementStyle IS a ComboBox and therefore always looks live —
+                                 three of the four cells read as dead space. Always-visible editors
+                                 make the whole row look like what it is: four fields to fill in.
+                                 UpdateSourceTrigger=PropertyChanged so a value counts the moment it
+                                 is typed, without needing the row to be committed first. -->
+                            <DataGridTemplateColumn Header="WEIGHT CT" Width="Auto" MinWidth="110"
+                                                    HeaderStyle="{StaticResource AppNumericHeader}">
+                              <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                  <TextBox Text="{Binding WeightCt, StringFormat=N4, UpdateSourceTrigger=PropertyChanged}"
+                                           Style="{StaticResource NumEdit}" local:NumericInput.IsNumeric="True"
+                                           AutomationProperties.Name="Disposition weight"/>
+                                </DataTemplate>
+                              </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <!-- Without these it falls back to WPF's own combo chrome and renders 20px tall
                                  against the 32px every other input uses. -->
                             <DataGridComboBoxColumn Header="OUTCOME" SelectedValueBinding="{Binding Outcome}" Width="Auto" MinWidth="130"
@@ -1789,8 +1880,37 @@
                                 </x:Array>
                               </DataGridComboBoxColumn.ItemsSource>
                             </DataGridComboBoxColumn>
-                            <DataGridTextColumn Header="TO GRADE (REGRADE ONLY)" Binding="{Binding ToGradeCode}" Width="Auto" MinWidth="180"/>
-                            <DataGridTextColumn Header="NOTE" Binding="{Binding Note}" Width="*" MinWidth="120"/>
+                            <!-- A list, not free text. The handler resolves this back to a grade_id by
+                                 CODE, and an unrecognised one becomes null silently — so a typo used
+                                 to record a REGRADE that regraded to nowhere. Choosing from the
+                                 catalogue makes that impossible. -->
+                            <DataGridTemplateColumn Header="TO GRADE (REGRADE ONLY)" Width="Auto" MinWidth="180">
+                              <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                  <!-- ItemTemplate, not DisplayMemberPath — the same trap the Size and
+                                       Grade columns on Sales entry document. This design's combo
+                                       draws its closed state from SelectionBoxItemTemplate, which
+                                       DisplayMemberPath does not populate, so the box fell back to
+                                       ToString() and read "DiamondDesktop.Data.Grade". -->
+                                  <ComboBox ItemsSource="{Binding Source={x:Static local:Catalogue.Grades}}"
+                                            ItemTemplate="{StaticResource GradeNameTemplate}"
+                                            ItemContainerStyle="{StaticResource GradeItemContainer}"
+                                            SelectedValuePath="Code"
+                                            SelectedValue="{Binding ToGradeCode, UpdateSourceTrigger=PropertyChanged}"
+                                            Style="{StaticResource AppComboBox}"
+                                            AutomationProperties.Name="Regrade to"/>
+                                </DataTemplate>
+                              </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="NOTE" Width="*" MinWidth="120">
+                              <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                  <TextBox Text="{Binding Note, UpdateSourceTrigger=PropertyChanged}"
+                                           Style="{StaticResource CellTextBox}"
+                                           AutomationProperties.Name="Disposition note"/>
+                                </DataTemplate>
+                              </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                           </DataGrid.Columns>
                         </DataGrid>
                       </StackPanel>
@@ -1829,7 +1949,7 @@
                       </StackPanel>
                       <StackPanel Style="{StaticResource OpField}">
                         <TextBlock Text=" " Style="{StaticResource OpLabel}"/>
-                        <Button Content="Adjust" Click="Adjust_Click" Height="34" MinWidth="120"/>
+                        <Button x:Name="AdjustButton" Content="Adjust" Click="Adjust_Click" Height="34" MinWidth="120"/>
                       </StackPanel>
                     </WrapPanel>
                   </StackPanel>
@@ -1894,6 +2014,12 @@
                                          Style="{StaticResource Num}" Margin="0,2,0,0"/>
                               <TextBlock Text="{Binding RefType}" Style="{StaticResource TimelineMeta}"
                                          Margin="0,4,0,0"/>
+                              <!-- Mandatory on an adjustment and previously shown nowhere at all,
+                                   so a correction could never be explained after the fact.
+                                   Collapsed on the movement types that carry no reason. -->
+                              <TextBlock Text="{Binding Reason}" Style="{StaticResource TimelineMeta}"
+                                         TextWrapping="Wrap" Margin="0,4,0,0"
+                                         Visibility="{Binding Reason, Converter={StaticResource Empty}, ConverterParameter=Invert}"/>
                             </StackPanel>
                           </Border>
                         </DataTemplate>
@@ -1941,6 +2067,7 @@
             <Grid>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
               </Grid.ColumnDefinitions>
 
               <ContentControl Grid.Column="0" Style="{StaticResource BrandMark}"/>
@@ -1956,6 +2083,12 @@
                 <TextBlock Style="{StaticResource DashSubheading}"
                            Text="Diamond grades, buyers, brokers and pricing configuration"/>
               </StackPanel>
+
+              <!-- The catalogue changes from other screens too — an import creates buyers and
+                   brokers — so this page needs the same way back to the database as the rest. -->
+              <Button Grid.Column="2" Content="Refresh" Click="RefreshMaster_Click"
+                      Style="{StaticResource DashButton}" VerticalAlignment="Center"
+                      AutomationProperties.HelpText="Reloads grades, sizes, buyers and brokers"/>
             </Grid>
           </Border>
 
@@ -2093,8 +2226,15 @@
                                 <TextBlock Style="{StaticResource PartyMeta}"
                                            Text="{Binding DefaultTermsDays, StringFormat={}Payment terms · {0} days}"/>
                               </StackPanel>
-                              <ContentControl Grid.Column="1" Content="{Binding}" VerticalAlignment="Center"
-                                              ContentTemplate="{StaticResource StatusBadgeTemplate}"/>
+                              <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <!-- A typo in a buyer name used to be permanent from inside the
+                                     app: add was the only operation this page had. -->
+                                <Button Content="Edit" Click="EditBuyer_Click" Margin="0,0,8,0"
+                                        Style="{StaticResource SecondaryAction}" MinWidth="64"
+                                        AutomationProperties.HelpText="Rename this buyer, change its terms, or deactivate it"/>
+                                <ContentControl Content="{Binding}" VerticalAlignment="Center"
+                                                ContentTemplate="{StaticResource StatusBadgeTemplate}"/>
+                              </StackPanel>
                             </Grid>
                           </Border>
                         </DataTemplate>
@@ -2132,8 +2272,13 @@
                                 <TextBlock Style="{StaticResource PartyMeta}"
                                            Text="{Binding DefaultBrokerPct, StringFormat={}Commission · {0:N2}%}"/>
                               </StackPanel>
-                              <ContentControl Grid.Column="1" Content="{Binding}" VerticalAlignment="Center"
-                                              ContentTemplate="{StaticResource StatusBadgeTemplate}"/>
+                              <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Content="Edit" Click="EditBroker_Click" Margin="0,0,8,0"
+                                        Style="{StaticResource SecondaryAction}" MinWidth="64"
+                                        AutomationProperties.HelpText="Rename this broker, change its commission, or deactivate it"/>
+                                <ContentControl Content="{Binding}" VerticalAlignment="Center"
+                                                ContentTemplate="{StaticResource StatusBadgeTemplate}"/>
+                              </StackPanel>
                             </Grid>
                           </Border>
                         </DataTemplate>
@@ -2159,10 +2304,12 @@
                       <DataGridTextColumn Header="CODE" Binding="{Binding Code}" Width="*"/>
                       <DataGridTextColumn Header="ORDER" Binding="{Binding SortOrder}" Width="*"
                                           ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                      <DataGridTextColumn Header="LOWER MM" Binding="{Binding LowerMm, StringFormat=N2}" Width="*"
-                                          ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                      <DataGridTextColumn Header="UPPER MM" Binding="{Binding UpperMm, StringFormat=N2}" Width="*"
-                                          ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                      <!-- LOWER MM / UPPER MM are not shown. They are null for every size and have
+                           been since the schema was written: docs/03 Q6 (sieve mm definitions) is
+                           still unanswered, and nothing in the app reads them. Two permanently
+                           blank columns read as missing data rather than as an open question.
+                           The nullable columns stay in size_bucket — when Q6 is answered the data
+                           has somewhere to land and these two lines come back. -->
                     </DataGrid.Columns>
                   </DataGrid>
                   <StackPanel VerticalAlignment="Center" IsHitTestVisible="False"
@@ -2293,7 +2440,13 @@
                 <Button Content="Invoices" Tag="Invoices" Click="DashGo_Click"
                         Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
                 <Button Content="Add stock" Tag="Intake &amp; movements" Click="DashGo_Click"
-                        Style="{StaticResource DashButton}"/>
+                        Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
+                <!-- Filters now re-scope the page from cached rows, so nothing on screen refetches
+                     by itself. This is the way to pull the position again after posting or an
+                     intake — every other page already had one. -->
+                <Button Content="Refresh" Click="LoadDashboard_Click"
+                        Style="{StaticResource DashButton}"
+                        AutomationProperties.HelpText="Reloads invoices and the stock position"/>
               </StackPanel>
             </Grid>
           </Border>
@@ -2341,12 +2494,14 @@
                 <TextBlock Text="FROM" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
                 <DatePicker x:Name="FromDate" Style="{StaticResource AppDatePicker}" Width="120"
                             Height="34" SelectedDateChanged="CustomDate_Changed"
+                            CalendarClosed="DatePicker_CalendarClosed"
                             AutomationProperties.Name="Range from"/>
               </StackPanel>
               <StackPanel Grid.Column="2" Margin="0,0,8,0">
                 <TextBlock Text="TO" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
                 <DatePicker x:Name="ToDate" Style="{StaticResource AppDatePicker}" Width="120"
                             Height="34" SelectedDateChanged="CustomDate_Changed"
+                            CalendarClosed="DatePicker_CalendarClosed"
                             AutomationProperties.Name="Range to"/>
               </StackPanel>
               <StackPanel Grid.Column="3" Margin="0,0,8,0">
@@ -2354,11 +2509,12 @@
                 <ComboBox x:Name="FilterBuyer" Height="34"
                           ItemTemplate="{StaticResource NameTemplate}"
                           ItemContainerStyle="{StaticResource PartyItemContainer}"
+                          SelectionChanged="DashFilter_Changed"
                           AutomationProperties.Name="Filter by buyer"/>
               </StackPanel>
               <StackPanel Grid.Column="4" Margin="0,0,8,0">
                 <TextBlock Text="GRADE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                <ComboBox x:Name="FilterGrade" Height="34"/>
+                <ComboBox x:Name="FilterGrade" Height="34" SelectionChanged="DashFilter_Changed"/>
               </StackPanel>
               <StackPanel Grid.Column="5" Margin="0,0,8,0">
                 <!-- "SEARCH", not "SEARCH DRILL-DOWN": the label was the widest thing in this
@@ -2394,9 +2550,12 @@
               </StackPanel>
               <!-- Bottom-aligned rather than padded with a blank label: the buttons are 34 high,
                    the same as the inputs, so their baselines line up on their own. -->
+              <!-- No Apply button. Every control in this row now applies itself the moment it
+                   changes, so the button offered a second way to do what had already happened.
+                   Worse, until it was pressed the range could read "Custom..." while the figures
+                   below still described the previous period. Clear stays: resetting six controls
+                   at once is worth one press. -->
               <StackPanel Grid.Column="6" Orientation="Horizontal" VerticalAlignment="Bottom">
-                <Button Content="Apply" Click="LoadDashboard_Click"
-                        Style="{StaticResource DashGoldButton}" Margin="0,0,8,0"/>
                 <Button Content="Clear" Click="ClearFilters_Click"
                         Style="{StaticResource DashButton}"/>
               </StackPanel>
@@ -2930,7 +3089,9 @@
                            MaxHeight="27" Margin="0,6,0,0">
                     <TextBlock x:Name="AuditKpiInsert" Style="{StaticResource KpiValue}" Margin="0"/>
                   </Viewbox>
-                  <TextBlock Text="Rows created" Style="{StaticResource KpiCaption}"/>
+                  <!-- Rewritten in ApplyAuditFilter when the 500-row window is full: a zero here
+                       means "none in this window", never "none ever". -->
+                  <TextBlock x:Name="AuditKpiInsertNote" Text="Rows created" Style="{StaticResource KpiCaption}"/>
                 </StackPanel>
               </Grid>
             </Border>
@@ -2947,7 +3108,7 @@
                            MaxHeight="27" Margin="0,6,0,0">
                     <TextBlock x:Name="AuditKpiUpdate" Style="{StaticResource KpiValue}" Margin="0"/>
                   </Viewbox>
-                  <TextBlock Text="Rows amended" Style="{StaticResource KpiCaption}"/>
+                  <TextBlock x:Name="AuditKpiUpdateNote" Text="Rows amended" Style="{StaticResource KpiCaption}"/>
                 </StackPanel>
               </Grid>
             </Border>
@@ -2964,7 +3125,7 @@
                            MaxHeight="27" Margin="0,6,0,0">
                     <TextBlock x:Name="AuditKpiDelete" Style="{StaticResource KpiValue}" Margin="0"/>
                   </Viewbox>
-                  <TextBlock Text="Rows removed" Style="{StaticResource KpiCaption}"/>
+                  <TextBlock x:Name="AuditKpiDeleteNote" Text="Rows removed" Style="{StaticResource KpiCaption}"/>
                 </StackPanel>
               </Grid>
             </Border>
@@ -3047,6 +3208,9 @@
                                             SortMemberPath="Action"
                                             CellTemplate="{StaticResource AuditActionBadge}"/>
                     <DataGridTextColumn Header="RECORD" Binding="{Binding Record}" Width="90"/>
+                    <!-- The page is titled "Every change, who and when" and showed only the when.
+                         changed_by was captured and mapped all along; nothing bound it. -->
+                    <DataGridTextColumn Header="WHO" Binding="{Binding By}" Width="150" MinWidth="90"/>
                     <DataGridTextColumn Header="CHANGES" Binding="{Binding Summary}" Width="*"/>
                   </DataGrid.Columns>
 
@@ -3250,6 +3414,10 @@
               <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Bottom">
                 <Button Content="Clear" Click="ClearUserFilters_Click"
                         Style="{StaticResource DashButton}"/>
+                <!-- Owner only, gated in ApplyRolePermissions. The button being enabled is a
+                     courtesy; admin-users checks the caller's role server-side regardless. -->
+                <Button x:Name="NewUserButton" Content="New user…" Click="NewUser_Click"
+                        Style="{StaticResource PrimaryButton}" Margin="8,0,0,0"/>
               </StackPanel>
             </Grid>
           </Border>
@@ -3366,15 +3534,21 @@
                   <DataGridTemplateColumn Header="" Width="Auto">
                     <DataGridTemplateColumn.CellTemplate>
                       <DataTemplate>
-                        <!-- Copy, not Edit or Disable. Those need the service_role key and do not
-                             exist here; a button that opened a dialog and then failed would be
-                             worse than no button. Copying the id is the real task this screen
-                             supports — it is what gets pasted into Supabase. -->
-                        <Button Content="Copy id" Click="CopyUserId_Click"
-                                Style="{StaticResource DashButton}" Height="26" Padding="10,0"
-                                FontSize="11" Cursor="Hand" Margin="0,0,14,0"
-                                HorizontalAlignment="Right"
-                                ToolTip="Copy this account id to the clipboard"/>
+                        <!-- Manage exists now: the service_role key it needs lives in the
+                             admin-users Edge Function, not in this app, so the button reaches a
+                             server that can actually carry the change out. Copy id stays — it is
+                             still the quickest way to reference an account elsewhere. -->
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                          <Button Content="Copy id" Click="CopyUserId_Click"
+                                  Style="{StaticResource DashButton}" Height="26" Padding="10,0"
+                                  FontSize="11" Cursor="Hand" Margin="0,0,6,0"
+                                  ToolTip="Copy this account id to the clipboard"/>
+                          <Button Content="Manage…" Click="ManageUser_Click"
+                                  Style="{StaticResource DashButton}" Height="26" Padding="10,0"
+                                  FontSize="11" Cursor="Hand" Margin="0,0,14,0"
+                                  Tag="{Binding}"
+                                  ToolTip="Change role, activate or deactivate, or set a new password"/>
+                        </StackPanel>
                       </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                   </DataGridTemplateColumn>
@@ -3418,6 +3592,11 @@
               </StackPanel>
 
               <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <!-- Beside the buttons that act on it, not in a card of its own: it is blank until
+                     something is edited, and a card that is empty most of the time reads as a
+                     rendering fault. -->
+                <TextBlock x:Name="SettingDirty" Style="{StaticResource DashSubheading}"
+                           VerticalAlignment="Center" Margin="0,0,12,0"/>
                 <Button Content="Refresh" Click="LoadSettings_Click"
                         Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
                 <!-- Label kept from the original button: the database refuses this for anyone but
@@ -3431,55 +3610,13 @@
             </Grid>
           </Border>
 
-          <!-- ── Toolbar ──────────────────────────────────────────────────── -->
-          <Border DockPanel.Dock="Top" Style="{StaticResource DashToolbar}" Margin="0,0,0,12">
-            <Grid>
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" MinWidth="200"/>
-                <ColumnDefinition Width="Auto"/>
-              </Grid.ColumnDefinitions>
-
-              <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                <TextBlock Text="SEARCH" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                <Grid>
-                  <TextBox x:Name="SettingSearch" Style="{StaticResource SearchBar}"
-                           PreviewKeyDown="Search_KeyDown"
-                           Tag="Search by name, key or description"
-                           ToolTip="Filters the settings already loaded. Matches the friendly name, the database key and the description."
-                           TextChanged="SettingFilter_Changed"
-                           AutomationProperties.Name="Search settings"/>
-                  <Button x:Name="SettingSearchClear" Click="ClearSettingSearch_Click"
-                          Style="{StaticResource GhostButton}" FocusVisualStyle="{x:Null}"
-                          Focusable="False" Width="20" Height="20" Padding="0"
-                          VerticalContentAlignment="Center" HorizontalContentAlignment="Center"
-                          HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,9,0"
-                          Visibility="Collapsed" Cursor="Hand"
-                          ToolTip="Clear search (Esc)" AutomationProperties.Name="Clear search">
-                    <Path Data="M 0,0 L 8,8 M 8,0 L 0,8" Stretch="None"
-                          Stroke="{DynamicResource AccentBrush}" StrokeThickness="1.6"
-                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                  </Button>
-                </Grid>
-              </StackPanel>
-
-              <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
-                <TextBlock x:Name="SettingDirty" Style="{StaticResource DashSubheading}"
-                           VerticalAlignment="Center" Margin="0,0,12,6"/>
-                <!-- Clear clears the search, on this page as on every other. The button that was
-                     here threw away unsaved edits to the settings themselves — the same word for
-                     both, one row apart, and one of them is not undoable. That one moved up beside
-                     Save, where the other write actions are, and now says what it does. -->
-                <Button x:Name="ClearSettingSearch" Content="Clear" Click="ClearSettingSearch_Click"
-                        Style="{StaticResource DashButton}" Margin="0,0,0,4"
-                        AutomationProperties.HelpText="Clears the search box"/>
-              </StackPanel>
-            </Grid>
-          </Border>
+          <!-- No toolbar. Nine settings across four cards fit in one short scroll, so there is
+               nothing to search or filter, and the unsaved-changes count moved up beside Save. -->
 
           <!-- ── The cards ────────────────────────────────────────────────────
-               One card per category, each hidden when its list is empty so a search never leaves an
-               empty frame behind. Import is last because it is an action, not a policy. -->
+               One card per category, each hidden when its list is empty, so a database with
+               nothing in a category shows no empty frame. Import is last because it is an action,
+               not a policy. -->
           <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                         Focusable="False" Padding="0,0,4,0">
             <StackPanel>
@@ -3508,12 +3645,19 @@
                   <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
                     <TextBlock Text="Import" Style="{StaticResource DashHeading}"/>
                     <TextBlock Style="{StaticResource DashSubheading}"
-                               Text="Replaces every previously imported sale with the contents of the workbook"/>
+                               Text="Each import replaces only what it imported before — sales and stock are separate"/>
                   </StackPanel>
                   <StackPanel Orientation="Horizontal">
                     <Button x:Name="ImportExcel" Content="Import sales from Excel…"
                             Click="ImportExcel_Click" Style="{StaticResource DashButton}"
                             AutomationProperties.HelpText="Validates a sale workbook, then replaces all previously imported sales with it"/>
+                    <!-- A separate button, not a mode on the first: the two read different
+                         workbooks and write to different tables, and one silently doing the other's
+                         job is how a stock file ends up deleting a year of invoices. -->
+                    <Button x:Name="ImportStock" Content="Import stock from Excel…"
+                            Click="ImportStock_Click" Style="{StaticResource DashButton}"
+                            Margin="10,0,0,0"
+                            AutomationProperties.HelpText="Validates a KAPNA ADD stock workbook, then replaces the previously imported opening stock with it"/>
                     <TextBlock x:Name="ImportStatus" VerticalAlignment="Center" Margin="12,0,0,0"
                                Foreground="{DynamicResource TextMutedBrush}"/>
                   </StackPanel>
@@ -3521,9 +3665,11 @@
               </Border>
 
               <!-- No backup panel: Supabase takes and keeps the backups now. -->
+              <!-- "Nothing matched" belonged to the search. What is left is the only empty this
+                   page can now have: app_config came back with no rows at all. -->
               <TextBlock x:Name="SettingEmpty" Style="{StaticResource EmptyHint}"
                          Visibility="Collapsed" Margin="0,24,0,0"
-                         Text="No settings match this search.&#10;Clear the search, or press Refresh."/>
+                         Text="No settings found.&#10;Press Refresh, or check that app_config has rows."/>
             </StackPanel>
           </ScrollViewer>
         </DockPanel>

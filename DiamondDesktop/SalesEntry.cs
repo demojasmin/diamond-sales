@@ -27,6 +27,7 @@ public static class Catalogue
     {
         var grades = await Repo.GradesAsync();
         var sizes = await Repo.SizesAsync();
+        var pairs = await Repo.GradeSizesAsync();
         var currencies = await Repo.CurrenciesAsync();
 
         Grades.Clear();
@@ -35,19 +36,58 @@ public static class Catalogue
         AllSizes.Clear();
         foreach (var s in sizes) AllSizes.Add(s);
 
+        SetGradeSizes(pairs);
+
         // INR or nothing. Falling back to whatever sorted first stamped every invoice with an
         // arbitrary currency_id, which changes what each amount on it MEANS — and silently, since
         // the entry screen has no currency to show. Refusing the save is the honest failure.
         BaseCurrencyId = currencies.FirstOrDefault(c => c.Code.Equals("INR", StringComparison.OrdinalIgnoreCase))?.CurrencyId ?? 0;
     }
 
-    /// docs/04 §3.4: only NO 1 and NO 1 BB carry the smallest bucket.
-    /// CLIENT-SIDE ONLY — Supabase has no grade_size table yet (MDM-004), so the Android app cannot
-    /// enforce this and neither can the database. It belongs on the server.
-    public static IReadOnlyList<SizeBucket> SizesFor(Grade? grade) =>
-        grade is null || grade.Code is "NO 1" or "NO 1 BB"
-            ? AllSizes
-            : AllSizes.Where(s => s.Code != "-2").ToList();
+    /// Which sizes each grade trades in, straight from grade_size — the same table the sales_line
+    /// trigger enforces (0018), so the picker can no longer offer a combination the save will reject.
+    /// The old rule here was hardcoded ("everyone but NO 1 drops -2") and got +14 wrong: it sieves
+    /// on +14/+18/+23 and on nothing else.
+    private static readonly Dictionary<long, HashSet<long>> _gradeSizes = [];
+
+    /// Every size that at least one grade trades in. Size is the FIRST column on the entry grid,
+    /// so the picker is normally opened before a grade exists — and answering that with the whole
+    /// size_bucket table offered 0.2 and 0.25, which are corrupt cells from the sales workbook
+    /// kept only so the importer can resolve them. No grade trades them, so nothing should offer
+    /// them.
+    private static readonly HashSet<long> _sellableSizes = [];
+
+    public static void SetGradeSizes(IEnumerable<GradeSize> pairs)
+    {
+        _gradeSizes.Clear();
+        _sellableSizes.Clear();
+
+        foreach (var p in pairs)
+        {
+            if (!_gradeSizes.TryGetValue(p.GradeId, out var set))
+                _gradeSizes[p.GradeId] = set = [];
+            set.Add(p.SizeId);
+            _sellableSizes.Add(p.SizeId);
+        }
+    }
+
+    /// <summary>
+    /// The sizes a grade trades in — or, before a grade is chosen, every size that some grade
+    /// trades in. Never the raw size_bucket table: that holds rows kept for the importer alone.
+    ///
+    /// Falls back to the full list only when grade_size has not loaded at all. Showing nothing
+    /// there would read as "this grade sells nothing" rather than "the catalogue is still coming".
+    /// </summary>
+    public static IReadOnlyList<SizeBucket> SizesFor(Grade? grade)
+    {
+        if (_gradeSizes.Count == 0) return AllSizes;
+
+        var allowed = grade is not null && _gradeSizes.TryGetValue(grade.GradeId, out var forGrade)
+            ? forGrade
+            : _sellableSizes;
+
+        return AllSizes.Where(s => allowed.Contains(s.SizeId)).ToList();
+    }
 }
 
 /// A buyer or broker as the entry screen needs it: an id, a name, and its default.
@@ -161,8 +201,24 @@ public sealed class SaleLine : Notifier
             RejectionCt = 0;
             Amount = 0;
             IsIncomplete = false;            // the engine only throws on values that contradict
-            Error = e is ArgumentOutOfRangeException r ? $"{FieldName(r.ParamName)} is out of range" : e.Message;
+            Error = e is ArgumentOutOfRangeException r
+                ? $"{FieldName(r.ParamName)} is out of range"
+                : Sentence(e);
         }
+    }
+
+    /// <summary>
+    /// The engine's own sentence, without the parameter clause .NET staples onto Message whenever
+    /// a paramName was supplied. Out-of-range errors map to a column heading above; everything else
+    /// used to reach the user reading "selection 15 exceeds gross 10 (Parameter 'selectionCt')" —
+    /// a C# identifier in front of someone typing an invoice. Cut by ParamName rather than by
+    /// splitting on a newline: the runtime joins it with a space, not a line break.
+    /// </summary>
+    private static string Sentence(ArgumentException e)
+    {
+        if (e.ParamName is null) return e.Message;
+        int cut = e.Message.IndexOf($"(Parameter '{e.ParamName}')", StringComparison.Ordinal);
+        return (cut >= 0 ? e.Message[..cut] : e.Message).TrimEnd();
     }
 
     /// Turns an engine parameter name into the column heading the user is actually looking at.
@@ -282,6 +338,17 @@ public sealed class InvoiceEntry : Notifier
     /// bound to it would never update.
     public int LineCount => RealLines.Count;
 
+    /// <summary>
+    /// Zero only while the screen is genuinely untouched: one row, nothing typed into it. The
+    /// empty-state hint binds to this through the Empty converter, which shows on zero.
+    ///
+    /// It used to bind to LineCount, and a blank row is not a line — so pressing Enter nine times
+    /// left the hint sitting on top of nine empty rows, telling the user to do the thing they had
+    /// visibly started. Counting the extra rows as well as the filled ones fixes that: adding a row
+    /// is starting work, even before anything is typed into it.
+    /// </summary>
+    public int EntriesStarted => Math.Max(Lines.Count - 1, 0) + RealLines.Count;
+
     public void Recalculate()
     {
         foreach (var line in Lines) line.Recalculate(BrokerPct);
@@ -296,13 +363,24 @@ public sealed class InvoiceEntry : Notifier
         Raise(nameof(BlendedRate));
         Raise(nameof(DueDate));
         Raise(nameof(LineCount));
+        Raise(nameof(EntriesStarted));
     }
 
     /// Null when the invoice can be saved; otherwise the first thing wrong with it.
     public string? Validate()
     {
         if (string.IsNullOrWhiteSpace(Buyer)) return "Buyer is required";
-        if (TermsDays < 0) return "Terms cannot be negative";
+
+        // The same 0-365 rule the Add buyer dialog enforces (MainWindow.ValidateBuyer). It was
+        // missing here, so terms of 9,999 days were accepted on the invoice itself and put the due
+        // date decades out. One rule, both places.
+        if (TermsDays is < 0 or > 365) return "Terms must be between 0 and 365 days";
+
+        // Broker % is a header field, but the only thing checking it was Calc.Pct() throwing once
+        // per line — so an out-of-range percentage reddened every row with "Broker % is out of
+        // range" and sent the user hunting through the grid for a fault in the header.
+        if (BrokerPct is < 0 or > 100) return "Broker % must be between 0 and 100";
+
         if (RealLines.Count == 0) return "An invoice needs at least one line";
 
         var bad = RealLines.FirstOrDefault(l => l.Error is not null);

@@ -164,6 +164,17 @@ public static class Bounds
     public static bool NeedsConfirming(decimal value, decimal threshold) => Math.Abs(value) > threshold;
 }
 
+public static class Words
+{
+    /// <summary>
+    /// "1 invoice" / "2 invoices". Written inline this is a ternary inside an interpolation inside
+    /// whatever wraps it, which is three levels deep to read for one letter of difference.
+    /// </summary>
+    public static string Plural(int n, string one, string many) => $"{n:N0} {(n == 1 ? one : many)}";
+
+    public static string Plural(int n, string noun) => Plural(n, noun, noun + "s");
+}
+
 /// <summary>
 /// Turns a database or transport failure into something a person on a trading floor can act on.
 ///
@@ -291,7 +302,33 @@ public sealed class AuditRow
     public string When => ChangedAt.ToString("dd-MM-yyyy HH:mm:ss");
     public string Time => ChangedAt.ToString("HH:mm:ss");
     public string Record => RecordId is { } id ? $"#{id}" : "";
-    public string By => ChangedBy?.ToString() ?? "system";
+
+    /// <summary>
+    /// Who made the change, resolved through <see cref="Names"/>.
+    ///
+    /// The page has always been titled "Every change, who and when" and never showed the who:
+    /// changed_by was captured, mapped and then bound to nothing. An audit trail that proves only
+    /// THAT something happened answers the second question anyone asks and not the first.
+    ///
+    /// Null means the row came from a SECURITY DEFINER function with no signed-in user behind it
+    /// — a migration, a trigger, a scheduled job. That is "System", not an unknown person.
+    /// A UUID that resolves to nobody is shown short: the account was deleted, and eight
+    /// characters is enough to match rows to each other without pretending to name someone.
+    /// </summary>
+    public static IReadOnlyDictionary<Guid, string> Names { get; set; } =
+        new Dictionary<Guid, string>();
+
+    public string By
+    {
+        get
+        {
+            if (ChangedBy is not { } id) return "System";
+
+            return Names.TryGetValue(id, out string? name) && !string.IsNullOrWhiteSpace(name)
+                ? name
+                : id.ToString()[..8];
+        }
+    }
 
     /// <summary>
     /// What kind of change this is, said once so the field list does not have to repeat it. An
@@ -438,10 +475,6 @@ public sealed class SettingItem : System.ComponentModel.INotifyPropertyChanged
 
     public bool IsDirty => Value != OriginalValue;
 
-    /// Lowercased haystack for the search box: label, key and description, so searching either the
-    /// friendly name or the raw key finds the row.
-    public string Search => $"{Label} {Key} {Description}".ToLowerInvariant();
-
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
     private void Raise(string name) =>
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
@@ -482,6 +515,8 @@ public sealed class SettingItem : System.ComponentModel.INotifyPropertyChanged
                 "How long a signed-in session stays valid without activity."),
             ["max_login_attempts"] = ("Security", "Lockout after failed attempts",
                 "How many failed sign-ins lock an account."),
+            ["lockout_minutes"] = ("Security", "Lockout lasts (minutes)",
+                "How long an account stays locked after too many failed sign-ins."),
 
             // ── the names docs/03 §2.5 uses, in case a database is seeded from it ──
             ["money_dp"] = ("General", "Money decimal places",
@@ -504,6 +539,57 @@ public sealed class SettingItem : System.ComponentModel.INotifyPropertyChanged
         };
 
     public static readonly string[] Categories = ["General", "Inventory", "Security", "Other"];
+
+    /// <summary>
+    /// What each known key will accept. The value box is plain text and every value was written
+    /// through as typed, so "abc" reached carat_precision and a decimal-places setting that every
+    /// screen reads became a string no screen could parse. A key that is not listed keeps the old
+    /// behaviour — unrecognised settings are shown rather than hidden, and the database stays the
+    /// authority on them.
+    ///
+    /// Bounds, not guesses: precision is capped at the numeric(_,4) carats and (_,2) money the
+    /// schema stores; the policy words are the three negative_stock_policy() recognises.
+    /// </summary>
+    private static readonly Dictionary<string, Func<string, string?>> Rules =
+        new(StringComparer.Ordinal)
+        {
+            ["money_precision"] = v => WholeBetween(v, 0, 2),
+            ["money_dp"] = v => WholeBetween(v, 0, 2),
+            ["carat_precision"] = v => WholeBetween(v, 0, 4),
+            ["carat_dp"] = v => WholeBetween(v, 0, 4),
+            ["alert_overdue_days"] = v => WholeBetween(v, 0, 3650),
+            ["session_timeout_min"] = v => WholeBetween(v, 1, 1440),
+            ["max_login_attempts"] = v => WholeBetween(v, 1, 100),
+            ["lockout_attempts"] = v => WholeBetween(v, 1, 100),
+            ["lockout_minutes"] = v => WholeBetween(v, 1, 1440),
+            ["alert_low_stock_ct"] = v => NonNegativeNumber(v),
+            ["settlement_write_off_threshold"] = v => NonNegativeNumber(v),
+            ["negative_stock"] = v => OneOf(v, "BLOCK", "WARN", "ALLOW"),
+            ["negative_stock_policy"] = v => OneOf(v, "BLOCK", "WARN", "ALLOW"),
+            ["rounding"] = v => OneOf(v, "HALF_UP", "HALF_EVEN"),
+            ["auto_reject_on_post"] = v => OneOf(v, "true", "false"),
+            ["manager_sees_margin"] = v => OneOf(v, "true", "false"),
+            ["company_name"] = v => string.IsNullOrWhiteSpace(v) ? "Company name cannot be empty." : null,
+            ["base_currency"] = v => v.Trim().Length == 3 ? null : "Base currency is a three-letter code, such as INR.",
+        };
+
+    /// <summary>Null when the value may be saved; otherwise why not.</summary>
+    public string? Problem => Rules.TryGetValue(Key, out var rule) ? rule(Value ?? "") : null;
+
+    private static string? WholeBetween(string value, int low, int high) =>
+        int.TryParse(value?.Trim(), out int n) && n >= low && n <= high
+            ? null
+            : $"Enter a whole number between {low} and {high}.";
+
+    private static string? NonNegativeNumber(string value) =>
+        decimal.TryParse(value?.Trim(), NumberStyles.Number, CultureInfo.InvariantCulture, out decimal d) && d >= 0
+            ? null
+            : "Enter a number of 0 or more.";
+
+    private static string? OneOf(string value, params string[] allowed) =>
+        allowed.Any(a => string.Equals(a, value?.Trim(), StringComparison.OrdinalIgnoreCase))
+            ? null
+            : $"Must be one of: {string.Join(", ", allowed)}.";
 
     public static SettingItem From(string key, string value)
     {
@@ -538,8 +624,16 @@ public sealed class SettingItem : System.ComponentModel.INotifyPropertyChanged
 /// </summary>
 public sealed class StockStateConverter : IValueConverter
 {
-    public static string State(decimal balance) =>
-        balance < 0 ? "Negative" : balance == 0 ? "Empty" : "In stock";
+    /// Every stock badge in the app resolves through here — the grid column, the movements drawer
+    /// and the clipboard export — so "Low" appears in all three from this one line.
+    /// alert_low_stock_ct of 0 disables the band rather than marking every bucket low.
+    public static string State(decimal balance) => balance switch
+    {
+        < 0 => "Negative",
+        0 => "Empty",
+        _ when Data.Policy.LowStockCt > 0 && balance <= Data.Policy.LowStockCt => "Low",
+        _ => "In stock",
+    };
 
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         value is decimal balance ? State(balance) : "";
@@ -563,19 +657,25 @@ public static class Money
 {
     private const decimal Billion = 1_000_000_000m, Million = 1_000_000m, Thousand = 1_000m;
 
+    /// <summary>The plain figure, at the configured decimals. See Policy.MoneyPrecision.</summary>
+    public static string Exact(decimal value) => Data.Policy.Format(value);
+
+    public static string Exact(decimal? value) => value is { } v ? Exact(v) : "—";
+
     public static string Short(decimal value)
     {
         decimal size = Math.Abs(value);
-        // Below a thousand there is nothing to shorten, and rounding a small figure to two decimals
-        // is what every other number on the screen already does.
-        if (size < Thousand) return value.ToString("N2");
+        // Below a thousand there is nothing to shorten, and rounding a small figure to the
+        // configured decimals is what every other number on the screen already does.
+        if (size < Thousand) return Exact(value);
 
         (decimal unit, string suffix) = size >= Billion ? (Billion, " B")
                                       : size >= Million ? (Million, " M")
                                                         : (Thousand, " K");
 
-        // Two decimals on the quotient: 1.25 M, not 1.3 M, so the figure still carries the
-        // precision someone would read out loud.
+        // Two decimals on the quotient regardless of money_precision: 1.25 M, not 1.3 M, so the
+        // figure still carries the precision someone would read out loud. At money_precision 0 a
+        // shortened figure would otherwise collapse to "1 M" and lose a quarter of a billion.
         //
         // Invariant grouping on the quotient, not the machine's: the app runs under en-IN, whose
         // groups are 2,10,00,000 — pairing a lakh-grouped quotient with a "B" suffix reads as two
@@ -599,7 +699,7 @@ public sealed class ShortMoneyConverter : IValueConverter
                 return value.ToString() ?? "";
         }
         return string.Equals(parameter as string, "Exact", StringComparison.OrdinalIgnoreCase)
-            ? d.ToString("N2")
+            ? Money.Exact(d)
             : Money.Short(d);
     }
 
@@ -643,7 +743,7 @@ public sealed class CountLabelConverter : IValueConverter
             System.Collections.ICollection c => c.Count,
             _ => int.TryParse(System.Convert.ToString(value, culture), out int n) ? n : 0,
         };
-        return $"{count:N0} {noun}{(count == 1 ? "" : "s")}";
+        return Words.Plural(count, noun);
     }
 
     public object ConvertBack(object? value, Type t, object? p, CultureInfo c) => Binding.DoNothing;

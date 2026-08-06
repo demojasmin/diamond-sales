@@ -683,6 +683,12 @@
         <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
         <Setter TargetName="Word" Property="Text" Value="Empty"/>
       </DataTrigger>
+      <DataTrigger Binding="{Binding BalanceCt, Converter={StaticResource StockState}}" Value="Low">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource WarningBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+        <Setter TargetName="Word" Property="Text" Value="Low"/>
+      </DataTrigger>
       <DataTrigger Binding="{Binding BalanceCt, Converter={StaticResource StockState}}" Value="Negative">
         <Setter TargetName="Chip" Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
         <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource DangerBorderBrush}"/>

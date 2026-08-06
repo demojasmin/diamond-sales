@@ -6,6 +6,15 @@ using Microsoft.Data.Sqlite;
 
 namespace DiamondDesktop.Data;
 
+/// NOT WIRED. Nothing calls this yet — no write path enqueues, nothing triggers ReplayAsync, and
+/// no screen shows the pending count. It was dead code before it was deleted and it is dead code
+/// now; restored because SYNC-001/FR-SYNC-1 make offline entry a Must and this is the right shape
+/// for it, not because the app has offline support.
+///
+/// What working offline needs on top of this: every Repo write branching to EnqueueAsync when
+/// Db.IsOnline is false, a reconnect trigger calling ReplayAsync, PendingChanged bound to the sync
+/// chip, and a stable client_ref per user action rather than per attempt (see ConvertAsync).
+///
 /// Writes parked on disk while the network is down, replayed in order when it comes back.
 /// `operation` is the PostgREST path the write targets — a table name ("receipt") or "rpc/post_invoice" —
 /// so one code path covers both. `payloadJson` is the raw body, client_ref already inside it.
