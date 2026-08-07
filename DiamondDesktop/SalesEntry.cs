@@ -78,6 +78,11 @@ public static class Catalogue
     /// Falls back to the full list only when grade_size has not loaded at all. Showing nothing
     /// there would read as "this grade sells nothing" rather than "the catalogue is still coming".
     /// </summary>
+    /// <summary>Whether any grade trades this size at all. See <see cref="_sellableSizes"/>.</summary>
+    public static bool IsSellableSize(string code) =>
+        _sellableSizes.Count == 0
+        || AllSizes.Any(s => s.Code == code && _sellableSizes.Contains(s.SizeId));
+
     public static IReadOnlyList<SizeBucket> SizesFor(Grade? grade)
     {
         if (_gradeSizes.Count == 0) return AllSizes;

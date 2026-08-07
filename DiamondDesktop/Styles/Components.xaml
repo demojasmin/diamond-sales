@@ -5,6 +5,7 @@
 
   <local:InitialsConverter x:Key="Initials"/>
   <local:StockStateConverter x:Key="StockState"/>
+  <local:SellableSizeConverter x:Key="SellableSize"/>
 
   <!-- ═══════════════════════════════════════════════════════════════════════
        Component library · Stage 1

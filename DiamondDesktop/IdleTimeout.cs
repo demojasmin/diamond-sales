@@ -30,9 +30,19 @@ public sealed class IdleTimeout
     /// keystroke — rebuilds a timer thousands of times an hour to answer the same question.
     private static readonly TimeSpan Tick = TimeSpan.FromSeconds(15);
 
-    public IdleTimeout(Window owner)
+    /// True while a read or write is in flight. Idle means the USER is away, not that the app is
+    /// quiet — a sales import runs for minutes and needs no keystrokes.
+    private readonly Func<bool> _busy;
+
+    /// Reloads whatever the current page shows, after a fresh sign-in. The window survived the
+    /// timeout; its data belongs to a session that did not.
+    private readonly Action _resumed;
+
+    public IdleTimeout(Window owner, Func<bool> busy, Action resumed)
     {
         _owner = owner;
+        _busy = busy;
+        _resumed = resumed;
 
         // Application-wide, so activity in any dialog counts too. A modal import dialog is still
         // the user being present.
@@ -52,6 +62,15 @@ public sealed class IdleTimeout
         if (_expired) return;
         if (DateTime.UtcNow - _lastInput < TimeSpan.FromMinutes(Policy.SessionTimeoutMin)) return;
 
+        // Signing out mid-import would leave the desk with no window and no idea whether 1,438
+        // invoices landed. The RPC is one transaction so the database survives either way, but the
+        // person watching it does not know that. Work in flight resets the clock.
+        if (_busy())
+        {
+            _lastInput = DateTime.UtcNow;
+            return;
+        }
+
         _expired = true;
         _timer.Stop();
 
@@ -59,8 +78,22 @@ public sealed class IdleTimeout
 
         MessageBox.Show(_owner,
             $"Signed out after {Policy.SessionTimeoutMin} minute(s) without activity.\n\n"
-            + "Start Solitaire Desk again to sign back in.",
+            + "Sign in again to carry on.",
             "Session timed out", MessageBoxButton.OK, MessageBoxImage.Information);
+
+        // Sign in again rather than exiting. Ending the process was the blunt version: at a
+        // fifteen-minute timeout it means relaunching the app after every cup of tea, and the
+        // person who has to do that turns the timeout off — which is how a security setting stops
+        // being one. The session is already gone; only the window is being reused.
+        var login = new LoginWindow { Owner = _owner };
+        if (login.ShowDialog() == true && Db.CurrentUser is not null)
+        {
+            _lastInput = DateTime.UtcNow;
+            _expired = false;
+            _timer.Start();
+            _resumed();
+            return;
+        }
 
         Application.Current.Shutdown();
     }

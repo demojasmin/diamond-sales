@@ -208,6 +208,13 @@ Check("SALES-001 NO 1 offers four sizes",
     Check("SALES-001 a picked grade is unaffected by the fallback",
         !DiamondDesktop.Catalogue.SizesFor(GradeOf("NO II")).Contains(junk));
 
+    // Master data lists every size_bucket row, including the ones kept only so the sales importer
+    // can resolve them. Saying which is which is what stops someone pairing 0.25 to a grade.
+    Check("SIZE · a size no grade trades is marked import-only",
+        !DiamondDesktop.Catalogue.IsSellableSize("0.25"));
+    Check("SIZE · a real sieve size is sellable",
+        DiamondDesktop.Catalogue.IsSellableSize("+6.5"));
+
     DiamondDesktop.Catalogue.AllSizes.Remove(junk);
 }
 Check("SALES-001 NO II offers three — the -2 bucket is not on the list",

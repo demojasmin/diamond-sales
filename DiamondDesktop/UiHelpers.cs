@@ -391,12 +391,18 @@ public sealed class AuditRow
             // the second: a receipt whose amount happens to contain the digits typed is not what
             // anyone means by a search result. The record is indexed bare and as "#1", because
             // that is how the column displays it.
+            // The person is indexed too, now that the WHO column shows one. "Who cancelled this"
+            // is the question an audit trail exists to answer, and typing the name found nothing.
+            // Safe to bake in here: Names is loaded before the rows are mapped, and both reload
+            // together on Refresh.
             Search = string.Join(' ', new[]
                 {
                     log.AuditedTable,
                     log.Action,
                     log.RecordId?.ToString() ?? "",
                     log.RecordId is { } rid ? $"#{rid}" : "",
+                    log.ChangedBy is { } who && Names.TryGetValue(who, out string? name) ? name : "",
+                    log.ChangedBy is null ? "system" : "",
                 }
                 .Where(x => x.Length > 0))
                 .ToLowerInvariant(),
@@ -622,6 +628,20 @@ public sealed class SettingItem : System.ComponentModel.INotifyPropertyChanged
 /// Zero and negative are deliberately different: zero is a bucket that has sold out, negative means
 /// stock left that never arrived — a reconciliation fault, not a level.
 /// </summary>
+/// <summary>
+/// Whether a sieve size is one any grade actually trades. size_bucket also holds rows kept purely
+/// so the sales importer can resolve them — 0.2 and 0.25, corrupt cells from the workbook — and on
+/// the Master data list they looked like sieve sizes with a gap in their data.
+/// </summary>
+public sealed class SellableSizeConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is string code && Catalogue.IsSellableSize(code) ? "Yes" : "Import only";
+
+    public object ConvertBack(object? value, Type t, object? p, CultureInfo c) =>
+        throw new NotSupportedException();
+}
+
 public sealed class StockStateConverter : IValueConverter
 {
     /// Every stock badge in the app resolves through here — the grid column, the movements drawer

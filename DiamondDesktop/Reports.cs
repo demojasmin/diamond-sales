@@ -68,6 +68,22 @@ public static class Reports
         try { if (dialog.ShowDialog() != true) return null; }
         catch (Exception e) { return $"No printer available — {e.Message}"; }
 
+        var doc = BuildInvoice(invoice, lines, companyName);
+
+        try { dialog.PrintDocument(((IDocumentPaginatorSource)doc).DocumentPaginator, $"Invoice {invoice.InvoiceNo}"); }
+        catch (Exception e) { return $"Could not print {invoice.InvoiceNo} — {e.Message}"; }
+        return $"Sent {invoice.InvoiceNo} to the printer";
+    }
+
+    /// <summary>
+    /// The bill itself, with no printer involved.
+    ///
+    /// Split out of PrintInvoice so it can be checked: the document used to be built inside a
+    /// method that opens a PrintDialog first, so nothing about the one artefact a buyer physically
+    /// receives could be tested without a printer attached. Every figure below reaches a customer.
+    /// </summary>
+    public static FlowDocument BuildInvoice(VInvoice invoice, List<VSalesLine> lines, string companyName)
+    {
         var doc = new FlowDocument
         {
             PagePadding = new Thickness(50),
@@ -140,9 +156,7 @@ public static class Reports
                 $"Broker {invoice.BrokerPct}% is already deducted from the amount above."))
             { FontSize = 10, Foreground = System.Windows.Media.Brushes.Gray });
 
-        try { dialog.PrintDocument(((IDocumentPaginatorSource)doc).DocumentPaginator, $"Invoice {invoice.InvoiceNo}"); }
-        catch (Exception e) { return $"Could not print {invoice.InvoiceNo} — {e.Message}"; }
-        return $"Sent {invoice.InvoiceNo} to the printer";
+        return doc;
     }
 
     private static Paragraph Heading(string text, double size)

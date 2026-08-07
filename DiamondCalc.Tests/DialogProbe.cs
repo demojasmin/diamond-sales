@@ -94,6 +94,11 @@ public static class DialogProbe
                     .Invoke(progress, [progress, closing]);
                 results.Add(("progress · the dialog refuses to be closed mid-import",
                     closing.Cancel, null));
+
+                // The printed bill. It is the one artefact a buyer physically receives and it had
+                // no coverage at all: the document was built inside a method that opens a
+                // PrintDialog first, so nothing could be checked without a printer attached.
+                results.AddRange(BillChecks());
             }
             catch (Exception ex)
             {
@@ -144,6 +149,58 @@ public static class DialogProbe
         dialog.Measure(new Size(800, 800));
         dialog.Arrange(new Rect(0, 0, 560, 600));
         return dialog;
+    }
+
+    /// <summary>
+    /// Builds a real bill and reads the text back. Every figure here reaches a customer, so the
+    /// checks are about what must appear rather than about layout: the invoice number, the buyer,
+    /// each line, the totals — and that a missing cost basis prints as words rather than as a zero,
+    /// which would read as a 100% margin on a parcel whose purchase price was never recorded.
+    /// </summary>
+    private static List<(string, bool, string?)> BillChecks()
+    {
+        var invoice = new DiamondDesktop.Data.VInvoice
+        {
+            InvoiceNo = "INV-2026-00004", InvoiceDate = new DateOnly(2026, 8, 5),
+            BuyerName = "QUEST DIAMOND", DocType = "BILL", TermsDays = 45,
+            DueDate = new DateOnly(2026, 9, 19), BrokerName = "JITESH SHAH", BrokerPct = 1m,
+            AmountTotal = 139864.73m, CaratsSold = 2.30m, Received = 50000m,
+            Outstanding = 89864.73m, BlendedRate = 60810.75m, BrokerPayable = 1412.78m,
+        };
+
+        var lines = new List<DiamondDesktop.Data.VSalesLine>
+        {
+            new()
+            {
+                GradeCode = "NO II", SizeCode = "-6.5", GrossWeightCt = 2.30m, SelectionCt = 2.30m,
+                RejectionCt = 0m, PricePerCt = 63000m, ExRate = 1m, Less1Pct = 2.5m, Less2Pct = 0m,
+                Amount = 139864.73m, Remark = "sorted parcel",
+            },
+        };
+
+        var doc = DiamondDesktop.Reports.BuildInvoice(invoice, lines, "Solitaire Desk");
+        string text = new System.Windows.Documents.TextRange(
+            doc.ContentStart, doc.ContentEnd).Text;
+
+        return
+        [
+            ("bill · names the company and the invoice",
+             text.Contains("Solitaire Desk") && text.Contains("INV-2026-00004"), null),
+            ("bill · names the buyer and the due date",
+             text.Contains("QUEST DIAMOND") && text.Contains("19-09-2026"), null),
+            ("bill · prints the line, its grade and its size",
+             text.Contains("NO II") && text.Contains("-6.5"), null),
+            ("bill · prints the per-line remark, which no screen shows",
+             text.Contains("sorted parcel"), null),
+            ("bill · the amount matches the invoice total",
+             text.Contains("139,864.73"), null),
+            ("bill · outstanding is on it, not just the total",
+             text.Contains("89,864.73"), null),
+            ("bill · an unknown cost prints as words, never as a zero margin",
+             text.Contains("Cost not available") && !text.Contains("Margin\t0.00"), null),
+            ("bill · says the broker cut is already deducted",
+             text.Contains("already deducted"), null),
+        ];
     }
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)

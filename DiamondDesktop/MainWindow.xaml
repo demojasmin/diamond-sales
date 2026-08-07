@@ -2304,6 +2304,12 @@
                       <DataGridTextColumn Header="CODE" Binding="{Binding Code}" Width="*"/>
                       <DataGridTextColumn Header="ORDER" Binding="{Binding SortOrder}" Width="*"
                                           ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
+                      <!-- 0.2 and 0.25 are corrupt cells from the sales workbook (docs/04 §4.1),
+                           kept in size_bucket only so the importer can resolve 46 lines. No grade
+                           trades them. Listing them beside real sieve sizes with nothing to say so
+                           is how someone eventually pairs one to a grade. -->
+                      <DataGridTextColumn Header="SELLABLE" Binding="{Binding Code, Converter={StaticResource SellableSize}}"
+                                          Width="*"/>
                       <!-- LOWER MM / UPPER MM are not shown. They are null for every size and have
                            been since the schema was written: docs/03 Q6 (sieve mm definitions) is
                            still unanswered, and nothing in the app reads them. Two permanently
@@ -3031,7 +3037,7 @@
                 <Grid>
                   <TextBox x:Name="AuditSearch" Style="{StaticResource SearchBar}"
                            PreviewKeyDown="Search_KeyDown"
-                           Tag="Search by entity, action or record"
+                           Tag="Search by entity, action, record or who"
                            ToolTip="Filters the entries already loaded. Matches the entity, the action and the record id — not the field values."
                            TextChanged="AuditFilter_Changed"
                            AutomationProperties.Name="Search the audit trail"/>

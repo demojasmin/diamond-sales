@@ -152,7 +152,7 @@ public partial class MainWindow : Window
             await Policy.LoadAsync();
             if (_idle is null)
             {
-                _idle = new IdleTimeout(this);
+                _idle = new IdleTimeout(this, () => _inFlight > 0, ReloadCurrentTab);
                 Policy.Changed += RerenderForPolicy;
             }
 
@@ -887,6 +887,16 @@ public partial class MainWindow : Window
             var inBucket = shown.Where(r => r.AgeBucket == age).ToList();
             value.Text = Money.Short(inBucket.Sum(r => r.Outstanding));
             caption.Text = $"{inBucket.Count:N0} invoice{(inBucket.Count == 1 ? "" : "s")}";
+
+            // The 0-30 bucket holds invoices that are 1-30 days late AND invoices not due at all —
+            // v_receivables_ageing has no separate band for "not yet due". On this book that is
+            // ~200 M of a 318 M tile, sitting on a page headed "Ageing and collections", where the
+            // whole figure reads as overdue. Naming the split costs a caption; the view keeps its
+            // own bands, so nothing downstream moves.
+            int notDue = inBucket.Count(r => r.DaysOverdue <= 0);
+            if (age == "0-30" && notDue > 0)
+                caption.Text += $" · {notDue:N0} not yet due "
+                              + $"({Money.Short(inBucket.Where(r => r.DaysOverdue <= 0).Sum(r => r.Outstanding))})";
         }
 
         Tile("0-30", RecKpiFresh, RecKpiFreshCount);
@@ -4150,6 +4160,17 @@ public partial class MainWindow : Window
         ["Settings"] = "Policies and thresholds",
     };
 
+    /// <summary>
+    /// Reloads the page currently on screen. Used after an idle sign-out and a fresh sign-in: the
+    /// window outlived the session, so everything on it was fetched with a token that is gone.
+    /// </summary>
+    private void ReloadCurrentTab()
+    {
+        _dashStock = null;
+        _dashInvoices = null;
+        if (Tabs.SelectedItem is TabItem tab) LoadTabData(tab.Header?.ToString() ?? "");
+    }
+
     private void Tabs_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (e.OriginalSource != Tabs || Tabs.SelectedItem is not TabItem tab) return;
@@ -4159,6 +4180,18 @@ public partial class MainWindow : Window
         ScreenSub.Text = ScreenSubtitles.GetValueOrDefault(header, "");
         Status.Text = "";                      // a message belongs to the screen that raised it
 
+        LoadTabData(header);
+    }
+
+    /// <summary>
+    /// Fetches whatever the named page shows. Separate from Tabs_Changed so the same reload can be
+    /// triggered without a tab change — after an idle sign-out and a fresh sign-in, the window is
+    /// still showing data fetched with a token that no longer exists.
+    /// </summary>
+    private void LoadTabData(string header)
+    {
+        var e = new RoutedEventArgs();
+
         switch (header)
         {
             // Without this the tab keeps no focus of its own, so WPF hands it to the first
@@ -4166,14 +4199,14 @@ public partial class MainWindow : Window
             // its focus ring on a field nobody had chosen, and put the caret on the one header
             // value that is already correct. Focus belongs where the work starts.
             case "Sales entry": FocusWhereEntryResumes(); break;
-            case "Invoices": LoadInvoices_Click(sender, e); break;
-            case "Receivables": LoadReceivables_Click(sender, e); break;
-            case "Stock": LoadStock_Click(sender, e); break;
+            case "Invoices": LoadInvoices_Click(this, e); break;
+            case "Receivables": LoadReceivables_Click(this, e); break;
+            case "Stock": LoadStock_Click(this, e); break;
             case "Master data": _ = LoadMasterAsync(); break;
-            case "Dashboard": LoadDashboard_Click(sender, e); break;
-            case "Audit": LoadAudit_Click(sender, e); break;
-            case "Users": LoadUsers_Click(sender, e); break;
-            case "Settings": LoadSettings_Click(sender, e); break;
+            case "Dashboard": LoadDashboard_Click(this, e); break;
+            case "Audit": LoadAudit_Click(this, e); break;
+            case "Users": LoadUsers_Click(this, e); break;
+            case "Settings": LoadSettings_Click(this, e); break;
         }
     }
 
