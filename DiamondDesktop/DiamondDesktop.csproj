@@ -16,16 +16,19 @@
     <Company>Solitaire</Company>
     <Description>Diamond Sales &amp; Inventory</Description>
     <Copyright>Copyright © Solitaire</Copyright>
-    <Version>1.0.0</Version>
-    <FileVersion>1.0.0.0</FileVersion>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Version>1.0.1</Version>
+    <FileVersion>1.0.1.0</FileVersion>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
 
     <!-- Trimming is off deliberately: Supabase's Postgrest layer resolves models by reflection, so
          a trimmer that cannot see those types strips them and every read fails at runtime rather
-         than at build. Size is not worth that trade on a desktop LOB app. -->
+         than at build. Size is not worth that trade on a desktop LOB app.
+
+         SelfContained and RuntimeIdentifier are NOT set here on purpose. As project properties they
+         apply to every build, and a self-contained executable cannot be referenced by a
+         non-self-contained one — which broke DiamondCalc.Tests outright. They belong on the publish
+         command that builds the installer payload; see installer/build.ps1. -->
     <PublishTrimmed>false</PublishTrimmed>
-    <SelfContained>true</SelfContained>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
 
   <ItemGroup>

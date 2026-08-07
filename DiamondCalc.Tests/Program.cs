@@ -972,6 +972,142 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
     Check("SPLIT · the app series cannot be mistaken for the imported one",
         !Imported("INV-" + DiamondDesktop.Data.Repo.ImportedPrefix));
 
+    // ── Offline import · the outbox ────────────────────────────────────────
+    // A queued stock import is a REPLACE, not an append: applying it deletes every movement the
+    // previous import wrote. Replaying one blind after a reconnect is how a colleague's newer
+    // import gets silently reverted, so these checks are about the guard, not the queueing.
+    {
+        // A temp file, never the real one. Pointing these checks at
+        // %LOCALAPPDATA%\SolitaireDesk\outbox.db meant a test queued an import into the user's live
+        // queue — and when the running app held the file open, the cleanup failed and the app sat
+        // there reporting "1 held — needs attention" for an import nobody had made.
+        //
+        // Set before anything touches Outbox: DbPath is resolved once, at static init.
+        string outbox = Path.Combine(Path.GetTempPath(), $"outbox-test-{Guid.NewGuid():N}.db");
+        Environment.SetEnvironmentVariable("SOLITAIREDESK_OUTBOX", outbox);
+
+        var ref1 = Guid.NewGuid();
+        DiamondDesktop.Data.Outbox.EnqueueAsync("rpc/replace_imported_stock", """{"p_rows":[]}""",
+                                                ref1, guard: "62:1030").GetAwaiter().GetResult();
+
+        Check("OUTBOX · a queued import survives on disk",
+            DiamondDesktop.Data.Outbox.PendingCountAsync().GetAwaiter().GetResult() == 1);
+
+        // Queueing the same action twice — a double click, a retried click — must not double-apply.
+        DiamondDesktop.Data.Outbox.EnqueueAsync("rpc/replace_imported_stock", """{"p_rows":[]}""",
+                                                ref1, guard: "62:1030").GetAwaiter().GetResult();
+        Check("OUTBOX · the same client_ref cannot queue twice",
+            DiamondDesktop.Data.Outbox.PendingCountAsync().GetAwaiter().GetResult() == 1);
+
+        // Server moved: someone else imported while we were offline. Hold, do not send.
+        var moved = DiamondDesktop.Data.Outbox
+            .ReplayAsync(_ => Task.FromResult<string?>("70:1400")).GetAwaiter().GetResult();
+        Check("OUTBOX · a changed server blocks the replay", moved.Sent == 0);
+        Check("OUTBOX · and says someone else imported",
+            DiamondDesktop.Data.Outbox.Blocked?.Contains("Someone else imported") == true,
+            DiamondDesktop.Data.Outbox.Blocked);
+        Check("OUTBOX · the held import is kept, never dropped",
+            DiamondDesktop.Data.Outbox.PendingCountAsync().GetAwaiter().GetResult() == 1);
+
+        // Cannot read the server: "unknown" is not "unchanged".
+        var unknown = DiamondDesktop.Data.Outbox
+            .ReplayAsync(_ => Task.FromResult<string?>(null)).GetAwaiter().GetResult();
+        Check("OUTBOX · an unreadable server also blocks", unknown.Sent == 0);
+        Check("OUTBOX · and says so rather than blaming a colleague",
+            DiamondDesktop.Data.Outbox.Blocked?.Contains("Could not check") == true,
+            DiamondDesktop.Data.Outbox.Blocked);
+
+        // No verifier at all must not be treated as permission.
+        var noVerifier = DiamondDesktop.Data.Outbox.ReplayAsync().GetAwaiter().GetResult();
+        Check("OUTBOX · a missing verifier blocks a guarded entry", noVerifier.Sent == 0);
+        Check("OUTBOX · still queued after three refused replays",
+            DiamondDesktop.Data.Outbox.PendingCountAsync().GetAwaiter().GetResult() == 1);
+
+        var waiting = DiamondDesktop.Data.Outbox.PendingAsync().GetAwaiter().GetResult();
+        Check("OUTBOX · what is waiting can be listed for a human",
+            waiting.Count == 1 && waiting[0].Operation == "rpc/replace_imported_stock");
+
+        // The payload that gets parked must be the payload the online call would have sent. A
+        // queued import that differed from the one the user confirmed is a different import
+        // arriving under the same name — and it arrives when nobody is watching.
+        {
+            var rows = new List<DiamondDesktop.StockRow>
+            {
+                new("NO II", "+6.5", 370.1203m, 41000m, 29, "NO II", "6.5"),
+                new("+14", "+18", 124.8195m, 45699.06m, 287, "+14", "'+18"),
+            };
+            var gradeIds = new Dictionary<string, long> { ["NO II"] = 3, ["+14"] = 21 };
+            var sizeIds = new Dictionary<string, long> { ["+6.5"] = 3, ["+18"] = 6 };
+
+            string json = DiamondDesktop.Data.Repo.StockImportPayload(
+                rows, new DateOnly(2026, 8, 6), gradeIds, sizeIds);
+
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            Check("QUEUE · the parked payload carries the as-at date Postgres expects",
+                root.GetProperty("p_as_at").GetString() == "2026-08-06",
+                root.GetProperty("p_as_at").GetString());
+
+            var parked = root.GetProperty("p_rows");
+            Check("QUEUE · every holding is parked, none dropped", parked.GetArrayLength() == 2);
+
+            // Codes resolved to ids at queue time, from the catalogue cached before the connection
+            // dropped. This is the whole reason stock import can work offline and sales cannot.
+            Check("QUEUE · grade and size are already resolved to ids",
+                parked[0].GetProperty("grade_id").GetInt64() == 3
+                && parked[0].GetProperty("size_id").GetInt64() == 3);
+            Check("QUEUE · and the +14 family resolves too",
+                parked[1].GetProperty("grade_id").GetInt64() == 21
+                && parked[1].GetProperty("size_id").GetInt64() == 6);
+
+            Check("QUEUE · carats survive the round trip to 4 dp",
+                parked[0].GetProperty("weight_ct").GetDecimal() == 370.1203m);
+            Check("QUEUE · so does the price, which decides the bucket's average cost",
+                parked[1].GetProperty("price_per_ct").GetDecimal() == 45699.06m);
+
+            // Parked, closed, reopened: the queue is on disk, not in memory. A power cut between
+            // the import and the reconnect must not lose the file.
+            var acrossRestart = Guid.NewGuid();
+            DiamondDesktop.Data.Outbox.EnqueueAsync("rpc/replace_imported_stock", json,
+                acrossRestart, guard: "62:1030").GetAwaiter().GetResult();
+
+            var still = DiamondDesktop.Data.Outbox.PendingAsync().GetAwaiter().GetResult();
+            Check("QUEUE · survives being written and read back by a new connection",
+                still.Count == 2 && still.All(w => w.Operation == "rpc/replace_imported_stock"));
+        }
+
+        // Reachability. Nothing set this from a data read until now — IsOnline was written only by
+        // the sign-in path, so a PostgREST call failing on "no such host" left it reading true and
+        // every offline branch in the app was unreachable. Choosing a file while disconnected did
+        // nothing whatsoever: no dialog, no queue, no message.
+        DiamondDesktop.Data.Db.NoteTransport(new System.Net.Http.HttpRequestException("no such host"));
+        Check("ONLINE · a transport failure marks the app offline", !DiamondDesktop.Data.Db.IsOnline);
+
+        DiamondDesktop.Data.Db.NoteTransport(null);
+        Check("ONLINE · a read that succeeds marks it back online", DiamondDesktop.Data.Db.IsOnline);
+
+        // A refusal is not an outage. The server answered, so the connection is fine and the
+        // request was wrong — treating that as offline would queue writes the server just rejected.
+        DiamondDesktop.Data.Db.NoteTransport(
+            new InvalidOperationException("new row violates row-level security policy"));
+        Check("ONLINE · an RLS refusal is not an outage", DiamondDesktop.Data.Db.IsOnline);
+
+        // The real one arrives wrapped by the Supabase client, not thrown bare.
+        DiamondDesktop.Data.Db.NoteTransport(
+            new InvalidOperationException("request failed",
+                new System.Net.Http.HttpRequestException("connection refused")));
+        Check("ONLINE · a wrapped transport failure still counts", !DiamondDesktop.Data.Db.IsOnline);
+        DiamondDesktop.Data.Db.NoteTransport(null);
+
+        // Proof the isolation holds: this run must not have created or touched the real queue.
+        Check("OUTBOX · the tests never write to the live queue",
+            !outbox.Contains("LocalApplicationData", StringComparison.OrdinalIgnoreCase)
+            && outbox.StartsWith(Path.GetTempPath(), StringComparison.OrdinalIgnoreCase));
+
+        try { File.Delete(outbox); } catch (IOException) { }
+    }
+
     // WHO on the audit page. Misattributing a change is worse than not naming anyone, so each
     // fallback is pinned: no user at all, a known user, and a user who has since been deleted.
     var known = Guid.Parse("012c2cce-2271-442c-bed2-6e5651632789");

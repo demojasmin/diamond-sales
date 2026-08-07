@@ -25,8 +25,12 @@ if (Get-Process DiamondDesktop -ErrorAction SilentlyContinue) {
 }
 
 Write-Host "Publishing..." -ForegroundColor Cyan
+# Self-contained here rather than in the csproj: as a project property it applies to every build,
+# and a self-contained executable cannot be referenced by a non-self-contained one — which breaks
+# the test project. Only the installer payload needs the runtime bundled.
 & dotnet publish "$root\DiamondDesktop\DiamondDesktop.csproj" `
-    -c Release -o "$root\publish\DiamondDesktop" --nologo
+    -c Release -r win-x64 --self-contained true `
+    -o "$root\publish\DiamondDesktop" --nologo
 if ($LASTEXITCODE -ne 0) { throw "publish failed" }
 
 Write-Host "Compiling installer..." -ForegroundColor Cyan

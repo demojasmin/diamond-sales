@@ -1,7 +1,8 @@
 ; Solitaire Desk — Windows installer (Inno Setup 6)
 ;
 ; Build with:
-;     dotnet publish DiamondDesktop\DiamondDesktop.csproj -c Release -o publish\DiamondDesktop
+;     dotnet publish DiamondDesktop\DiamondDesktop.csproj -c Release -r win-x64 ^
+;         --self-contained true -o publish\DiamondDesktop
 ;     "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\SolitaireDesk.iss
 ;
 ; winget installs Inno Setup per-user, so ISCC lands under LOCALAPPDATA rather than Program Files.

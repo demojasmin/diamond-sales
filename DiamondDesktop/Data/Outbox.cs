@@ -24,8 +24,18 @@ public static class Outbox
     private static string Url => AppSettings.Current.Url;
     private static string AnonKey => AppSettings.Current.AnonKey;
 
-    private static readonly string DbPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SolitaireDesk", "outbox.db");
+    /// <summary>
+    /// Where the queue lives. SOLITAIREDESK_OUTBOX overrides it, which exists for one reason: the
+    /// test suite must never touch the real one. It did once — a test queued an import, could not
+    /// delete the file because the running app held it open, and the app then showed a stranded
+    /// "1 held — needs attention" for an import nobody had made. A test that can write to the
+    /// user's live state is a test that can lie to the user.
+    /// </summary>
+    private static readonly string DbPath =
+        Environment.GetEnvironmentVariable("SOLITAIREDESK_OUTBOX") is { Length: > 0 } custom
+            ? custom
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                           "SolitaireDesk", "outbox.db");
 
     private static readonly HttpClient Http = new();
     private static readonly SemaphoreSlim ReplayLock = new(1, 1);
@@ -34,21 +44,53 @@ public static class Outbox
     /// Raised off the UI thread — subscribers must marshal.
     public static event Action<int>? PendingChanged;
 
-    public static async Task EnqueueAsync(string operation, string payloadJson, Guid clientRef)
+    /// Set when a replay stopped because a queued REPLACE could no longer be proven safe. Cleared
+    /// at the start of every replay. Null means the queue is simply empty or still sending.
+    public static string? Blocked { get; private set; }
+
+    /// <param name="guard">
+    /// What the caller believed the server held when this was queued, for operations that REPLACE
+    /// rather than append. Replay refuses to send unless the server still matches — see
+    /// <see cref="ReplayAsync"/>. Null for appends, which are safe to replay whatever else happened.
+    /// </param>
+    public static async Task EnqueueAsync(string operation, string payloadJson, Guid clientRef,
+                                          string? guard = null)
     {
         await using var db = await OpenAsync();
 
         // OR IGNORE: the unique (operation, client_ref) makes a double-queue a no-op instead of an error
         // the caller must handle.
         var cmd = db.CreateCommand();
-        cmd.CommandText = "insert or ignore into outbox(operation,payload,client_ref,queued_at) values($o,$p,$c,$t)";
+        cmd.CommandText = "insert or ignore into outbox(operation,payload,client_ref,queued_at,guard) "
+                        + "values($o,$p,$c,$t,$g)";
         cmd.Parameters.AddWithValue("$o", operation);
         cmd.Parameters.AddWithValue("$p", payloadJson);
         cmd.Parameters.AddWithValue("$c", clientRef.ToString());
         cmd.Parameters.AddWithValue("$t", DateTime.UtcNow.ToString("o"));
+        cmd.Parameters.AddWithValue("$g", (object?)guard ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync();
 
         PendingChanged?.Invoke(await CountAsync(db));
+    }
+
+    /// <summary>
+    /// What is waiting, oldest first, for a screen that wants to show it rather than just count it.
+    /// </summary>
+    public static async Task<List<(string Operation, DateTime QueuedAt, string? LastError)>> PendingAsync()
+    {
+        await using var db = await OpenAsync();
+        var cmd = db.CreateCommand();
+        cmd.CommandText = "select operation, queued_at, last_error from outbox order by id";
+        await using var reader = await cmd.ExecuteReaderAsync();
+
+        List<(string, DateTime, string?)> rows = [];
+        while (await reader.ReadAsync())
+            rows.Add((reader.GetString(0),
+                      DateTime.TryParse(reader.GetString(1),
+                          System.Globalization.CultureInfo.InvariantCulture,
+                          System.Globalization.DateTimeStyles.RoundtripKind, out var t) ? t : DateTime.MinValue,
+                      reader.IsDBNull(2) ? null : reader.GetString(2)));
+        return rows;
     }
 
     public static async Task<int> PendingCountAsync()
@@ -57,16 +99,47 @@ public static class Outbox
         return await CountAsync(db);
     }
 
-    public static async Task<(int Sent, int Failed)> ReplayAsync()
+    /// <summary>
+    /// Sends what is queued, oldest first. Returns what went and what is still waiting.
+    /// </summary>
+    /// <param name="currentGuard">
+    /// Reads the server's present state for an operation, so a REPLACE can be checked before it is
+    /// sent. An import queued offline deletes everything the previous import wrote — replaying that
+    /// blind, hours later, would revert a colleague's newer import without a word. If the server no
+    /// longer matches what the queue expected, the entry is HELD, not sent and not discarded, and
+    /// <see cref="Blocked"/> says so.
+    ///
+    /// Held rather than dropped because the file is the user's work: the safe failure is "still
+    /// waiting, come and look", never "quietly gone" and never "quietly overwrote someone".
+    /// </param>
+    public static async Task<(int Sent, int Failed)> ReplayAsync(
+        Func<string, Task<string?>>? currentGuard = null)
     {
         if (!await ReplayLock.WaitAsync(0)) return (0, 0);   // a replay is already in flight
         try
         {
+            Blocked = null;
             await using var db = await OpenAsync();
             int pending = await CountAsync(db), sent = 0;
 
-            foreach (var (id, operation, payload) in await ReadQueueAsync(db))
+            foreach (var (id, operation, payload, guard) in await ReadQueueAsync(db))
             {
+                if (guard is not null)
+                {
+                    // No verifier, or a verifier that cannot read the server, means we cannot prove
+                    // the replace is still safe. "Unknown" is not "unchanged".
+                    string? now = currentGuard is null ? null : await currentGuard(operation);
+                    if (now is null || now != guard)
+                    {
+                        Blocked = now is null
+                            ? "Could not check whether the server changed while you were offline. "
+                              + "The queued import is still waiting."
+                            : "Someone else imported after this one was queued. The queued import is "
+                              + "still waiting — applying it now would undo their work.";
+                        return (sent, 1);
+                    }
+                }
+
                 string? error = await SendAsync(operation, payload);
                 if (error is not null)
                 {
@@ -138,15 +211,18 @@ public static class Outbox
         catch { return null; }
     }
 
-    private static async Task<List<(long Id, string Operation, string Payload)>> ReadQueueAsync(SqliteConnection db)
+    private static async Task<List<(long Id, string Operation, string Payload, string? Guard)>>
+        ReadQueueAsync(SqliteConnection db)
     {
         var cmd = db.CreateCommand();
-        cmd.CommandText = "select id, operation, payload from outbox order by id";
+        cmd.CommandText = "select id, operation, payload, guard from outbox order by id";
         await using var reader = await cmd.ExecuteReaderAsync();
 
         // Materialised up front: the loop deletes rows on the same connection.
-        List<(long, string, string)> rows = [];
-        while (await reader.ReadAsync()) rows.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2)));
+        List<(long, string, string, string?)> rows = [];
+        while (await reader.ReadAsync())
+            rows.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2),
+                      reader.IsDBNull(3) ? null : reader.GetString(3)));
         return rows;
     }
 
@@ -186,5 +262,18 @@ public static class Outbox
               unique(operation, client_ref))
             """;
         await cmd.ExecuteNonQueryAsync();
+
+        // Added after the table shipped, so an existing outbox.db on a desk has to gain it rather
+        // than be recreated — recreating would discard whatever is queued, which is the one thing
+        // this file exists to prevent. SQLite has no "add column if not exists"; asking the schema
+        // is the portable way.
+        var cols = db.CreateCommand();
+        cols.CommandText = "select count(*) from pragma_table_info('outbox') where name='guard'";
+        if (Convert.ToInt32(await cols.ExecuteScalarAsync()) == 0)
+        {
+            var add = db.CreateCommand();
+            add.CommandText = "alter table outbox add column guard text";
+            await add.ExecuteNonQueryAsync();
+        }
     }
 }

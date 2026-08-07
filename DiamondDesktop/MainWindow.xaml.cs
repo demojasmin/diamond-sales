@@ -48,6 +48,75 @@ public partial class MainWindow : Window
     private IdleTimeout? _idle;
 
     /// <summary>
+    /// The imported-stock fingerprint as this machine last saw it online. Captured on every
+    /// successful catalogue load, and handed to the outbox when an import is queued offline so the
+    /// replay can tell "nothing changed" from "someone else imported".
+    /// </summary>
+    private string? _lastStockFingerprint;
+
+    private DispatcherTimer? _syncTimer;
+
+    /// <summary>
+    /// Sends anything the outbox is holding, as soon as there is a connection to send it over.
+    ///
+    /// Polled rather than event-driven: Windows' network-availability events fire on an interface
+    /// coming up, which is not the same as this Supabase project being reachable, and a desk on
+    /// hotel wifi sees plenty of the former without the latter.
+    /// </summary>
+    private void StartSyncWatcher()
+    {
+        Outbox.PendingChanged += n => Dispatcher.BeginInvoke(() => ShowPending(n));
+
+        _syncTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromSeconds(45),
+        };
+        _syncTimer.Tick += async (_, _) => await TrySyncAsync();
+        _syncTimer.Start();
+
+        _ = TrySyncAsync();      // anything parked by the previous run goes now
+    }
+
+    private async Task TrySyncAsync()
+    {
+        if (await Outbox.PendingCountAsync() == 0) { ShowPending(0); return; }
+        if (!Db.IsOnline) { await ShowPendingAsync(); return; }
+
+        // The verifier the outbox uses to decide whether a queued REPLACE is still safe to apply.
+        var (sent, _) = await Outbox.ReplayAsync(op =>
+            op == "rpc/replace_imported_stock"
+                ? Repo.ImportedStockFingerprintAsync()
+                : Task.FromResult<string?>(null));
+
+        if (sent > 0)
+        {
+            _lastStockFingerprint = await Repo.ImportedStockFingerprintAsync();
+            Say($"Saved import applied — {Plural(sent, "queued change")} sent", ok: true);
+            ReloadCurrentTab();
+        }
+        else if (Outbox.Blocked is { } why)
+        {
+            Say(why);
+        }
+
+        await ShowPendingAsync();
+    }
+
+    private async Task ShowPendingAsync() => ShowPending(await Outbox.PendingCountAsync());
+
+    /// The connection pill doubles as the queue's only visible home. A parked import that nothing
+    /// on screen mentions is indistinguishable from an import that was silently dropped.
+    private void ShowPending(int pending)
+    {
+        if (SyncPill is null) return;
+
+        SyncPill.Visibility = pending == 0 ? Visibility.Collapsed : Visibility.Visible;
+        SyncPillText.Text = Outbox.Blocked is null
+            ? $"{pending:N0} waiting to sync"
+            : $"{pending:N0} held — needs attention";
+    }
+
+    /// <summary>
     /// Money decimals and the low-stock band are read by converters, and a converter only runs when
     /// its row is realised — so a saved change left every grid already on screen showing the old
     /// policy until it was reloaded. Re-render them instead: no query, just the same rows drawn
@@ -154,7 +223,12 @@ public partial class MainWindow : Window
             {
                 _idle = new IdleTimeout(this, () => _inFlight > 0, ReloadCurrentTab);
                 Policy.Changed += RerenderForPolicy;
+                StartSyncWatcher();
             }
+
+            // Captured while we can. If the connection drops later, this is what an offline import
+            // is measured against when it eventually replays.
+            _lastStockFingerprint = await Repo.ImportedStockFingerprintAsync();
 
             await Catalogue.LoadAsync();
             var buyers = await Repo.BuyersAsync();
@@ -3709,6 +3783,36 @@ public partial class MainWindow : Window
         };
         if (picker.ShowDialog(this) != true) return;
 
+        // Said before the file is read, not after a read fails somewhere in the middle.
+        //
+        // A sale workbook names buyers and brokers; sales_line needs their ids. A name that has no
+        // row yet has no id, and only the database can create one — the last import made 12 buyers
+        // and 8 brokers this way. So unlike stock, this cannot be validated, queued and applied
+        // later: the payload would be missing the very ids it is built around. Inventing them
+        // client-side would collide between machines and lose a buyer on reconnect.
+        //
+        // Fixing this properly means replace_imported_sales resolving names itself — a migration.
+        // Until then, saying so plainly beats a generic transport error and a page that does
+        // nothing, which is what this looked like.
+        if (!Db.IsOnline)
+        {
+            AppDialog.Info(this,
+                title: "No connection",
+                headline: "Sales import needs a connection",
+                subhead: System.IO.Path.GetFileName(picker.FileName),
+                facts: [],
+                listTitle: "Why this one cannot wait offline",
+                bullets:
+                [
+                    "The workbook names buyers and brokers. The database has to create any that are "
+                    + "new and hand back their ids before the invoices can reference them.",
+                    "Stock import has no such need — grades and sizes already exist, so it can be "
+                    + "saved offline and applied later.",
+                ],
+                note: "Nothing has been read or changed. Try again once the connection is back.");
+            return;
+        }
+
         ImportPlan? plan;
         List<Grade>? grades;
         List<SizeBucket>? sizes;
@@ -3815,9 +3919,31 @@ public partial class MainWindow : Window
 
         using (Busy(ImportStock, "Checking…", ImportStock))
         {
-            grades = await Read(Repo.GradesAsync);
-            sizes = await Read(Repo.SizesAsync);
+            // Offline, fall back to the catalogue already in memory — it was loaded at sign-in and
+            // grades and sizes do not change while a connection is down. Without this the handler
+            // returned here on the failed read and never reached the offline branch below, so
+            // picking a file simply did nothing: no dialog, no queue, no explanation.
+            if (Db.IsOnline)
+            {
+                grades = await Read(Repo.GradesAsync);
+                sizes = await Read(Repo.SizesAsync);
+            }
+            else
+            {
+                grades = [.. Catalogue.Grades];
+                sizes = [.. Catalogue.AllSizes];
+            }
+
             if (grades is null || sizes is null) return;
+
+            // Never signed in online this session, so there is no cached catalogue to validate
+            // against. Saying so beats validating every row against an empty list and reporting
+            // that the workbook names grades the catalogue does not have.
+            if (grades.Count == 0 || sizes.Count == 0)
+            {
+                Say("The catalogue has not loaded yet — connect once before importing offline");
+                return;
+            }
 
             // Grade aliases are the same ones the sale import uses. Sizes need their own map: the
             // stock sheet writes them bare ("6.5", "11") where the sale file signs them.
@@ -3846,14 +3972,23 @@ public partial class MainWindow : Window
         if (answer is null) { Say("Stock import cancelled"); return; }
         if (ParseStockDate(answer[0]) is not { } asAt) { Say("Stock import cancelled"); return; }
 
-        var existing = await Read(Repo.ImportedStockIdsAsync);
-        if (existing is null) return;
-
-        if (!ConfirmStockImport(plan, picker.FileName, existing.Count, asAt))
-        { Say("Stock import cancelled"); return; }
+        // Offline: everything up to here worked from the catalogue already in memory, so the file
+        // is fully validated and only the write is impossible. Park it rather than refuse it —
+        // refusing means the count is re-keyed later from a workbook nobody can find.
+        var existing = Db.IsOnline ? await Read(Repo.ImportedStockIdsAsync) : null;
+        if (existing is null && Db.IsOnline) return;
 
         var gradeIds = grades.ToDictionary(g => g.Code, g => g.GradeId, StringComparer.Ordinal);
         var sizeIds = sizes.ToDictionary(s => s.Code, s => s.SizeId, StringComparer.Ordinal);
+
+        if (existing is null)
+        {
+            await QueueStockImportAsync(plan, picker.FileName, asAt, gradeIds, sizeIds);
+            return;
+        }
+
+        if (!ConfirmStockImport(plan, picker.FileName, existing.Count, asAt))
+        { Say("Stock import cancelled"); return; }
 
         StockImportResult? result;
         var progressDialog = AppProgressDialog.Start(this, "Importing stock, please wait…");
@@ -3982,6 +4117,66 @@ public partial class MainWindow : Window
         DateOnly.TryParseExact(text.Trim(), ["dd-MM-yyyy", "d-M-yyyy", "dd/MM/yyyy", "yyyy-MM-dd"],
             CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? d : null;
 
+    /// <summary>
+    /// Parks a validated stock import until the network is back.
+    ///
+    /// The guard is the fingerprint of the imported position as this machine last saw it. A stock
+    /// import is a REPLACE — it deletes every movement the previous import wrote — so replaying one
+    /// blind after a reconnect could erase a colleague's newer import. Replay compares the guard
+    /// against the server and holds the entry rather than overwrite anything it cannot account for.
+    ///
+    /// _lastStockFingerprint is whatever the last successful online read saw. If this session has
+    /// never been online it is null, and the queue then refuses to auto-apply at all — "unknown" is
+    /// not "unchanged", and the difference is somebody's day of work.
+    /// </summary>
+    private async Task QueueStockImportAsync(StockImportPlan plan, string path, DateOnly asAt,
+                                             Dictionary<string, long> gradeIds,
+                                             Dictionary<string, long> sizeIds)
+    {
+        if (!AppDialog.Confirm(this,
+                title: "No connection",
+                headline: "Save this import until the connection is back?",
+                subhead: System.IO.Path.GetFileName(path),
+                facts:
+                [
+                    ("Parcels", $"{plan.Rows.Count:N0}"),
+                    ("Carats in this workbook", $"{plan.TotalCarats:N4}"),
+                    ("As at", asAt.ToString("dd MMM yyyy")),
+                ],
+                emphasis: "The file has already been checked in full. Nothing is written until the "
+                        + "connection returns, and it is applied only if no one else has imported "
+                        + "in the meantime.",
+                listTitle: null, bullets: null,
+                primaryText: "Save for later", secondaryText: "Cancel"))
+        { Say("Stock import cancelled"); return; }
+
+        string payload = Repo.StockImportPayload(plan.Rows, asAt, gradeIds, sizeIds);
+
+        await Outbox.EnqueueAsync("rpc/replace_imported_stock", payload, Guid.NewGuid(),
+                                  guard: _lastStockFingerprint);
+
+        await ShowPendingAsync();
+        AppDialog.Info(this,
+            title: "Saved for later",
+            headline: "Import saved — waiting for a connection",
+            subhead: System.IO.Path.GetFileName(path),
+            facts:
+            [
+                ("Parcels waiting", $"{plan.Rows.Count:N0}"),
+                ("Carats", $"{plan.TotalCarats:N4}"),
+                ("As at", asAt.ToString("dd MMM yyyy")),
+            ],
+            listTitle: "What happens next",
+            bullets:
+            [
+                "It is applied automatically as soon as the app is online again.",
+                "Nothing has changed in the database yet — the Stock page still shows the old position.",
+                "If someone else imports before the connection returns, this one is held rather than "
+                + "applied, and the header will say so.",
+            ],
+            note: "Saved on this machine. It survives closing the app.");
+    }
+
     private bool ConfirmStockImport(StockImportPlan plan, string path, int existingCount, DateOnly asAt)
     {
         // Says what is NOT deleted as well as what is. "the movements that came with them" was
@@ -4092,10 +4287,50 @@ public partial class MainWindow : Window
     private async Task<T?> Read<T>(Func<Task<T>> read, bool veil = true) where T : class
     {
         if (veil) BeginBusy();
-        try { return await read(); }
-        catch (Exception ex) { Say(ex.Message); return null; }
+        try
+        {
+            var result = await read();
+            Db.NoteTransport(null);
+
+            // A "cannot reach the server" is deliberately permanent — an empty grid with no message
+            // reads as "there is no data" rather than "this did not load". But permanent meant it
+            // outlived the reconnect: the network came back, the page filled with 10 settings, and
+            // the red line underneath still said the server was unreachable. A read that succeeds
+            // is proof the last transport failure is over, so it clears its own obituary.
+            if (_transportFailed)
+            {
+                _transportFailed = false;
+                if (Friendly.Translates(Status.Text)) { Status.Text = ""; Status.ToolTip = null; }
+
+                // Put the header back to what it says on a healthy connection, so the pill does not
+                // sit on "Offline" through a page that has just loaded.
+                Pill(true, $"Connected · {Catalogue.Grades.Count} grades · {_invoice.Buyers.Count} buyers");
+            }
+            return result;
+        }
+        catch (Exception ex)
+        {
+            // Tells Db what this proved. Nothing else did: IsOnline was set only by the sign-in
+            // path, so a read failing on "no such host" left it reading true and every offline
+            // branch in the app was unreachable.
+            Db.NoteTransport(ex);
+            _transportFailed = true;
+
+            // The header said "Connected · 23 grades · 13 buyers" while the footer said the server
+            // could not be reached — the pill was written once at sign-in and never revisited. Two
+            // parts of one screen contradicting each other about the connection is worse than
+            // either message alone.
+            if (!Db.IsOnline) Pill(false, "Offline — changes are saved on this machine");
+
+            Say(ex.Message);
+            return null;
+        }
         finally { if (veil) EndBusy(); }
     }
+
+    /// Set when a read failed with a message that stays on screen, so the next successful read
+    /// knows there is something stale to clear.
+    private bool _transportFailed;
 
     /// <summary>
     /// How many reads or writes are in flight. Counted rather than a flag because they nest —

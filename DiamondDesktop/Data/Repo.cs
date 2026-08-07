@@ -594,6 +594,29 @@ public static class Repo
     public const string StockImportRef = "stock_import";
 
     /// <summary>The rough_intake ids a previous stock import created, found through its movements.</summary>
+    /// <summary>
+    /// A cheap fingerprint of the imported stock position: how many movements the last import left
+    /// and the highest id among them. Both change whenever anyone re-imports, because a replace
+    /// deletes and re-inserts.
+    ///
+    /// This is what makes an offline import safe to replay. A queued replace is not an append — it
+    /// deletes everything the previous import wrote — so replaying one blind, hours later, would
+    /// silently revert a colleague's newer import. The queue therefore records the fingerprint it
+    /// expected the server to have, and refuses to auto-apply if the server has moved since.
+    ///
+    /// Null when the read fails, which the caller must treat as "cannot prove it is safe" rather
+    /// than as "nothing has changed".
+    /// </summary>
+    public static async Task<string?> ImportedStockFingerprintAsync()
+    {
+        try
+        {
+            var ids = await ImportedStockIdsAsync();
+            return $"{ids.Count}:{(ids.Count == 0 ? 0 : ids.Max())}";
+        }
+        catch (Exception) { return null; }
+    }
+
     public static async Task<List<long>> ImportedStockIdsAsync()
     {
         var ids = new List<long>();
@@ -626,6 +649,32 @@ public static class Repo
     /// 05 Aug 2026 — 133 movements deleted, replacement never landed, position went negative.
     /// Now the whole thing rolls back and the previous import is still there.
     /// </summary>
+    /// <summary>
+    /// The arguments replace_imported_stock takes. Shared so the online call and the offline queue
+    /// send byte-identical bodies — a queued import that differed from the one the user confirmed
+    /// would be a different import, arriving under the same name.
+    /// </summary>
+    private static Dictionary<string, object?> StockImportArgs(
+        IReadOnlyList<StockRow> rows, DateOnly asAt,
+        IReadOnlyDictionary<string, long> gradeIds, IReadOnlyDictionary<string, long> sizeIds) =>
+        new()
+        {
+            ["p_as_at"] = asAt.ToString("yyyy-MM-dd"),
+            ["p_rows"] = rows.Select(r => new Dictionary<string, object?>
+            {
+                ["grade_id"] = gradeIds[r.GradeCode],
+                ["size_id"] = sizeIds[r.SizeCode],
+                ["weight_ct"] = r.WeightCt,
+                ["price_per_ct"] = r.PricePerCt,
+            }).ToList(),
+        };
+
+    /// <summary>The same body as a JSON string, for the offline queue.</summary>
+    public static string StockImportPayload(
+        IReadOnlyList<StockRow> rows, DateOnly asAt,
+        IReadOnlyDictionary<string, long> gradeIds, IReadOnlyDictionary<string, long> sizeIds) =>
+        System.Text.Json.JsonSerializer.Serialize(StockImportArgs(rows, asAt, gradeIds, sizeIds));
+
     public static async Task<StockImportResult> ImportStockAsync(
         IReadOnlyList<StockRow> rows, DateOnly asAt,
         IReadOnlyDictionary<string, long> gradeIds, IReadOnlyDictionary<string, long> sizeIds,
@@ -634,19 +683,7 @@ public static class Repo
         progress?.Report(new ImportProgress(
             $"Replacing the stock position… {rows.Count:N0} holding(s)", 0, rows.Count));
 
-        var payload = rows.Select(r => new Dictionary<string, object?>
-        {
-            ["grade_id"] = gradeIds[r.GradeCode],
-            ["size_id"] = sizeIds[r.SizeCode],
-            ["weight_ct"] = r.WeightCt,
-            ["price_per_ct"] = r.PricePerCt,
-        }).ToList();
-
-        var res = await Db.Client.Rpc("replace_imported_stock", new Dictionary<string, object?>
-        {
-            ["p_as_at"] = asAt.ToString("yyyy-MM-dd"),
-            ["p_rows"] = payload,
-        });
+        var res = await Db.Client.Rpc("replace_imported_stock", StockImportArgs(rows, asAt, gradeIds, sizeIds));
 
         var outcome = Json(res.Content);
         int written = Int(outcome, "written");

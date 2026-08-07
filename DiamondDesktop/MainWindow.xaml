@@ -324,6 +324,16 @@
                      Foreground="{DynamicResource TextMutedBrush}" Margin="0,1,0,0"/>
         </StackPanel>
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+          <!-- Only visible when the outbox is holding something. A parked import that nothing on
+               screen mentions cannot be told apart from one that was silently dropped. -->
+          <Border x:Name="SyncPill" Height="26" CornerRadius="999" Visibility="Collapsed"
+                  Background="{DynamicResource WarningSoftBrush}"
+                  BorderBrush="{DynamicResource WarningBrush}" BorderThickness="1"
+                  Padding="10,0" Margin="0,0,10,0"
+                  ToolTip="Saved on this machine. Applied automatically when the connection returns.">
+            <TextBlock x:Name="SyncPillText" FontSize="11.5" VerticalAlignment="Center"
+                       FontWeight="SemiBold" Foreground="{DynamicResource WarningBrush}"/>
+          </Border>
           <Border Height="26" CornerRadius="999" Background="{DynamicResource Surface2Brush}"
                   BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Padding="10,0" Margin="0,0,10,0">
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">

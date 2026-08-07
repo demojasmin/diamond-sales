@@ -40,6 +40,25 @@ public static class Db
     private static string? Role => CurrentUser?.Role?.Trim().ToLowerInvariant();
     public static bool IsOnline { get; private set; } = true;
 
+    /// <summary>
+    /// Records what a data call just proved about reachability.
+    ///
+    /// Until this existed, IsOnline was only ever set by Db's own sign-in path — a PostgREST read
+    /// failing with "no such host" left it stuck on true. Everything keyed off it was therefore
+    /// dead: the offline import branch never ran, and picking a file while disconnected did
+    /// nothing at all, with no dialog and no message.
+    ///
+    /// Only transport failures count. A 400 or an RLS refusal means the server answered, which
+    /// proves the connection is fine and the request was wrong.
+    /// </summary>
+    public static void NoteTransport(Exception? failure)
+    {
+        if (failure is null) { IsOnline = true; return; }
+
+        for (var ex = failure; ex is not null; ex = ex.InnerException)
+            if (ex is HttpRequestException or TaskCanceledException) { IsOnline = false; return; }
+    }
+
     /// Cached so initialisation happens exactly once however many callers race for it. Sign-in awaits
     /// this too: clicking the button before the window's own Loaded handler finished would otherwise
     /// reach Auth on an unconfigured client, and a fast typist can do that.
