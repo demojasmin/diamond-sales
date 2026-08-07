@@ -6,6 +6,26 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+
+    <!-- Shown in the installer, in Apps & features, and on the exe's Details tab. Without these
+         Windows falls back to the assembly name, so the desk sees "DiamondDesktop 1.0.0.0" for a
+         product nobody calls that. Version is the single place to bump for a release: the .iss
+         reads it back off the built exe rather than keeping its own copy to drift. -->
+    <Product>Solitaire Desk</Product>
+    <AssemblyTitle>Solitaire Desk</AssemblyTitle>
+    <Company>Solitaire</Company>
+    <Description>Diamond Sales &amp; Inventory</Description>
+    <Copyright>Copyright © Solitaire</Copyright>
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+
+    <!-- Trimming is off deliberately: Supabase's Postgrest layer resolves models by reflection, so
+         a trimmer that cannot see those types strips them and every read fails at runtime rather
+         than at build. Size is not worth that trade on a desktop LOB app. -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
 
   <ItemGroup>

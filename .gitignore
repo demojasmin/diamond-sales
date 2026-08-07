@@ -490,3 +490,5 @@ diamond.db-wal
 # template; a client's own copy sits beside their executable, not in the repo.
 # DiamondDesktop/appsettings.json is tracked on purpose — it holds only the
 # publishable anon key. Never add a service_role key or a database password.
+publish/
+dist/
