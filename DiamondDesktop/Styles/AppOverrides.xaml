@@ -140,12 +140,12 @@
                        Foreground="{DynamicResource DangerBrush}"/>
         </Border>
         <DataTemplate.Triggers>
-            <DataTrigger Binding="{Binding AgeBucket}" Value="current">
+            <DataTrigger Binding="{Binding AgeBucket}" Value="not due">
                 <Setter TargetName="pill" Property="Background" Value="{DynamicResource SuccessSoftBrush}"/>
                 <Setter TargetName="pill" Property="BorderBrush" Value="{DynamicResource SuccessBorderBrush}"/>
                 <Setter TargetName="label" Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
             </DataTrigger>
-            <DataTrigger Binding="{Binding AgeBucket}" Value="0-30">
+            <DataTrigger Binding="{Binding AgeBucket}" Value="1-30">
                 <Setter TargetName="pill" Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
                 <Setter TargetName="pill" Property="BorderBrush" Value="{DynamicResource WarningBorderBrush}"/>
                 <Setter TargetName="label" Property="Foreground" Value="{DynamicResource WarningBrush}"/>

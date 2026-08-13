@@ -78,8 +78,43 @@ public static class Calc
             ? throw new ArgumentOutOfRangeException(nameof(termsDays))
             : invoiceDate.AddDays(termsDays);
 
+    /// <summary>
+    /// The residue below which an invoice is considered settled — fifty paise.
+    ///
+    /// Money rounds to 2dp, so anything under half a rupee is rounding dust rather than a debt.
+    /// This is the shared authority for that judgement across all three clients: Android's
+    /// <c>Calc.SETTLED_BELOW</c> and the server's <c>v_invoice.is_overdue</c> /
+    /// <c>v_receivables_ageing</c> use the same figure. Three different values were in play —
+    /// this engine used <c>&gt; 0</c>, the views <c>&gt; 0.01</c>, Android <c>0.50</c> — so an
+    /// invoice owing forty paise was overdue here, in the receivables book on the server, and
+    /// settled on the phone. One invoice, three answers.
+    /// </summary>
+    public const decimal SettledBelow = 0.50m;
+
     public static bool IsOverdue(DateOnly dueDate, decimal outstanding, DateOnly today)
-        => today > dueDate && outstanding > 0;
+        => today > dueDate && outstanding > SettledBelow;
+
+    /// <summary>
+    /// CALC-AGE · the receivables ageing band for a number of days past due.
+    ///
+    /// Lives here rather than in the window so it can be tested against the same nine boundary
+    /// inputs as Android's <c>Calc.ageingBucket</c> and the server's <c>v_receivables_ageing</c>.
+    /// The rule is written out three times by design (CALC-001); the shared table of inputs is
+    /// the only thing that keeps the three from drifting apart unnoticed.
+    ///
+    /// <b>Zero is "not due", not "just barely late".</b> <c>days_overdue</c> floors at zero on the
+    /// server, so an invoice due next month and one thirty days late both arrived as 0 and were
+    /// filed together under "0-30" — putting money that is not late at all in the same band as
+    /// money that is.
+    /// </summary>
+    public static string AgeBucket(int daysPastDue) => daysPastDue switch
+    {
+        <= 0  => "not due",
+        <= 30 => "1-30",
+        <= 60 => "31-60",
+        <= 90 => "61-90",
+        _     => "90+",
+    };
 
     /// <summary>CALC-11 · broker payable = Σ pre-broker line subtotals × broker %. Deleted entirely if Q4 comes back "deduction only".</summary>
     public static decimal BrokerPayable(

@@ -1070,8 +1070,11 @@
             </Grid>
           </Border>
 
-          <!-- ── Ageing · the run-on summary line, as four readable tiles ──── -->
-          <UniformGrid x:Name="ReceivablesKpiRow" DockPanel.Dock="Top" Columns="4" Margin="0,0,-10,4"
+          <!-- ── Ageing · the run-on summary line, as five readable tiles ──────
+               "Not due" is its own tile because it is its own fact: money that is not late at
+               all used to sit inside "0 – 30 days", where the whole figure read as overdue on a
+               page headed "Ageing and collections". Green stops at the due date now. -->
+          <UniformGrid x:Name="ReceivablesKpiRow" DockPanel.Dock="Top" Columns="5" Margin="0,0,-10,4"
                        SizeChanged="KpiRow_SizeChanged">
             <Border Style="{StaticResource KpiTile}" Margin="0,0,10,10">
               <Grid>
@@ -1080,7 +1083,23 @@
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource SuccessBrush}"/>
                 <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
-                  <TextBlock Text="0 – 30 days" Style="{StaticResource KpiLabel}"/>
+                  <TextBlock Text="Not due" Style="{StaticResource KpiLabel}"/>
+                  <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
+                           MaxHeight="27" Margin="0,6,0,0">
+                    <TextBlock x:Name="RecKpiNotDue" Style="{StaticResource KpiValue}" Margin="0"/>
+                  </Viewbox>
+                  <TextBlock x:Name="RecKpiNotDueCount" Style="{StaticResource KpiCaption}" Text=""/>
+                </StackPanel>
+              </Grid>
+            </Border>
+            <Border Style="{StaticResource KpiTile}" Margin="0,0,10,10">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource WarningBrush}"/>
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <TextBlock Text="1 – 30 days" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
                     <TextBlock x:Name="RecKpiFresh" Style="{StaticResource KpiValue}" Margin="0"/>

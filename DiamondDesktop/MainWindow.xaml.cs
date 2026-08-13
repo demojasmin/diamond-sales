@@ -907,11 +907,14 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Ages in the order a collections person reads them. Sorting the bucket labels as text happens
-    /// to work for these four, but only by accident — "100+" would land before "31-60".
+    /// to work for these by accident — "100+" would land before "31-60", and "not due" before both.
+    ///
+    /// The band names come from v_receivables_ageing and are the same five Android and the server
+    /// agree on (CALC-AGE). Keep this in step with DiamondCalc.Calc.AgeBucket.
     /// </summary>
     private static int Age(string bucket) => bucket switch
     {
-        "0-30" => 0, "31-60" => 1, "61-90" => 2, "90+" => 3, _ => 4,
+        "not due" => 0, "1-30" => 1, "31-60" => 2, "61-90" => 3, "90+" => 4, _ => 5,
     };
 
     private void ReceivablesFilter_Changed(object sender, RoutedEventArgs e) => ApplyReceivablesFilter();
@@ -962,18 +965,13 @@ public partial class MainWindow : Window
             value.Text = Money.Short(inBucket.Sum(r => r.Outstanding));
             caption.Text = $"{inBucket.Count:N0} invoice{(inBucket.Count == 1 ? "" : "s")}";
 
-            // The 0-30 bucket holds invoices that are 1-30 days late AND invoices not due at all —
-            // v_receivables_ageing has no separate band for "not yet due". On this book that is
-            // ~200 M of a 318 M tile, sitting on a page headed "Ageing and collections", where the
-            // whole figure reads as overdue. Naming the split costs a caption; the view keeps its
-            // own bands, so nothing downstream moves.
-            int notDue = inBucket.Count(r => r.DaysOverdue <= 0);
-            if (age == "0-30" && notDue > 0)
-                caption.Text += $" · {notDue:N0} not yet due "
-                              + $"({Money.Short(inBucket.Where(r => r.DaysOverdue <= 0).Sum(r => r.Outstanding))})";
+            // The caption that used to split "not yet due" out of this tile is gone: the view now
+            // has a band for it, so the figure is separated where it belongs instead of being
+            // annotated after the fact. Keeping both would report the same money twice.
         }
 
-        Tile("0-30", RecKpiFresh, RecKpiFreshCount);
+        Tile("not due", RecKpiNotDue, RecKpiNotDueCount);
+        Tile("1-30", RecKpiFresh, RecKpiFreshCount);
         Tile("31-60", RecKpi3060, RecKpi3060Count);
         Tile("61-90", RecKpi6190, RecKpi6190Count);
         Tile("90+", RecKpi90, RecKpi90Count);

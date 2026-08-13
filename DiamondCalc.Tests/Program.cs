@@ -106,6 +106,30 @@ Check("CALC-10 not overdue when nothing is outstanding",
 Check("CALC-10 overdue when past due and unpaid",
     Calc.IsOverdue(new DateOnly(2025, 12, 1), 100m, new DateOnly(2026, 7, 25)));
 
+// ── CALC-AGE · the three-way ageing contract ────────────────────────────────
+// The same nine inputs are asserted in Android's AgeingBoundaryTest and in
+// supabase/VERIFY_AGEING.sql. The rule is written out three times by design
+// (CALC-001); this shared table is the only thing that stops the three drifting.
+// Each value is a boundary or one step off it — a test over 15, 45 and 120 would
+// agree with every wrong implementation of this rule.
+foreach (var (days, band) in new (int, string)[]
+{
+    (-1, "not due"), (0, "not due"), (1, "1-30"), (30, "1-30"),
+    (31, "31-60"), (60, "31-60"), (61, "61-90"), (90, "61-90"), (91, "90+"),
+})
+    Check($"CALC-AGE {days} days past due is '{band}'", Calc.AgeBucket(days) == band);
+
+// Fifty paise, the shared settled threshold. This engine used `> 0`, the server
+// views `> 0.01` and Android 0.50 — so an invoice owing forty paise was overdue
+// here, in the receivables book on the server, and settled on the phone.
+Eq("CALC-10 the settled threshold is fifty paise", Calc.SettledBelow, 0.50m);
+
+Check("CALC-10 forty paise outstanding is rounding dust, not a debt",
+    !Calc.IsOverdue(new DateOnly(2025, 12, 1), 0.40m, new DateOnly(2026, 7, 25)));
+
+Check("CALC-10 fifty-one paise is still a debt",
+    Calc.IsOverdue(new DateOnly(2025, 12, 1), 0.51m, new DateOnly(2026, 7, 25)));
+
 // ── CALC-11 · broker payable ────────────────────────────────────────────────
 // Pre-broker subtotal of Sale!Q3 is 141277.50; 1 % of it is 1412.775 → 1412.78
 Eq("CALC-11 broker payable uses the PRE-broker subtotal",
