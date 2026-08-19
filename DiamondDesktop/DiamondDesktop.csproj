@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+
+    <!-- Shown in the installer, in Apps & features, and on the exe's Details tab. Without these
+         Windows falls back to the assembly name, so the desk sees "DiamondDesktop 1.0.0.0" for a
+         product nobody calls that. Version is the single place to bump for a release: the .iss
+         reads it back off the built exe rather than keeping its own copy to drift. -->
+    <Product>Solitaire Desk</Product>
+    <AssemblyTitle>Solitaire Desk</AssemblyTitle>
+    <Company>Solitaire</Company>
+    <Description>Diamond Sales &amp; Inventory</Description>
+    <Copyright>Copyright © Solitaire</Copyright>
+    <Version>1.2.4</Version>
+    <FileVersion>1.2.4.0</FileVersion>
+    <AssemblyVersion>1.2.4.0</AssemblyVersion>
+
+    <!-- Trimming is off deliberately: Supabase's Postgrest layer resolves models by reflection, so
+         a trimmer that cannot see those types strips them and every read fails at runtime rather
+         than at build. Size is not worth that trade on a desktop LOB app.
+
+         SelfContained and RuntimeIdentifier are NOT set here on purpose. As project properties they
+         apply to every build, and a self-contained executable cannot be referenced by a
+         non-self-contained one — which broke DiamondCalc.Tests outright. They belong on the publish
+         command that builds the installer payload; see installer/build.ps1. -->
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DiamondCalc\DiamondCalc.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Copied beside the executable so a deployment can be pointed at another project by editing
+         a text file. PreserveNewest, not Always: an edited config on a client machine must survive
+         a rebuild-and-copy of the app. -->
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Backs the offline outbox (SYNC-001 / FR-SYNC-1): queued writes live in a local SQLite file
+         so a post survives the app being closed while the network is down. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <!-- Reads the printed stock sheet (PdfStockImport). Apache-2.0, pure managed, no native
+         binaries — which is why it is here and not iText (AGPL) or a Poppler wrapper (needs an
+         unmanaged DLL beside the exe, and the installer ships one file). It exposes each glyph's
+         position, and position is the only thing that reconstructs a table out of a print. -->
+    <PackageReference Include="PdfPig" Version="0.1.11" />
+    <PackageReference Include="Supabase" Version="1.4.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.10" />
+  </ItemGroup>
+
+</Project>

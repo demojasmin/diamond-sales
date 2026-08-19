@@ -1,0 +1,231 @@
+// Every importer, against real files, for the two cases that matter:
+//
+//   A · the file writes a sieve the catalogue already holds under ANOTHER notation.
+//       Nothing may be offered, nothing may be created, and the numbers must not move.
+//   B · the file writes a sieve the catalogue genuinely lacks.
+//       It must be named, with the weight riding on it, and nothing may import silently short.
+//
+// No database and no hardcoded size list: the catalogue is built here, and which sizes each file
+// uses is DISCOVERED by parsing it first. Rename a sieve on the paper and this still holds.
+using System.IO;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  · {d}")}");
+    if (!ok) fail++;
+}
+
+var grades = new (string Code, string? Aliases)[]
+{
+    ("NO 1","NO1;NO 1;1"), ("NO 1 BB","1BB;1 BB;NO1BB;NO 1BB"), ("NO 2","NO2;2;NO-2"),
+    ("NO 2 BB","2BB;2 BB;NO2BB"), ("NO II","II;NOII;NO2SPOT"), ("NO DX","DX;NODX;DELUXE;NO-DX"),
+    ("EX 1","EX1;EXTRA 1;E1;Ex1"), ("NO 3","NO3;3;NO-3"), ("NO 4","NO4;4;NO-4"),
+    ("NO 5","NO5;5;NO-5"), ("NO 6","NO6;6;NO-6"), ("NO 7","NO7;7;NO-7"),
+    ("TOP-COL","TOPCOL;TOP COL;TC;T COLOR"), ("COL","COLOUR;COLOR;C"), ("OW","OFFWHITE;OFF WHITE;O/W"),
+    ("LC 1","LC1;L C 1;LC-1"), ("LC 2","LC2;L C 2;LC-2"), ("LC 3","LC3;L C 3;LC-3"),
+    ("GH","GHOST;GH-VVS;GHVVS"), ("LB 1","LB1;L B 1;LB-1"), ("LB 2","LB2;L B 2;LB-2"),
+    ("+14","14;PLUS14;P14"), ("EXTRA","EXTRA ASSORT;XTRA;ASSORT"), ("FL","F L;FL1"),
+    ("1MB","1 MB;NO1MB;NO 1 MB"), ("-2 MB",",-2 MB;-2MB;,-2MB"), ("MIX", null),
+}.Select((g, i) => new Grade { GradeId = i + 1, Code = g.Code, Aliases = g.Aliases, DisplayName = g.Code })
+ .ToList();
+
+// The catalogue as it stood when these files were WRITTEN. The mechanism tests below are about
+// notation and detection, not about which sieves survive today, so they need a catalogue that
+// actually covers the paper -- otherwise every assertion fails for the one uninteresting reason.
+string[] full = ["-2", "-6.5", "+6.5", "+11", "14+", "+18", "+23", "0.2", "0.25", "1/6", "1/3"];
+
+// The catalogue as it stands AFTER 0035: 14+ retired (so ImportableSizes drops it), +18 and +23
+// deleted outright. Used at the end to show which of these files can still be imported today.
+string[] today = ["-2", "-6.5", "+6.5", "+11", "0.2", "0.25", "1/6", "1/3"];
+var gradeMap = SaleFileImport.AliasMap(grades.Select(g => (g.Code, g.Aliases)));
+
+// The PDF sheets print the REPORT's grade labels -- "#", "DX1", "TOP co" -- not the catalogue
+// codes, so the printed reader has its own map. Handing it the workbook's map loses nine lines
+// and 808.96 ct of a sheet that is otherwise read perfectly.
+var pdfGradeMap = MainWindow.PdfGradeLabelMap(grades);
+
+string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+string At(string f) => Path.Combine(dir, f);
+bool Have(string f) => File.Exists(At(f));
+
+string Key(string c) => StockFileImport.SizeKey(c) ?? c;
+
+// The same sieve, written the other way round. Derived, never tabulated: a signed code moves its
+// sign to the far end, and a decimal that is the reciprocal of a whole number becomes that
+// fraction. So "+6.5" gives "6.5+" and "0.2" gives "1/5" without either being named here.
+static string Flip(string c)
+{
+    if (c.Length > 1 && (c[0] == '+' || c[0] == '-')) return c[1..] + c[0];
+    if (decimal.TryParse(c, out decimal d) && d > 0m)
+    {
+        decimal inv = 1m / d;
+        if (inv == decimal.Truncate(inv) && inv <= 64m) return "1/" + decimal.Truncate(inv);
+    }
+    return c;
+}
+
+Check("notation flip is derived, not tabulated",
+      Flip("+6.5") == "6.5+" && Flip("-2") == "2-" && Flip("0.2") == "1/5" && Flip("0.25") == "1/4",
+      $"{Flip("+6.5")} {Flip("-2")} {Flip("0.2")} {Flip("0.25")}");
+Console.WriteLine();
+
+// ── PDF stock ───────────────────────────────────────────────────────────────
+foreach (string file in new[] { "JADU APR-AUG'26.pdf", "17-8-26.pdf" })
+{
+    if (!Have(file)) { Console.WriteLine($"SKIP  {file} not in Downloads\n"); continue; }
+    Console.WriteLine($"── PDF · {file}");
+
+    var baseline = PdfStockFile.Plan(At(file), pdfGradeMap, MainWindow.PdfSizeLabelMap(full));
+    var used = baseline.SizeOrder.ToList();
+    Check("PDF · reads against the full catalogue", baseline.IsValid,
+          $"{baseline.TotalCarats:N2} ct, sizes {string.Join(",", used)}");
+    Check("PDF · offers nothing to add", baseline.UnknownSizes.Count == 0);
+
+    // A · every catalogue code written the other way round.
+    var flipped = PdfStockFile.Plan(At(file), pdfGradeMap, MainWindow.PdfSizeLabelMap([.. full.Select(Flip)]));
+    Check("PDF · A · still reads when the catalogue uses the other notation", flipped.IsValid);
+    Check("PDF · A · to the same total, to the paisa",
+          flipped.TotalCarats == baseline.TotalCarats, $"{flipped.TotalCarats:N2}");
+    Check("PDF · A · and offers nothing to add",
+          flipped.UnknownSizes.Count == 0, string.Join(",", flipped.UnknownSizes.Select(u => u.Label)));
+
+    // B · drop the first sieve this sheet actually uses.
+    if (used.Count > 0)
+    {
+        string drop = used[0];
+        var missing = PdfStockFile.Plan(At(file), pdfGradeMap,
+            MainWindow.PdfSizeLabelMap([.. full.Where(c => Key(c) != Key(drop))]));
+        Check($"PDF · B · refuses when \"{drop}\" is not in the catalogue", !missing.IsValid);
+        Check($"PDF · B · names \"{drop}\" as the sieve to add",
+              missing.UnknownSizes.Any(u => Key(u.Label) == Key(drop)),
+              string.Join(",", missing.UnknownSizes.Select(u => $"{u.Label}={u.Carats:N2}")));
+        Check("PDF · B · and states the carats standing under it",
+              missing.UnknownSizes.Any(u => Key(u.Label) == Key(drop) && u.Carats > 0m));
+    }
+    Console.WriteLine();
+}
+
+// ── Excel stock ─────────────────────────────────────────────────────────────
+foreach (string file in new[] { "stk 13-08-26.xlsx", "stk BKC-JAN.xlsx" })
+{
+    if (!Have(file)) { Console.WriteLine($"SKIP  {file} not in Downloads\n"); continue; }
+    Console.WriteLine($"── Excel stock · {file}");
+
+    var baseline = StockFileImport.Plan(At(file), gradeMap, StockFileImport.SizeMap(full));
+    var used = baseline.Rows.Select(r => r.SizeCode).Distinct().ToList();
+    Check("XLS-STK · reads against the full catalogue", baseline.IsValid,
+          $"{baseline.Rows.Count} rows, {baseline.TotalCarats:N2} ct, sizes {string.Join(",", used)}");
+    Check("XLS-STK · offers nothing to add",
+          baseline.UnknownSizes.Count == 0, string.Join(",", baseline.UnknownSizes.Select(u => u.Label)));
+
+    var flipped = StockFileImport.Plan(At(file), gradeMap, StockFileImport.SizeMap([.. full.Select(Flip)]));
+    Check("XLS-STK · A · still reads when the catalogue uses the other notation", flipped.IsValid);
+    Check("XLS-STK · A · same rows, same carats",
+          flipped.Rows.Count == baseline.Rows.Count && flipped.TotalCarats == baseline.TotalCarats,
+          $"{flipped.Rows.Count} rows / {flipped.TotalCarats:N2} ct");
+    Check("XLS-STK · A · and offers nothing to add",
+          flipped.UnknownSizes.Count == 0, string.Join(",", flipped.UnknownSizes.Select(u => u.Label)));
+
+    if (used.Count > 0)
+    {
+        string drop = used[0];
+        var missing = StockFileImport.Plan(At(file), gradeMap,
+            StockFileImport.SizeMap([.. full.Where(c => Key(c) != Key(drop))]));
+        Check($"XLS-STK · B · names \"{drop}\" as the sieve to add",
+              missing.UnknownSizes.Any(u => Key(u.Label) == Key(drop)),
+              string.Join(",", missing.UnknownSizes.Select(u => $"{u.Label}={u.Carats:N2}")));
+        Check("XLS-STK · B · with the weight that would otherwise vanish",
+              missing.UnknownSizes.Sum(u => u.Carats) > 0m,
+              $"{missing.UnknownSizes.Sum(u => u.Carats):N2} ct");
+        Check("XLS-STK · B · and those carats are counted as unplaced, never dropped",
+              missing.UnplacedCarats > 0m, $"{missing.UnplacedCarats:N2} ct unplaced");
+        Check("XLS-STK · B · the sieve is offered ONCE however many rows use it",
+              missing.UnknownSizes.Count(u => Key(u.Label) == Key(drop)) == 1);
+        Check("XLS-STK · B · and the rows naming it are not imported",
+              missing.Rows.Count < baseline.Rows.Count,
+              $"{missing.Rows.Count} vs {baseline.Rows.Count}");
+    }
+    Console.WriteLine();
+}
+
+// ── Excel sales ─────────────────────────────────────────────────────────────
+foreach (string file in new[] { "Sale File Sample.xlsx", "Sale File - 5 months sample.xlsx" })
+{
+    if (!Have(file)) { Console.WriteLine($"SKIP  {file} not in Downloads\n"); continue; }
+    Console.WriteLine($"── Excel sales · {file}");
+
+    var baseline = SaleFileImport.Plan(At(file), gradeMap, SaleFileImport.SizeAliasMap(full));
+    var used = baseline.Invoices.SelectMany(i => i.Lines).Select(l => l.SizeCode).Distinct().ToList();
+    Check("XLS-SALE · reads against the full catalogue", baseline.IsValid,
+          $"{baseline.Invoices.Count} invoices, {baseline.LineCount} lines, sizes {string.Join(",", used)}");
+    Check("XLS-SALE · offers nothing to add",
+          baseline.UnknownSizes.Count == 0, string.Join(",", baseline.UnknownSizes.Select(u => u.Label)));
+
+    var flipped = SaleFileImport.Plan(At(file), gradeMap, SaleFileImport.SizeAliasMap([.. full.Select(Flip)]));
+    Check("XLS-SALE · A · still reads when the catalogue uses the other notation", flipped.IsValid);
+    Check("XLS-SALE · A · same invoices and same lines",
+          flipped.Invoices.Count == baseline.Invoices.Count && flipped.LineCount == baseline.LineCount,
+          $"{flipped.Invoices.Count} / {flipped.LineCount}");
+    Check("XLS-SALE · A · and offers nothing to add",
+          flipped.UnknownSizes.Count == 0, string.Join(",", flipped.UnknownSizes.Select(u => u.Label)));
+
+    if (used.Count > 0)
+    {
+        string drop = used[0];
+        var missing = SaleFileImport.Plan(At(file), gradeMap,
+            SaleFileImport.SizeAliasMap([.. full.Where(c => Key(c) != Key(drop))]));
+        Check($"XLS-SALE · B · names \"{drop}\" as the sieve to add",
+              missing.UnknownSizes.Any(u => Key(u.Label) == Key(drop)),
+              string.Join(",", missing.UnknownSizes.Select(u => $"{u.Label}={u.Carats:N2}")));
+        Check("XLS-SALE · B · the rows naming it are reported, not imported",
+              missing.LineCount < baseline.LineCount, $"{missing.LineCount} vs {baseline.LineCount}");
+        Check("XLS-SALE · B · offered ONCE however many rows use it",
+              missing.UnknownSizes.Count(u => Key(u.Label) == Key(drop)) == 1);
+    }
+    Console.WriteLine();
+}
+
+// ── What today's catalogue can still take ───────────────────────────────────
+//
+// Not a mechanism test: a statement of consequence. 0035 removed three sieves, and these files
+// were written when they existed. Whatever this prints is what the desk will meet on Monday.
+// A retired or removed sieve is NOT permanently blocked. Whatever these files still print must
+// come back as an offer the user can accept -- 0036 makes add_size restore a retired row rather
+// than refuse it -- and must never be dropped in silence.
+Console.WriteLine("── against the catalogue as it stands after 0035");
+foreach (string file in new[] { "JADU APR-AUG'26.pdf", "17-8-26.pdf" })
+{
+    if (!Have(file)) continue;
+    var p2 = PdfStockFile.Plan(At(file), pdfGradeMap, MainWindow.PdfSizeLabelMap(today));
+    Console.WriteLine($"      {file,-24} {(p2.IsValid ? "imports" : "REFUSED")}"
+        + $"  {p2.TotalCarats,10:N2} ct"
+        + (p2.UnknownSizes.Count > 0
+            ? "   offers: " + string.Join(", ", p2.UnknownSizes.Select(u => $"{u.Label} ({u.Carats:N2} ct)"))
+            : "   offers: nothing"));
+
+    if (!p2.IsValid)
+        Check($"TODAY · {file} offers what it is missing rather than importing short",
+              p2.UnknownSizes.Count > 0, string.Join(", ", p2.UnknownSizes.Select(u => u.Label)));
+}
+foreach (string file in new[] { "stk 13-08-26.xlsx", "stk BKC-JAN.xlsx" })
+{
+    if (!Have(file)) continue;
+    var p2 = StockFileImport.Plan(At(file), gradeMap, StockFileImport.SizeMap(today));
+    Console.WriteLine($"      {file,-24} {(p2.IsValid ? "imports" : "REFUSED")}"
+        + $"  {p2.TotalCarats,10:N2} ct"
+        + (p2.UnknownSizes.Count > 0
+            ? "   offers: " + string.Join(", ", p2.UnknownSizes.Select(u => $"{u.Label} ({u.Carats:N2} ct)"))
+            : "   offers: nothing"));
+
+    if (!p2.IsValid)
+        Check($"TODAY · {file} offers what it is missing rather than importing short",
+              p2.UnknownSizes.Count > 0 || p2.TotalCarats == 0m,
+              string.Join(", ", p2.UnknownSizes.Select(u => u.Label)));
+}
+Console.WriteLine();
+
+Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} check(s) failed.");
+Environment.Exit(fail == 0 ? 0 : 1);

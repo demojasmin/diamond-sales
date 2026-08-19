@@ -1,0 +1,66 @@
+<Window x:Class="DiamondDesktop.PdfStockPreview"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        SizeToContent="WidthAndHeight" MinWidth="560"
+        WindowStartupLocation="CenterOwner"
+        Icon="{StaticResource AppIcon}"
+        ShowInTaskbar="False" WindowStyle="SingleBorderWindow"
+        Background="{DynamicResource BgBrush}"
+        TextElement.Foreground="{DynamicResource TextBrush}"
+        TextElement.FontFamily="{StaticResource UiFont}"
+        TextElement.FontSize="13.5" TextOptions.TextFormattingMode="Ideal"
+        KeyDown="Window_KeyDown">
+
+  <!-- Only application-level resource keys, for the reason AppFormDialog gives: MainWindow's own
+       resources are invisible from here and reaching for one throws XamlParseException. -->
+  <DockPanel>
+
+    <Border DockPanel.Dock="Bottom" Background="{DynamicResource SurfaceBrush}"
+            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
+            Padding="22,14">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+          <Button Content="Cancel" Margin="0,0,10,0" IsCancel="True"
+                  Style="{StaticResource SecondaryAction}" Click="Cancel_Click"
+                  VerticalAlignment="Center"/>
+          <Button x:Name="ContinueButton" Content="These figures are correct" IsDefault="True"
+                  Style="{StaticResource PrimaryAction}" Click="Continue_Click"
+                  VerticalAlignment="Center"/>
+        </StackPanel>
+        <TextBlock x:Name="FooterNote" VerticalAlignment="Center" TextWrapping="Wrap"
+                   Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,16,0"/>
+      </DockPanel>
+    </Border>
+
+    <StackPanel DockPanel.Dock="Top" Margin="22,20,22,12">
+      <TextBlock x:Name="Headline" Style="{StaticResource CardTitle}"
+                 Text="Check these figures against the sheet"/>
+      <TextBlock x:Name="Subhead" Style="{StaticResource CardSubtitle}" Margin="0,4,0,0"/>
+
+      <!-- The reconciliation against the sheet's own printed totals. This is the line that says
+           whether the read can be trusted, so it gets its own tinted block rather than sitting in
+           the fact strip where it would read as one more number. -->
+      <Border x:Name="ChecksumCard" Margin="0,14,0,0" CornerRadius="{StaticResource RadiusField}"
+              Background="{DynamicResource SuccessSoftBrush}" Padding="12,9">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock x:Name="ChecksumGlyph" Text="&#xE73E;" FontFamily="Segoe MDL2 Assets"
+                     FontSize="14" Foreground="{DynamicResource SuccessBrush}"
+                     Margin="0,1,9,0" VerticalAlignment="Top"/>
+          <TextBlock x:Name="ChecksumText" TextWrapping="Wrap" MaxWidth="620"/>
+        </StackPanel>
+      </Border>
+    </StackPanel>
+
+    <ScrollViewer Margin="22,0,22,16" VerticalScrollBarVisibility="Auto"
+                  HorizontalScrollBarVisibility="Auto">
+      <Border Background="{DynamicResource SurfaceBrush}"
+              BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+              CornerRadius="{StaticResource RadiusField}" Padding="2">
+        <!-- Laid out in code as the same grid the sheet prints: grades down, sizes across, carats
+             beside their rate. A flat list of 46 rows would be correct and unreadable — the point
+             of this window is that somebody can hold it against the paper. -->
+        <Grid x:Name="Table"/>
+      </Border>
+    </ScrollViewer>
+  </DockPanel>
+</Window>

@@ -1,0 +1,90 @@
+<UserControl x:Class="SolitaireDesk.Views.SalesListView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:design="clr-namespace:SolitaireDesk.Design"
+             Background="{DynamicResource BgBrush}"
+             TextElement.Foreground="{DynamicResource TextBrush}"
+             TextElement.FontFamily="{StaticResource UiFont}"
+             TextElement.FontSize="13.5"
+             TextOptions.TextFormattingMode="Ideal">
+    <DockPanel>
+
+        <!-- Toolbar -->
+        <Border DockPanel.Dock="Top" Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
+            <Grid Margin="24,14">
+                <StackPanel Orientation="Horizontal">
+                    <Grid Width="250" Margin="0,0,10,0">
+                        <TextBox Style="{StaticResource FieldTextBox}"/>
+                        <TextBlock Text="Buyer or invoice no…" Foreground="{DynamicResource TextMutedBrush}"
+                                   VerticalAlignment="Center" Margin="11,0,0,0" IsHitTestVisible="False" Opacity="0.8"/>
+                    </Grid>
+                    <ComboBox Style="{StaticResource FieldComboBox}" ItemContainerStyle="{StaticResource FieldComboBoxItem}"
+                              Width="140" SelectedIndex="2" Margin="0,0,10,0">
+                        <ComboBoxItem Content="Last 7 days"/>
+                        <ComboBoxItem Content="Last 30 days"/>
+                        <ComboBoxItem Content="Last 90 days"/>
+                        <ComboBoxItem Content="All time"/>
+                    </ComboBox>
+                    <Border Style="{StaticResource SegmentBar}">
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton GroupName="Status" Style="{StaticResource SegmentButton}" Content="All" IsChecked="True"/>
+                            <RadioButton GroupName="Status" Style="{StaticResource SegmentButton}" Content="Draft"/>
+                            <RadioButton GroupName="Status" Style="{StaticResource SegmentButton}" Content="Posted"/>
+                            <RadioButton GroupName="Status" Style="{StaticResource SegmentButton}" Content="Cancelled"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <TextBlock Text="10 of 40 invoices" Style="{StaticResource MonoText}" FontSize="12"
+                               Foreground="{DynamicResource TextMutedBrush}" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                    <Button Style="{StaticResource PrimaryButton}">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Data="M7,2 V12 M2,7 H12" Stroke="White" StrokeThickness="1.8" Width="13" Height="13" Stretch="Uniform" Margin="0,0,8,0"/>
+                            <TextBlock Text="New sale" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Grid -->
+        <DataGrid Style="{StaticResource DataGridStyle}" ItemsSource="{x:Static design:SampleData.Invoices}" Margin="8,0">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Invoice no" Binding="{Binding No}" Width="136" ElementStyle="{StaticResource MonoCellText}"/>
+                <DataGridTextColumn Header="Date" Binding="{Binding Date}" Width="96" ElementStyle="{StaticResource MutedCellText}"/>
+                <DataGridTextColumn Header="Buyer" Binding="{Binding Buyer}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                <DataGridTextColumn Header="Broker" Binding="{Binding Broker}" Width="150" ElementStyle="{StaticResource MutedCellText}"/>
+                <DataGridTextColumn Header="Lines" Binding="{Binding Lines}" Width="60" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource DataGridNumericHeaderStyle}"/>
+                <DataGridTextColumn Header="Carats" Binding="{Binding Carats}" Width="86" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource DataGridNumericHeaderStyle}"/>
+                <DataGridTextColumn Header="Amount" Binding="{Binding Amount}" Width="132" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource DataGridNumericHeaderStyle}"/>
+                <DataGridTextColumn Header="Received" Binding="{Binding Received}" Width="126" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource DataGridNumericHeaderStyle}"/>
+                <DataGridTextColumn Header="Outstanding" Binding="{Binding Outstanding}" Width="130" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource DataGridNumericHeaderStyle}"/>
+                <DataGridTemplateColumn Header="Status" Width="104">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Label Style="{StaticResource Chip}" Tag="{Binding Status}" Content="{Binding Status}"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Width="96">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Style="{StaticResource RowIconButton}" ToolTip="Open" Margin="0,0,4,0">
+                                    <Path Data="M2,7 H12 M8.5,3.5 L12,7 L8.5,10.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" Width="13" Height="13" Stretch="Uniform"/>
+                                </Button>
+                                <Button Style="{StaticResource RowIconButton}" ToolTip="Print" Margin="0,0,4,0">
+                                    <Path Data="M3.5,1.5 H10.5 V5 M1.5,5 H12.5 V10 H1.5 Z M3.5,9 H10.5 V12.5 H3.5 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.3" Width="13" Height="13" Stretch="Uniform"/>
+                                </Button>
+                                <Button Style="{StaticResource RowIconButton}" ToolTip="Cancel invoice">
+                                    <Path Data="M3.5,3.5 L10.5,10.5 M10.5,3.5 L3.5,10.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" Width="13" Height="13" Stretch="Uniform"/>
+                                </Button>
+                            </StackPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</UserControl>

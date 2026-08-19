@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>SolitaireDesk</RootNamespace>
+    <AssemblyName>SolitaireDesk</AssemblyName>
+    <ApplicationIcon></ApplicationIcon>
+  </PropertyGroup>
+
+  <!--
+    Solitaire Desk — Diamond Sales & Inventory (WPF design system)
+    A faithful XAML port of the HTML prototype. Pure WPF, no third-party control suites.
+    Data shown in the views is static design-time placeholder — wire it to real view models.
+  -->
+
+</Project>

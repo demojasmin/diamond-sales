@@ -1,0 +1,290 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:DiamondDesktop">
+
+  <local:InvoiceStateConverter x:Key="InvoiceState"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       Dashboard · Stage 1 — tokens and surfaces
+
+       Scoped to the Dashboard by key. Nothing here is an implicit style and
+       nothing overrides an app token, so the other nine screens are untouched
+       until a page asks for one of these by name.
+
+       Merged AFTER AppOverrides.xaml and Components.xaml: several styles here
+       derive from AppDataGrid / AppPrimaryButton, and StaticResource only sees
+       dictionaries already loaded.
+
+       NOTE for anyone extending this: Lbl, Num, Empty and EmptyHint live in
+       MainWindow.Resources and are WINDOW scoped. An application-level
+       dictionary cannot see them — referencing one throws XamlParseException
+       the moment MainWindow is constructed.
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <!-- No Dashboard palette. Every colour below is an app token, so this screen follows the
+       light/dark swap with the rest of the application and there is no second system to keep in
+       step. The luxury reading comes from spacing, weight and restraint, not from a bespoke hue. -->
+
+  <CornerRadius x:Key="DashRadius">14</CornerRadius>
+
+  <!-- ── Surfaces ─────────────────────────────────────────────────────────── -->
+  <Style x:Key="DashCard" TargetType="Border">
+    <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="CornerRadius" Value="{StaticResource DashRadius}"/>
+    <Setter Property="Padding" Value="18,16,18,16"/>
+    <Setter Property="Effect">
+      <Setter.Value>
+        <DropShadowEffect BlurRadius="18" ShadowDepth="2" Opacity="0.07" Color="#000000"/>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- The filter bar reads as a control strip, not a data panel: flatter, no
+       shadow, so it does not compete with the cards below it. -->
+  <Style x:Key="DashToolbar" TargetType="Border" BasedOn="{StaticResource DashCard}">
+    <Setter Property="Padding" Value="16,12,16,12"/>
+    <Setter Property="Effect" Value="{x:Null}"/>
+  </Style>
+
+  <!-- ── KPI tile ───────────────────────────────────────────────────────────
+       A hairline of gold down the leading edge marks a figure as a headline
+       number without tinting the whole card, which at eight tiles would read
+       as decoration rather than emphasis.                                    -->
+  <Style x:Key="KpiTile" TargetType="Border" BasedOn="{StaticResource DashCard}">
+    <Setter Property="Padding" Value="0"/>
+    <Setter Property="MinWidth" Value="210"/>
+    <Setter Property="MinHeight" Value="96"/>
+  </Style>
+
+  <Style x:Key="KpiAccentEdge" TargetType="Border">
+    <Setter Property="Width" Value="3"/>
+    <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
+    <Setter Property="CornerRadius" Value="14,0,0,14"/>
+  </Style>
+
+  <Style x:Key="KpiBody" TargetType="StackPanel">
+    <Setter Property="Margin" Value="16,14,16,14"/>
+  </Style>
+
+  <Style x:Key="KpiLabel" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="11"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+  </Style>
+
+  <Style x:Key="KpiValue" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="21"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="Margin" Value="0,6,0,0"/>
+    <!-- Tabular figures: without them a column of amounts wanders as the digits
+         change width, which is the fastest way to make a number look wrong. -->
+    <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
+  </Style>
+
+  <Style x:Key="KpiCaption" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="11.5"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="Margin" Value="0,5,0,0"/>
+    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+  </Style>
+
+  <!-- Delta keeps the app's success/danger tokens rather than inventing a pair,
+       so up and down mean the same here as everywhere else. -->
+  <Style x:Key="KpiDeltaUp" TargetType="TextBlock" BasedOn="{StaticResource KpiCaption}">
+    <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+  </Style>
+
+  <Style x:Key="KpiDeltaDown" TargetType="TextBlock" BasedOn="{StaticResource KpiCaption}">
+    <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+  </Style>
+
+  <!-- ── Section headings ──────────────────────────────────────────────────── -->
+  <Style x:Key="DashHeading" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="15"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
+
+  <Style x:Key="DashSubheading" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="12"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="TextWrapping" Value="Wrap"/>
+    <Setter Property="Margin" Value="0,3,0,0"/>
+  </Style>
+
+  <!-- ── Charts ─────────────────────────────────────────────────────────────
+       A track behind every bar, so short bars still show their full scale and
+       the rows read as a chart rather than a ragged list of blocks.          -->
+  <Style x:Key="ChartRowLabel" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="12.5"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+  </Style>
+
+  <Style x:Key="ChartRowValue" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="12.5"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+    <Setter Property="HorizontalAlignment" Value="Right"/>
+  </Style>
+
+  <Style x:Key="ChartRowMeta" TargetType="TextBlock" BasedOn="{StaticResource ChartRowValue}">
+    <Setter Property="FontWeight" Value="Normal"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="FontSize" Value="11.5"/>
+  </Style>
+
+  <Style x:Key="ChartTrack" TargetType="Border">
+    <Setter Property="Height" Value="10"/>
+    <Setter Property="CornerRadius" Value="5"/>
+    <Setter Property="Background" Value="{DynamicResource BorderBrush}"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
+
+  <Style x:Key="ChartBar" TargetType="Border">
+    <Setter Property="Height" Value="10"/>
+    <Setter Property="CornerRadius" Value="5"/>
+    <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
+    <Setter Property="HorizontalAlignment" Value="Left"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
+
+  <!-- Sparkline / trend surface, for the client-side series in a later stage. -->
+  <!-- Surface2Brush, not AccentSoftBrush: this is the paper the chart is drawn on, so it has to
+       recede. The accent belongs to the line and the area under it. -->
+  <Style x:Key="TrendSurface" TargetType="Border">
+    <Setter Property="Background" Value="{DynamicResource Surface2Brush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="CornerRadius" Value="10"/>
+    <Setter Property="Padding" Value="12"/>
+    <Setter Property="MinHeight" Value="120"/>
+  </Style>
+
+  <Style x:Key="TrendLine" TargetType="Polyline">
+    <Setter Property="Stroke" Value="{DynamicResource AccentStrongBrush}"/>
+    <Setter Property="StrokeThickness" Value="2"/>
+    <Setter Property="StrokeLineJoin" Value="Round"/>
+  </Style>
+
+  <!-- ── Alert strip ────────────────────────────────────────────────────────
+       Overdue money is a warning, not an error: the app's danger tokens are
+       for failures. Amber keeps "you should look at this" distinct from
+       "something broke".                                                     -->
+  <Style x:Key="DashAlert" TargetType="Border">
+    <Setter Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource WarningBorderBrush}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="CornerRadius" Value="10"/>
+    <Setter Property="Padding" Value="14,10"/>
+  </Style>
+
+  <Style x:Key="DashAlertText" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="12.5"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+    <Setter Property="TextWrapping" Value="Wrap"/>
+  </Style>
+
+  <!-- ── Actions ────────────────────────────────────────────────────────────
+       Gold is reserved for the one primary action on the page; everything else
+       keeps the app's own button styles so the Dashboard does not become a
+       separate design language. -->
+  <!-- Named for its role, not its colour: it is simply the app's primary button at dashboard
+       metrics. Overriding its brushes is what made the Dashboard look like a different product. -->
+  <Style x:Key="DashGoldButton" TargetType="Button" BasedOn="{StaticResource AppPrimaryButton}">
+    <Setter Property="Height" Value="34"/>
+    <Setter Property="MinWidth" Value="104"/>
+    <Setter Property="FontSize" Value="13"/>
+    <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  </Style>
+
+  <Style x:Key="DashButton" TargetType="Button" BasedOn="{StaticResource AppButton}">
+    <Setter Property="Height" Value="34"/>
+    <Setter Property="MinWidth" Value="96"/>
+    <Setter Property="FontSize" Value="13"/>
+    <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  </Style>
+
+  <!-- ── Status chip · reused by the drill-down table in a later stage ─────── -->
+  <!-- ── The page header ───────────────────────────────────────────────────
+       Every page opens with the same object: the brand mark, the page name, a
+       count chip and one line of what the page is for, on a card. Four pages
+       had it hand-written at 18px SemiBold, one used PageTitle with a different
+       chip, and two had no header card at all — which is what this pins down.
+                                                                              -->
+  <Style x:Key="PageHeaderCard" TargetType="Border" BasedOn="{StaticResource DashCard}">
+    <Setter Property="Margin" Value="0,0,0,12"/>
+  </Style>
+
+  <Style x:Key="PageHeaderTitle" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="18"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
+
+  <Style x:Key="DashChip" TargetType="Border">
+    <Setter Property="CornerRadius" Value="999"/>
+    <Setter Property="Padding" Value="10,2,10,3"/>
+    <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="HorizontalAlignment" Value="Left"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
+
+  <Style x:Key="DashChipText" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="11.5"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource AccentStrongBrush}"/>
+  </Style>
+
+  <!-- ── Drill-down status badge ────────────────────────────────────────────
+       The word comes from InvoiceStateConverter, which reads is_overdue and
+       outstanding — both already computed by v_invoice. Colours are the app's
+       own tokens so "overdue" looks the same here as on Receivables.        -->
+  <DataTemplate x:Key="DrillStatusTemplate">
+    <Border x:Name="Chip" CornerRadius="999" Padding="9,2,9,3" BorderThickness="1"
+            HorizontalAlignment="Left" VerticalAlignment="Center"
+            Background="{DynamicResource WarningSoftBrush}"
+            BorderBrush="{DynamicResource WarningBorderBrush}">
+      <TextBlock x:Name="Word" FontSize="11" FontWeight="SemiBold"
+                 Foreground="{DynamicResource WarningBrush}"
+                 Text="{Binding Converter={StaticResource InvoiceState}}"/>
+    </Border>
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding Converter={StaticResource InvoiceState}}" Value="Paid">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource SuccessSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource SuccessBorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding Converter={StaticResource InvoiceState}}" Value="Overdue">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource DangerBorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding Converter={StaticResource InvoiceState}}" Value="Cancelled">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource DeskBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding Converter={StaticResource InvoiceState}}" Value="Draft">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource DeskBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+      </DataTrigger>
+    </DataTemplate.Triggers>
+  </DataTemplate>
+
+</ResourceDictionary>

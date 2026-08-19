@@ -1,0 +1,702 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:DiamondDesktop"
+                    xmlns:sys="clr-namespace:System;assembly=System.Runtime">
+
+  <local:InitialsConverter x:Key="Initials"/>
+  <local:StockStateConverter x:Key="StockState"/>
+  <local:SellableSizeConverter x:Key="SellableSize"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       Component library · Stage 1
+
+       Styles only. Nothing here has code-behind, so adding it cannot introduce
+       a runtime failure the way a new Window can — everything is opt-in by key
+       and no existing screen changes until a page asks for one of these.
+
+       Merged AFTER AppOverrides.xaml, because several styles here derive from
+       AppDataGrid / AppPrimaryButton and StaticResource only sees dictionaries
+       already loaded.
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <!-- Softer, larger radii than the existing tokens: 14 for panels, 10 for
+       fields. The current RadiusCard stays where it is so nothing shifts. -->
+  <CornerRadius x:Key="RadiusPanel">14</CornerRadius>
+  <CornerRadius x:Key="RadiusField">10</CornerRadius>
+  <CornerRadius x:Key="RadiusBadge">999</CornerRadius>
+
+  <!-- ── CardContainer ─────────────────────────────────────────────────────
+       The one surface every section sits on. Shadow is deliberately faint:
+       0.07 reads as a lifted sheet, anything heavier reads as a dialog.      -->
+  <Style x:Key="CardContainer" TargetType="Border">
+    <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="CornerRadius" Value="{StaticResource RadiusPanel}"/>
+    <Setter Property="Padding" Value="20,18,20,18"/>
+    <Setter Property="Effect">
+      <Setter.Value>
+        <DropShadowEffect BlurRadius="18" ShadowDepth="2" Opacity="0.07" Color="#000000"/>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- Borderless: on a list card the outer rule fights the row separators, and the
+       shadow already lifts it off the page. -->
+  <Style x:Key="CardContainerSoft" TargetType="Border" BasedOn="{StaticResource CardContainer}">
+    <Setter Property="BorderThickness" Value="0"/>
+    <Setter Property="Padding" Value="18,16,18,16"/>
+  </Style>
+
+  <!-- A card with no padding, for when the table should meet the card edge. -->
+  <Style x:Key="CardContainerFlush" TargetType="Border" BasedOn="{StaticResource CardContainer}">
+    <Setter Property="Padding" Value="0"/>
+  </Style>
+
+  <!-- ── Section headers ───────────────────────────────────────────────────── -->
+  <Style x:Key="CardTitle" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="16"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
+
+  <Style x:Key="CardSubtitle" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="12.5"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="TextWrapping" Value="Wrap"/>
+    <Setter Property="Margin" Value="0,3,0,0"/>
+  </Style>
+
+  <Style x:Key="PageTitle" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="22"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+  </Style>
+
+  <!-- ── CountBadge · the "23" beside a section title ──────────────────────── -->
+  <Style x:Key="CountBadge" TargetType="Border">
+    <!-- DeskBrush is the dark navigation token; a muted grey number on it was unreadable. -->
+    <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+    <Setter Property="BorderBrush" Value="Transparent"/>
+    <Setter Property="BorderThickness" Value="0"/>
+    <Setter Property="CornerRadius" Value="{StaticResource RadiusBadge}"/>
+    <Setter Property="Padding" Value="9,2,9,2"/>
+    <Setter Property="Margin" Value="10,0,0,0"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
+
+  <Style x:Key="CountBadgeText" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="11.5"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+  </Style>
+
+  <!-- ── StatusBadge · Active / Inactive pill ──────────────────────────────
+       A DataTemplate rather than a style, so a DataGridTemplateColumn can use
+       it directly against a bool. Read-only by design: nothing here writes
+       grade.active, because no API does.                                     -->
+  <DataTemplate x:Key="StatusBadgeTemplate">
+    <Border CornerRadius="{StaticResource RadiusBadge}" Padding="10,2,10,3"
+            HorizontalAlignment="Left" VerticalAlignment="Center">
+      <Border.Style>
+        <Style TargetType="Border">
+          <Setter Property="Background" Value="{DynamicResource SuccessSoftBrush}"/>
+          <Setter Property="BorderBrush" Value="{DynamicResource SuccessBorderBrush}"/>
+          <Setter Property="BorderThickness" Value="1"/>
+          <Style.Triggers>
+            <DataTrigger Binding="{Binding Active}" Value="False">
+              <Setter Property="Background" Value="{DynamicResource DeskBrush}"/>
+              <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            </DataTrigger>
+          </Style.Triggers>
+        </Style>
+      </Border.Style>
+      <TextBlock FontSize="11.5" FontWeight="SemiBold">
+        <TextBlock.Style>
+          <Style TargetType="TextBlock">
+            <Setter Property="Text" Value="Active"/>
+            <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+            <Style.Triggers>
+              <DataTrigger Binding="{Binding Active}" Value="False">
+                <Setter Property="Text" Value="Inactive"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </TextBlock.Style>
+      </TextBlock>
+    </Border>
+  </DataTemplate>
+
+  <!-- ── Party row · one line per buyer or broker ──────────────────────────
+       A three-column grid in a 450px card squeezes every column and still grows
+       its own scrollbars. A row list gives the name the space it needs and puts
+       the figure and status where the eye already expects them.               -->
+  <Style x:Key="PartyRow" TargetType="Border">
+    <Setter Property="Padding" Value="12,10,12,11"/>
+    <Setter Property="CornerRadius" Value="8"/>
+    <Setter Property="Background" Value="Transparent"/>
+    <!-- Hairline between rows only; the last one is trimmed by the card padding. -->
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+    <Setter Property="BorderThickness" Value="0,0,0,1"/>
+    <Setter Property="Margin" Value="0,0,0,1"/>
+    <Style.Triggers>
+      <Trigger Property="IsMouseOver" Value="True">
+        <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+        <Setter Property="BorderBrush" Value="Transparent"/>
+      </Trigger>
+    </Style.Triggers>
+  </Style>
+
+  <Style x:Key="PartyName" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="13"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
+
+  <Style x:Key="PartyMeta" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="11.5"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="Margin" Value="0,3,10,0"/>
+  </Style>
+
+  <!-- ── SearchBar ─────────────────────────────────────────────────────────
+       Watermark via a trigger on the control's own Text, so it needs no
+       converter and no code-behind.                                          -->
+  <Style x:Key="SearchBar" TargetType="TextBox">
+    <Setter Property="Height" Value="34"/>
+    <Setter Property="FontSize" Value="13"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="CaretBrush" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="TextBox">
+          <Border x:Name="Shell" Background="{DynamicResource BgBrush}"
+                  BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                  CornerRadius="{StaticResource RadiusField}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Text="&#xE721;" FontFamily="Segoe MDL2 Assets"
+                         FontSize="13" Margin="11,0,7,0" VerticalAlignment="Center"
+                         Foreground="{DynamicResource TextMutedBrush}"/>
+              <ScrollViewer Grid.Column="1" x:Name="PART_ContentHost" Margin="0,0,24,0"
+                            VerticalAlignment="Center"/>
+              <!-- The box's own Tag, so each search can name what it looks through. "Search…" over a
+                   list of invoices does not tell anyone that amounts and statuses match too. -->
+              <TextBlock x:Name="Watermark" Grid.Column="1" Margin="2,0,24,0"
+                         Text="{Binding Tag, RelativeSource={RelativeSource TemplatedParent},
+                                        TargetNullValue=Search…}"
+                         VerticalAlignment="Center" IsHitTestVisible="False"
+                         Foreground="{DynamicResource TextMutedBrush}" Visibility="Collapsed"/>
+            </Grid>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="Text" Value="">
+              <Setter TargetName="Watermark" Property="Visibility" Value="Visible"/>
+            </Trigger>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+              <Setter TargetName="Shell" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter Property="Opacity" Value="0.55"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- ── FilterDropdown ────────────────────────────────────────────────────
+       Derives from the app's combo so the popup, item template and theme
+       behaviour stay identical; only the metrics change.                     -->
+  <Style x:Key="FilterDropdown" TargetType="ComboBox" BasedOn="{StaticResource AppComboBox}">
+    <Setter Property="Height" Value="34"/>
+    <Setter Property="MinWidth" Value="140"/>
+    <Setter Property="FontSize" Value="13"/>
+  </Style>
+
+  <!-- No DataTable / TableHeader style here on purpose. MainWindow.xaml declares an implicit
+       <Style TargetType="DataGrid" BasedOn="{StaticResource AppDataGrid}"/>, which is what the
+       Invoices grid uses. Setting an explicit Style or ColumnHeaderStyle on a grid replaces it and
+       the two screens drift apart — which is exactly what happened here. Leave the grids bare. -->
+
+  <!-- ── Tabs ──────────────────────────────────────────────────────────────
+       Underline tabs rather than folder tabs: quieter, and it reads as a
+       section switch instead of a second window.                             -->
+  <Style x:Key="SectionTabs" TargetType="TabControl">
+    <Setter Property="Background" Value="Transparent"/>
+    <Setter Property="BorderThickness" Value="0"/>
+    <Setter Property="Padding" Value="0,14,0,0"/>
+  </Style>
+
+  <Style x:Key="SectionTabItem" TargetType="TabItem">
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="FontSize" Value="13.5"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="TabItem">
+          <Border x:Name="Shell" Background="Transparent" Padding="2,0,2,0" Margin="0,0,22,0">
+            <StackPanel>
+              <ContentPresenter ContentSource="Header" Margin="0,0,0,9"
+                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <Border x:Name="Rule" Height="2" CornerRadius="1" Background="Transparent"/>
+            </StackPanel>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsSelected" Value="True">
+              <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+              <Setter TargetName="Rule" Property="Background" Value="{DynamicResource AccentBrush}"/>
+            </Trigger>
+            <MultiTrigger>
+              <MultiTrigger.Conditions>
+                <Condition Property="IsMouseOver" Value="True"/>
+                <Condition Property="IsSelected" Value="False"/>
+              </MultiTrigger.Conditions>
+              <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+            </MultiTrigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- ── Skeleton · placeholder bar while a read is in flight ──────────────── -->
+  <Style x:Key="Skeleton" TargetType="Border">
+    <Setter Property="Background" Value="{DynamicResource DeskBrush}"/>
+    <Setter Property="CornerRadius" Value="{StaticResource RadiusField}"/>
+    <Setter Property="Height" Value="14"/>
+    <Setter Property="Margin" Value="0,0,0,10"/>
+    <Setter Property="Opacity" Value="0.85"/>
+  </Style>
+
+  <!-- ── Form field · label above control, consistent metrics ─────────────── -->
+  <Style x:Key="FormField" TargetType="StackPanel">
+    <Setter Property="Margin" Value="0,0,12,0"/>
+  </Style>
+
+  <!-- Deliberately NOT BasedOn the window's "Lbl": that style lives in MainWindow.Resources, and an
+       application-level dictionary cannot see a window-level key. Deriving from it threw
+       XamlParseException the moment MainWindow was constructed. Same look, declared standalone. -->
+  <Style x:Key="FormLabel" TargetType="TextBlock">
+    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+    <Setter Property="FontSize" Value="11"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+    <Setter Property="Margin" Value="0,0,0,5"/>
+  </Style>
+
+  <Style x:Key="FormInput" TargetType="TextBox" BasedOn="{StaticResource AppTextBox}">
+    <Setter Property="Height" Value="34"/>
+    <Setter Property="FontSize" Value="13"/>
+  </Style>
+
+  <Style x:Key="FormNumeric" TargetType="TextBox" BasedOn="{StaticResource AppNumericTextBox}">
+    <Setter Property="Height" Value="34"/>
+    <Setter Property="FontSize" Value="13"/>
+  </Style>
+
+  <!-- ── Buttons · one height, one min width, everywhere ───────────────────── -->
+  <Style x:Key="PrimaryAction" TargetType="Button" BasedOn="{StaticResource AppPrimaryButton}">
+    <Setter Property="Height" Value="34"/>
+    <Setter Property="MinWidth" Value="112"/>
+    <Setter Property="FontSize" Value="13"/>
+    <Setter Property="VerticalAlignment" Value="Bottom"/>
+  </Style>
+
+  <Style x:Key="SecondaryAction" TargetType="Button" BasedOn="{StaticResource AppButton}">
+    <Setter Property="Height" Value="34"/>
+    <Setter Property="MinWidth" Value="96"/>
+    <Setter Property="FontSize" Value="13"/>
+    <Setter Property="VerticalAlignment" Value="Bottom"/>
+  </Style>
+
+  <!-- ── Empty state · larger and calmer than the inline EmptyHint ─────────── -->
+  <Style x:Key="EmptyStateTitle" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="14"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+    <Setter Property="HorizontalAlignment" Value="Center"/>
+    <Setter Property="TextAlignment" Value="Center"/>
+  </Style>
+
+  <Style x:Key="EmptyStateBody" TargetType="TextBlock" BasedOn="{StaticResource CardSubtitle}">
+    <Setter Property="HorizontalAlignment" Value="Center"/>
+    <Setter Property="TextAlignment" Value="Center"/>
+    <Setter Property="MaxWidth" Value="320"/>
+    <Setter Property="Margin" Value="0,6,0,0"/>
+  </Style>
+
+  <!-- ── Slim scrollbar ──────────────────────────────────────────────────────
+       Keyed, never implicit at application level: the last attempt was an implicit
+       TargetType="ScrollBar" style here, which replaced the scrollbars inside every DataGrid
+       in the app. Pages opt in with a one-line BasedOn in their own Resources.
+       The Track carries Minimum/Maximum/Value/ViewportSize bindings — without them a Track
+       cannot size or move its thumb, which is how the first version came out dead. -->
+  <Style x:Key="SlimScrollBar" TargetType="ScrollBar">
+    <Setter Property="Background" Value="Transparent"/>
+    <Setter Property="Width" Value="11"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ScrollBar">
+          <Border Background="Transparent" Padding="3,3">
+            <Track x:Name="PART_Track" IsDirectionReversed="True"
+                   Orientation="{TemplateBinding Orientation}"
+                   Minimum="{TemplateBinding Minimum}"
+                   Maximum="{TemplateBinding Maximum}"
+                   Value="{TemplateBinding Value}"
+                   ViewportSize="{TemplateBinding ViewportSize}">
+              <Track.DecreaseRepeatButton>
+                <RepeatButton Command="ScrollBar.PageUpCommand" Focusable="False"
+                              Opacity="0" Background="Transparent"/>
+              </Track.DecreaseRepeatButton>
+              <Track.Thumb>
+                <Thumb MinHeight="28" Focusable="False">
+                  <Thumb.Template>
+                    <ControlTemplate TargetType="Thumb">
+                      <Border x:Name="Bar" CornerRadius="2.5" Margin="1,0"
+                              Background="{DynamicResource BorderBrush}"/>
+                      <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                          <Setter TargetName="Bar" Property="Background"
+                                  Value="{DynamicResource TextMutedBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsDragging" Value="True">
+                          <Setter TargetName="Bar" Property="Background"
+                                  Value="{DynamicResource AccentBrush}"/>
+                        </Trigger>
+                      </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                  </Thumb.Template>
+                </Thumb>
+              </Track.Thumb>
+              <Track.IncreaseRepeatButton>
+                <RepeatButton Command="ScrollBar.PageDownCommand" Focusable="False"
+                              Opacity="0" Background="Transparent"/>
+              </Track.IncreaseRepeatButton>
+            </Track>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="Orientation" Value="Horizontal">
+              <Setter Property="Height" Value="11"/>
+              <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- ── The diamond mark ─────────────────────────────────────────────────────
+       A brilliant cut seen from the front, drawn on a 24x24 grid and symmetrical about x=12:
+       a flat table (7..17 at y=3), crown shoulders out to the girdle (2..22 at y=9), and the
+       pavilion converging on the culet at (12,21).
+
+       Two geometries, not one, because the facets are strokes over a fill. They MUST be drawn
+       into the same fixed-size Canvas inside a Viewbox — giving each Path its own Stretch scales
+       them to their own bounds, which are different, and the facet lines slide off the stone. -->
+  <StreamGeometry x:Key="DiamondSilhouette">M 7,3 L 17,3 L 22,9 L 12,21 L 2,9 Z</StreamGeometry>
+
+  <!-- Girdle, the two crown bezels, and the two main pavilion facets. Five lines is enough to
+       read as a cut stone; more turns to mud below about 40px. -->
+  <StreamGeometry x:Key="DiamondFacets">M 2,9 L 22,9 M 7,3 L 6,9 M 17,3 L 18,9 M 6,9 L 12,21 M 18,9 L 12,21</StreamGeometry>
+
+  <!-- ── The stone ─────────────────────────────────────────────────────────
+       One drawing, used at every size the app shows the mark at: the page
+       headers, the header chip beside the user's name, and anywhere else a
+       brand mark appears. A brush rather than a copied pair of Paths, because
+       copying is exactly how the header marks drifted into four different
+       stones — one with no facets at all — before this.                       -->
+  <DrawingBrush x:Key="BrandStone" Stretch="Uniform">
+    <DrawingBrush.Drawing>
+      <DrawingGroup>
+        <GeometryDrawing Brush="{DynamicResource AccentBrush}"
+                         Geometry="{StaticResource DiamondSilhouette}"/>
+        <GeometryDrawing Geometry="{StaticResource DiamondFacets}">
+          <GeometryDrawing.Pen>
+            <Pen Brush="{DynamicResource OnAccentBrush}" Thickness="0.5"
+                 StartLineCap="Round" EndLineCap="Round"/>
+          </GeometryDrawing.Pen>
+        </GeometryDrawing>
+      </DrawingGroup>
+    </DrawingBrush.Drawing>
+  </DrawingBrush>
+
+  <!-- ── BrandMark ─────────────────────────────────────────────────────────
+       The page-header logo. It used to be copy-pasted into every page header
+       and had drifted into four variants: 34px with a 17px stone, 42px with a
+       21px one, 44px with a plain silhouette and no facets, and a fifth with an
+       extra outline. This is the Invoices one, which the rest now follow.      -->
+  <Style x:Key="BrandMark" TargetType="ContentControl">
+    <Setter Property="Width" Value="42"/>
+    <Setter Property="Height" Value="42"/>
+    <Setter Property="Margin" Value="0,0,14,0"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+    <Setter Property="Focusable" Value="False"/>
+    <Setter Property="IsTabStop" Value="False"/>
+    <!-- Padding is the gap between the stone and the tile, so the stone keeps
+         the same proportion whatever size the tile is set to. -->
+    <Setter Property="Padding" Value="10.5"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ContentControl">
+          <Border CornerRadius="12" Background="{DynamicResource AccentSoftBrush}">
+            <Rectangle Margin="{TemplateBinding Padding}" Fill="{StaticResource BrandStone}"/>
+          </Border>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- The same mark at chip size, beside the signed-in user. Only the tile
+       changes: same stone, same facets, same colours. -->
+  <Style x:Key="BrandMarkSmall" TargetType="ContentControl" BasedOn="{StaticResource BrandMark}">
+    <Setter Property="Width" Value="28"/>
+    <Setter Property="Height" Value="28"/>
+    <Setter Property="Margin" Value="0,0,9,0"/>
+    <Setter Property="Padding" Value="6.5"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ContentControl">
+          <Border CornerRadius="8" Background="{DynamicResource AccentSoftBrush}"
+                  BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+            <Grid>
+              <Rectangle Margin="{TemplateBinding Padding}" Fill="{StaticResource BrandStone}"/>
+              <ContentPresenter/>
+            </Grid>
+          </Border>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- The same stone as the window and taskbar icon. A DrawingImage rather than an .ico so there
+       is one geometry for the whole app: the shell rasterises it at whatever size it needs. The
+       colours are fixed rather than themed — the taskbar has no idea which theme is loaded. -->
+  <DrawingImage x:Key="AppIcon">
+    <DrawingImage.Drawing>
+      <DrawingGroup>
+        <GeometryDrawing Brush="#2563EB" Geometry="{StaticResource DiamondSilhouette}"/>
+        <GeometryDrawing Geometry="{StaticResource DiamondFacets}">
+          <GeometryDrawing.Pen>
+            <Pen Brush="#DCE9FF" Thickness="0.5" StartLineCap="Round" EndLineCap="Round"/>
+          </GeometryDrawing.Pen>
+        </GeometryDrawing>
+      </DrawingGroup>
+    </DrawingImage.Drawing>
+  </DrawingImage>
+
+  <!-- ── User role badge ──────────────────────────────────────────────────────
+       Owner carries the accent because it is the role that can see this screen at all; manager is
+       warning-toned; anything else stays neutral rather than borrowing a colour that would imply a
+       rank the app does not define. -->
+  <DataTemplate x:Key="UserRoleBadge">
+    <Border x:Name="Chip" CornerRadius="999" Padding="10,2,10,3" BorderThickness="1"
+            HorizontalAlignment="Left" VerticalAlignment="Center"
+            Background="{DynamicResource DeskBrush}"
+            BorderBrush="{DynamicResource BorderBrush}">
+      <TextBlock x:Name="Word" FontSize="11" FontWeight="SemiBold"
+                 Foreground="{DynamicResource TextMutedBrush}"
+                 Text="{Binding Role}"/>
+    </Border>
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding Role}" Value="owner">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource AccentStrongBrush}"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding Role}" Value="manager">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource WarningBorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+      </DataTrigger>
+    </DataTemplate.Triggers>
+  </DataTemplate>
+
+  <!-- ── User status badge ────────────────────────────────────────────────────
+       Deactivated accounts keep their history, so they stay listed; the badge is what separates
+       "cannot sign in" from "gone". -->
+  <DataTemplate x:Key="UserStatusBadge">
+    <Border x:Name="Chip" CornerRadius="999" Padding="10,2,10,3" BorderThickness="1"
+            HorizontalAlignment="Left" VerticalAlignment="Center"
+            Background="{DynamicResource SuccessSoftBrush}"
+            BorderBrush="{DynamicResource SuccessBorderBrush}">
+      <TextBlock x:Name="Word" FontSize="11" FontWeight="SemiBold"
+                 Foreground="{DynamicResource SuccessBrush}" Text="Active"/>
+    </Border>
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding Active}" Value="False">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource DeskBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+        <Setter TargetName="Word" Property="Text" Value="Inactive"/>
+      </DataTrigger>
+    </DataTemplate.Triggers>
+  </DataTemplate>
+
+  <!-- ── Avatar ───────────────────────────────────────────────────────────────
+       Initials, not a photo: no avatar image exists anywhere in the schema, and a silhouette
+       placeholder on every row is noise. Same device as the window's own profile chip. -->
+  <DataTemplate x:Key="UserAvatarName">
+    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+      <Border Width="30" Height="30" CornerRadius="999" Margin="0,0,10,0"
+              Background="{DynamicResource AccentSoftBrush}">
+        <TextBlock Text="{Binding FullName, Converter={StaticResource Initials}}"
+                   FontSize="11.5" FontWeight="SemiBold"
+                   Foreground="{DynamicResource AccentStrongBrush}"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      </Border>
+      <TextBlock Text="{Binding FullName}" VerticalAlignment="Center"
+                 TextTrimming="CharacterEllipsis"
+                 Foreground="{DynamicResource TextBrush}"/>
+    </StackPanel>
+  </DataTemplate>
+
+  <!-- ── Setting row ──────────────────────────────────────────────────────────
+       Label and description on the left, the value on the right. The raw key sits under the label
+       in mono: it is what Repo.SetConfigAsync writes and what a support call will ask for, so it
+       is never hidden behind the friendly name. -->
+  <DataTemplate x:Key="SettingRow">
+    <Border x:Name="Row" Padding="0,10" BorderThickness="0,0,0,1"
+            BorderBrush="{DynamicResource BorderBrush}">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" MinWidth="180"/>
+          <ColumnDefinition Width="200"/>
+        </Grid.ColumnDefinitions>
+
+        <StackPanel Grid.Column="0" Margin="0,0,16,0" VerticalAlignment="Center">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="{Binding Label}" FontSize="13" FontWeight="SemiBold"
+                       Foreground="{DynamicResource TextBrush}"/>
+            <!-- Only appears once the value differs from what was loaded. -->
+            <Border x:Name="Dot" CornerRadius="999" Width="7" Height="7" Margin="8,0,0,0"
+                    VerticalAlignment="Center" Visibility="Collapsed"
+                    Background="{DynamicResource WarningBrush}"/>
+          </StackPanel>
+          <TextBlock Text="{Binding Description}" FontSize="11.5" TextWrapping="Wrap"
+                     Foreground="{DynamicResource TextMutedBrush}" Margin="0,2,0,0"/>
+          <TextBlock Text="{Binding Key}" FontFamily="{StaticResource MonoFont}" FontSize="10.5"
+                     Foreground="{DynamicResource TextMutedBrush}" Opacity="0.75" Margin="0,3,0,0"/>
+        </StackPanel>
+
+        <TextBox Grid.Column="1" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
+                 Height="32" VerticalAlignment="Center"
+                 VerticalContentAlignment="Center"
+                 AutomationProperties.Name="{Binding Label}"/>
+      </Grid>
+    </Border>
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding IsDirty}" Value="True">
+        <Setter TargetName="Dot" Property="Visibility" Value="Visible"/>
+      </DataTrigger>
+    </DataTemplate.Triggers>
+  </DataTemplate>
+
+  <!-- ── Read-only detail fact ────────────────────────────────────────────────
+       A label and the figure it names, for a panel that reports rather than edits. Distinct from
+       SettingRow, which carries an editable box — a read-only value in an input tells the reader
+       it can be changed here, and it cannot. -->
+  <DataTemplate x:Key="DetailFactRow">
+    <Border Padding="0,7" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource BorderBrush}">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" MinWidth="104"/><ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <TextBlock Grid.Column="0" Text="{Binding Label}" FontSize="11.5" Margin="0,0,10,0"
+                   Foreground="{DynamicResource TextMutedBrush}" VerticalAlignment="Center"/>
+        <TextBlock Grid.Column="1" Text="{Binding Value}" FontSize="12.5"
+                   Foreground="{DynamicResource TextBrush}" TextAlignment="Right"
+                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+      </Grid>
+    </Border>
+  </DataTemplate>
+
+  <!-- ── Stock status badge ───────────────────────────────────────────────────
+       Three states, and the difference between two of them matters: a bucket at zero that has
+       traded is history worth reading, while one that has never traded is noise. Negative is not a
+       state anything should be in — it means stock left that never arrived — so it takes the danger
+       tone rather than a quieter one. -->
+  <!-- ── MovementTypeBadge ─────────────────────────────────────────────────
+       What a ledger line did, at a glance. Same pill as the stock badge, keyed
+       off movement_type: stock in reads success, stock out reads danger, and
+       the two halves of a conversion read accent because neither is a gain or
+       a loss on their own.                                                     -->
+  <DataTemplate x:Key="MovementTypeBadge">
+    <Border x:Name="Chip" CornerRadius="999" Padding="9,2,9,3" BorderThickness="1"
+            HorizontalAlignment="Left" VerticalAlignment="Center"
+            Background="{DynamicResource SuccessSoftBrush}"
+            BorderBrush="{DynamicResource SuccessBorderBrush}">
+      <TextBlock x:Name="Word" FontSize="10.5" FontWeight="SemiBold"
+                 Foreground="{DynamicResource SuccessBrush}" Text="Intake"/>
+    </Border>
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding MovementType}" Value="CONVERT_IN">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+        <Setter TargetName="Word" Property="Text" Value="Converted in"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding MovementType}" Value="CONVERT_OUT">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+        <Setter TargetName="Word" Property="Text" Value="Converted out"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding MovementType}" Value="REJECTION">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource WarningBorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+        <Setter TargetName="Word" Property="Text" Value="Rejection"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding MovementType}" Value="SALE">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource DangerBorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+        <Setter TargetName="Word" Property="Text" Value="Sale"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding MovementType}" Value="ADJUST">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource DeskBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+        <Setter TargetName="Word" Property="Text" Value="Adjustment"/>
+      </DataTrigger>
+    </DataTemplate.Triggers>
+  </DataTemplate>
+
+  <DataTemplate x:Key="StockStatusBadge">
+    <Border x:Name="Chip" CornerRadius="999" Padding="10,2,10,3" BorderThickness="1"
+            HorizontalAlignment="Left" VerticalAlignment="Center"
+            Background="{DynamicResource SuccessSoftBrush}"
+            BorderBrush="{DynamicResource SuccessBorderBrush}">
+      <TextBlock x:Name="Word" FontSize="11" FontWeight="SemiBold"
+                 Foreground="{DynamicResource SuccessBrush}" Text="In stock"/>
+    </Border>
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding BalanceCt, Converter={StaticResource StockState}}" Value="Empty">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource DeskBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+        <Setter TargetName="Word" Property="Text" Value="Empty"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding BalanceCt, Converter={StaticResource StockState}}" Value="Low">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource WarningBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+        <Setter TargetName="Word" Property="Text" Value="Low"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding BalanceCt, Converter={StaticResource StockState}}" Value="Negative">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
+        <Setter TargetName="Chip" Property="BorderBrush" Value="{DynamicResource DangerBorderBrush}"/>
+        <Setter TargetName="Word" Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+        <Setter TargetName="Word" Property="Text" Value="Negative"/>
+      </DataTrigger>
+    </DataTemplate.Triggers>
+  </DataTemplate>
+
+</ResourceDictionary>

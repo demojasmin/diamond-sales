@@ -1,0 +1,88 @@
+<UserControl x:Class="SolitaireDesk.Views.ReceivablesView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:design="clr-namespace:SolitaireDesk.Design"
+             Background="{DynamicResource BgBrush}"
+             TextElement.Foreground="{DynamicResource TextBrush}"
+             TextElement.FontFamily="{StaticResource UiFont}"
+             TextElement.FontSize="13.5"
+             TextOptions.TextFormattingMode="Ideal">
+    <DockPanel>
+
+        <!-- Ageing summary -->
+        <Border DockPanel.Dock="Top" Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="24,18">
+            <StackPanel>
+                <Grid Margin="0,0,0,12">
+                    <StackPanel VerticalAlignment="Bottom">
+                        <TextBlock Text="TOTAL OUTSTANDING" Style="{StaticResource LabelCaps}"/>
+                        <TextBlock Text="₹2,58,03,647" Style="{StaticResource MonoText}" FontSize="26" FontWeight="SemiBold" Margin="0,6,0,0"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <StackPanel MinWidth="120" Margin="0,0,22,0">
+                            <StackPanel Orientation="Horizontal"><Border Width="8" Height="8" CornerRadius="2" Background="{DynamicResource SuccessBrush}" Margin="0,0,7,0"/><TextBlock Text="0–30 DAYS" Style="{StaticResource LabelCaps}"/></StackPanel>
+                            <TextBlock Text="₹12,15,000" Style="{StaticResource MonoText}" FontSize="15" FontWeight="SemiBold" Margin="0,6,0,0"/>
+                            <TextBlock Text="1 invoice" Style="{StaticResource MutedText}" FontSize="11" Margin="0,2,0,0"/>
+                        </StackPanel>
+                        <StackPanel MinWidth="120" Margin="0,0,22,0">
+                            <StackPanel Orientation="Horizontal"><Border Width="8" Height="8" CornerRadius="2" Background="{DynamicResource AccentBrush}" Margin="0,0,7,0"/><TextBlock Text="31–60 DAYS" Style="{StaticResource LabelCaps}"/></StackPanel>
+                            <TextBlock Text="₹42,80,120" Style="{StaticResource MonoText}" FontSize="15" FontWeight="SemiBold" Margin="0,6,0,0"/>
+                            <TextBlock Text="1 invoice" Style="{StaticResource MutedText}" FontSize="11" Margin="0,2,0,0"/>
+                        </StackPanel>
+                        <StackPanel MinWidth="120" Margin="0,0,22,0">
+                            <StackPanel Orientation="Horizontal"><Border Width="8" Height="8" CornerRadius="2" Background="{DynamicResource WarningBrush}" Margin="0,0,7,0"/><TextBlock Text="61–90 DAYS" Style="{StaticResource LabelCaps}"/></StackPanel>
+                            <TextBlock Text="₹31,90,300" Style="{StaticResource MonoText}" FontSize="15" FontWeight="SemiBold" Margin="0,6,0,0"/>
+                            <TextBlock Text="1 invoice" Style="{StaticResource MutedText}" FontSize="11" Margin="0,2,0,0"/>
+                        </StackPanel>
+                        <StackPanel MinWidth="120">
+                            <StackPanel Orientation="Horizontal"><Border Width="8" Height="8" CornerRadius="2" Background="{DynamicResource DangerBrush}" Margin="0,0,7,0"/><TextBlock Text="90+ DAYS" Style="{StaticResource LabelCaps}"/></StackPanel>
+                            <TextBlock Text="₹1,71,18,227" Style="{StaticResource MonoText}" FontSize="15" FontWeight="SemiBold" Margin="0,6,0,0"/>
+                            <TextBlock Text="3 invoices" Style="{StaticResource MutedText}" FontSize="11" Margin="0,2,0,0"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Grid>
+                <!-- Stacked bar -->
+                <Border Height="10" CornerRadius="999" ClipToBounds="True" Background="{DynamicResource Surface2Brush}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="47*"/>
+                            <ColumnDefinition Width="166*"/>
+                            <ColumnDefinition Width="124*"/>
+                            <ColumnDefinition Width="663*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Background="{DynamicResource SuccessBrush}"/>
+                        <Border Grid.Column="1" Background="{DynamicResource AccentBrush}"/>
+                        <Border Grid.Column="2" Background="{DynamicResource WarningBrush}"/>
+                        <Border Grid.Column="3" Background="{DynamicResource DangerBrush}"/>
+                    </Grid>
+                </Border>
+            </StackPanel>
+        </Border>
+
+        <!-- Grid -->
+        <DataGrid Style="{StaticResource DataGridStyle}" ItemsSource="{x:Static design:SampleData.Receivables}" Margin="8,0">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Invoice" Binding="{Binding No}" Width="136" ElementStyle="{StaticResource MonoCellText}"/>
+                <DataGridTextColumn Header="Buyer" Binding="{Binding Buyer}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                <DataGridTextColumn Header="Date" Binding="{Binding Date}" Width="96" ElementStyle="{StaticResource MutedCellText}"/>
+                <DataGridTextColumn Header="Due" Binding="{Binding Due}" Width="96" ElementStyle="{StaticResource MutedCellText}"/>
+                <DataGridTextColumn Header="Age" Binding="{Binding Age}" Width="86" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource DataGridNumericHeaderStyle}"/>
+                <DataGridTextColumn Header="Amount" Binding="{Binding Amount}" Width="130" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource DataGridNumericHeaderStyle}"/>
+                <DataGridTextColumn Header="Received" Binding="{Binding Received}" Width="126" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource DataGridNumericHeaderStyle}"/>
+                <DataGridTextColumn Header="Outstanding" Binding="{Binding Outstanding}" Width="130" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource DataGridNumericHeaderStyle}"/>
+                <DataGridTemplateColumn Header="Status" Width="104">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate><Label Style="{StaticResource Chip}" Tag="{Binding Chip}" Content="{Binding Chip}"/></DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Width="140">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Content="Record receipt" Style="{StaticResource SecondaryButton}" Height="26" FontSize="11.5" Padding="10,0" HorizontalAlignment="Right"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</UserControl>
