@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using DiamondCalc;
 using Microsoft.EntityFrameworkCore;
 
@@ -130,6 +130,13 @@ Check("CALC-10 forty paise outstanding is rounding dust, not a debt",
 Check("CALC-10 fifty-one paise is still a debt",
     Calc.IsOverdue(new DateOnly(2025, 12, 1), 0.51m, new DateOnly(2026, 7, 25)));
 
+// Which side of the boundary fifty paise itself falls on -- the tenth input of the
+// three-way table. Android tested `< 0.5` and so called this one open while this
+// engine and the views called it closed. `> 0.50` here, `> 0.50` in
+// v_invoice.is_overdue and v_receivables_ageing, `<= 0.50` in Calc.isSettled.
+Check("CALC-10 fifty paise exactly is settled, not owed",
+    !Calc.IsOverdue(new DateOnly(2025, 12, 1), 0.50m, new DateOnly(2026, 7, 25)));
+
 // ── CALC-11 · broker payable ────────────────────────────────────────────────
 // Pre-broker subtotal of Sale!Q3 is 141277.50; 1 % of it is 1412.775 → 1412.78
 Eq("CALC-11 broker payable uses the PRE-broker subtotal",
@@ -241,6 +248,187 @@ Check("SALES-001 NO 1 offers four sizes",
 
     DiamondDesktop.Catalogue.AllSizes.Remove(junk);
 }
+
+// A retired sieve (0035: 14+ holds 281.99 ct in Priya and 28.00 ct in Demo, so it is switched
+// off rather than deleted). It must vanish from everything that creates new work, and stay
+// everywhere history is read — the stock is still there, and figures nobody can see are not
+// preserved figures.
+{
+    var retired = new DiamondDesktop.Data.SizeBucket
+    { SizeId = 98, Code = "14+", SortOrder = 98, Active = false };
+    DiamondDesktop.Catalogue.AllSizes.Add(retired);
+
+    Check("SIZE · a retired sieve stays in AllSizes so history still resolves",
+        DiamondDesktop.Catalogue.AllSizes.Contains(retired));
+    Check("SIZE · but never reaches a picker",
+        !DiamondDesktop.Catalogue.ActiveSizes.Contains(retired),
+        string.Join(",", DiamondDesktop.Catalogue.ActiveSizes.Select(s => s.Code)));
+    Check("SIZE · nor the sales grid, with no grade picked",
+        !DiamondDesktop.Catalogue.SizesFor(null).Contains(retired));
+
+    // grade_size pairings are deliberately left alone by 0035, so the pairing check would still
+    // offer this size. Retirement has to win over the pairing, not read through it.
+    DiamondDesktop.Catalogue.SetGradeSizes(
+        [.. DiamondDesktop.Catalogue.AllSizes.Select(
+            s => new DiamondDesktop.Data.GradeSize { GradeId = GradeOf("NO II").GradeId, SizeId = s.SizeId })]);
+    Check("SIZE · a retired sieve still paired to a grade is still refused",
+        !DiamondDesktop.Catalogue.SizesFor(GradeOf("NO II")).Contains(retired));
+
+    Check("SIZE · and is reported as retired, not as import-only",
+        DiamondDesktop.Catalogue.IsRetiredSize("14+")
+        && !DiamondDesktop.Catalogue.IsSellableSize("14+"));
+
+    // A file printing the OTHER notation of a retired sieve must be recognised as the same one.
+    // Without this the popup offers to ADD a size the database will only ever restore, and it
+    // describes the wrong act to the person deciding.
+    Check("SIZE · a retired sieve is recognised through its other notation",
+        DiamondDesktop.Catalogue.IsRetiredSize("+14"),
+        $"14+ retired, +14 recognised = {DiamondDesktop.Catalogue.IsRetiredSize("+14")}");
+    Check("SIZE · and a live sieve is never mistaken for a retired one",
+        !DiamondDesktop.Catalogue.IsRetiredSize("6.5+")
+        && !DiamondDesktop.Catalogue.IsRetiredSize("+6.5"));
+
+    // The stock report resolves sizes by CODE, not through a picker, so it is the one screen
+    // that can still reach a retired sieve — deliberately, because its stock is real and must
+    // stay on the report. Reading it is fine; adjusting it is a new movement and is not.
+    var found = DiamondDesktop.Catalogue.AllSizes.FirstOrDefault(z => z.Code == "14+");
+    Check("SIZE · the report can still resolve a retired sieve to show its stock",
+        found is not null);
+    Check("SIZE · but the code path that adjusts it sees it as closed",
+        found is { Active: false });
+
+    DiamondDesktop.Catalogue.AllSizes.Remove(retired);
+    Check("SIZE · restoring it puts it back in the pickers",
+        DiamondDesktop.Catalogue.AllSizes.All(s => s.Active)
+        && DiamondDesktop.Catalogue.ActiveSizes.Count == DiamondDesktop.Catalogue.AllSizes.Count);
+
+    // Put the live pairings back — every check below this block reads them.
+    DiamondDesktop.Catalogue.SetGradeSizes(
+        from g in DiamondDesktop.Catalogue.Grades
+        from s in DiamondDesktop.Catalogue.AllSizes
+        where s.Code != "-2" || g.Code is "NO 1" or "NO 1 BB"
+        select new DiamondDesktop.Data.GradeSize { GradeId = g.GradeId, SizeId = s.SizeId });
+}
+// ── A sieve the file names and the catalogue lacks ──────────────────────────
+//
+// One rule decides this for all three importers, and it has to be the SAME rule the database
+// uses in public.sieve_key — that function is what makes add_size return an existing row rather
+// than create a twin. A C# rule that disagreed would either offer to add a sieve the database
+// then refuses, or agree to add one it happily twins.
+{
+    string? K(string s) => DiamondDesktop.StockFileImport.SizeKey(s);
+
+    Check("SIZEKEY · the sign may sit on either end",
+        K("6.5+") == K("+6.5") && K("6.5-") == K("-6.5")
+        && K("11+") == K("+11") && K("2-") == K("-2"));
+
+    Check("SIZEKEY · an unsigned size is the positive bucket",
+        K("6.5") == K("+6.5") && K("11") == K("+11"));
+
+    // The half that was missing entirely: 1/5 IS 0.2, by division, not by a lookup table.
+    Check("SIZEKEY · a fraction resolves to the decimal bucket",
+        K("1/5") == K("0.2") && K("1/4") == K("0.25"), $"1/5={K("1/5")} 0.2={K("0.2")}");
+    Check("SIZEKEY · and one that does not divide evenly keeps four places",
+        K("1/6") == "+0.1667" && K("1/3") == "+0.3333", $"{K("1/6")} {K("1/3")}");
+    Check("SIZEKEY · 1/6 and 1/3 are not the same sieve", K("1/6") != K("1/3"));
+
+    // "6.50" and "6.5" are one sieve. decimal keeps the scale it was parsed with, so without
+    // trimming these key apart and the catalogue's own code stops matching the sheet's.
+    Check("SIZEKEY · trailing zeros are notation, not precision",
+        K("6.50") == K("6.5") && K("+11.00") == K("+11"), $"{K("6.50")} vs {K("6.5")}");
+
+    Check("SIZEKEY · a word is not a size", K("Weight") is null && K("TOTAL") is null);
+    Check("SIZEKEY · and neither is a division by zero", K("1/0") is null);
+    // The workbooks really do print these. The database agreed with none of it before 0037,
+    // so add_size would have stored a sieve literally coded "'+18" whose key matched nothing —
+    // and the next sheet writing "+18" would have made a second row for the same sieve.
+    Check("SIZEKEY · Excel's text-forcing apostrophe is ignored", K("'+18") == K("+18"));
+    Check("SIZEKEY · so is a leading comma", K(",-2") == K("-2"));
+    Check("SIZEKEY · and a run of them, not just one",
+        K(",,+18") == K("+18") && K("', +18") == K("+18"), $"{K(",,+18")} {K("', +18")}");
+
+    Check("SIZECODE · what gets STORED loses the spreadsheet's punctuation",
+        DiamondDesktop.StockFileImport.CleanCode("'+18") == "+18"
+        && DiamondDesktop.StockFileImport.CleanCode(",-2") == "-2",
+        DiamondDesktop.StockFileImport.CleanCode("'+18"));
+    Check("SIZECODE · but a clean label is left exactly as printed",
+        DiamondDesktop.StockFileImport.CleanCode("1/6") == "1/6"
+        && DiamondDesktop.StockFileImport.CleanCode("6.5+") == "6.5+");
+
+    // The catalogue side of the same rule: every notation the sheets use must find its row.
+    var catalogue = DiamondDesktop.StockFileImport.SizeMap(["-2", "+6.5", "+11", "0.2", "0.25", "1/6"]);
+    foreach (var (printed, expected) in new[]
+             { ("2-", "-2"), ("6.5+", "+6.5"), ("11+", "+11"),
+               ("1/5", "0.2"), ("1/4", "0.25"), ("1/6", "1/6"), ("6.50", "+6.5") })
+        Check($"SIZEMAP · \"{printed}\" resolves to the existing \"{expected}\"",
+            DiamondDesktop.StockFileImport.SizeKey(printed) is { } k
+            && catalogue.TryGetValue(k, out string? got) && got == expected,
+            DiamondDesktop.StockFileImport.SizeKey(printed) is { } k2
+            && catalogue.TryGetValue(k2, out string? g2) ? g2 : "unresolved");
+
+    Check("SIZEMAP · a sieve genuinely absent stays unresolved",
+        DiamondDesktop.StockFileImport.SizeKey("+23") is { } miss && !catalogue.ContainsKey(miss));
+
+    // The eight labels the office actually writes, against the catalogue as it stands. Every one
+    // must land on a row that ALREADY EXISTS — none may be offered as new, because offering one
+    // is how a twin gets created. Spelled out as a set rather than folded into the loop above so
+    // that if the office adds a ninth, the gap is a failing line and not a silent omission.
+    string[] asked = ["2-", "6.5-", "6.5+", "11+", "1/6", "1/5", "1/4", "1/3"];
+    var live = DiamondDesktop.StockFileImport.SizeMap(
+        ["-2", "-6.5", "+6.5", "+11", "0.2", "0.25", "1/6", "1/3"]);
+
+    foreach (string label in asked)
+        Check($"ASKED · \"{label}\" resolves to an existing sieve, never a new one",
+            DiamondDesktop.StockFileImport.SizeKey(label) is { } k && live.ContainsKey(k),
+            DiamondDesktop.StockFileImport.SizeKey(label) is { } k2 && live.TryGetValue(k2, out string? r)
+                ? r : "WOULD BE OFFERED AS NEW");
+
+    // Eight labels, eight different sieves — six of them written the other way round from the
+    // catalogue's own spelling, and two (1/6, 1/3) spelled identically. None is a synonym of
+    // another, so a collision here would mean sieve_key is folding two real sieves into one.
+    Check("ASKED · the eight name eight distinct sieves, none folded together",
+        asked.Select(DiamondDesktop.StockFileImport.SizeKey).Distinct().Count() == 8
+        && asked.Select(a => live[DiamondDesktop.StockFileImport.SizeKey(a)!]).Distinct().Count() == 8,
+        string.Join(",", asked.Select(a => live[DiamondDesktop.StockFileImport.SizeKey(a)!])));
+
+    // The same eight with a spreadsheet's punctuation in front, which is how they arrive.
+    foreach (string label in asked)
+        Check($"ASKED · and still does when Excel writes it as \"'{label}\"",
+            DiamondDesktop.StockFileImport.SizeKey("'" + label) is { } k && live.ContainsKey(k),
+            DiamondDesktop.StockFileImport.SizeKey("'" + label) ?? "unparsed");
+}
+
+// The offer itself: what gets shown, and — the costly half — what does NOT get shown twice.
+{
+    var found = new List<DiamondDesktop.UnknownSize>();
+    DiamondDesktop.StockFileImport.NoteUnknownSize(found, "1/5", 10m);
+    DiamondDesktop.StockFileImport.NoteUnknownSize(found, "0.2", 5m);
+    Check("UNKNOWN · two spellings of one missing sieve are offered ONCE",
+        found.Count == 1, string.Join(",", found.Select(u => u.Label)));
+    Check("UNKNOWN · under the spelling the file printed first",
+        found[0].Label == "1/5", found[0].Label);
+    Check("UNKNOWN · with the weight of both rows behind it",
+        found[0].Carats == 15m, $"{found[0].Carats}");
+
+    DiamondDesktop.StockFileImport.NoteUnknownSize(found, "+23", 2m);
+    Check("UNKNOWN · a genuinely different sieve is offered separately",
+        found.Count == 2 && found[1].Label == "+23");
+
+    Check("UNKNOWN · nothing is offered when the file names nothing new",
+        new List<DiamondDesktop.UnknownSize>().Count == 0);
+}
+
+// The sales workbook resolves sizes through its own map. It must agree with the stock side, or
+// the same file would import one way as stock and another as sales.
+{
+    var sale = DiamondDesktop.SaleFileImport.SizeAliasMap(["-2", "+6.5", "+11", "0.2", "1/6"]);
+    Check("SALESMAP · the literal spellings still resolve exactly as before",
+        sale["+6.5"] == "+6.5" && sale["6.5+"] == "+6.5" && sale["2-"] == "-2");
+    Check("SALESMAP · and a fraction now finds its decimal bucket",
+        DiamondDesktop.StockFileImport.SizeKey("1/5") is { } k && sale.TryGetValue(k, out string? v)
+        && v == "0.2", "1/5");
+}
+
 Check("SALES-001 NO II offers three — the -2 bucket is not on the list",
     !DiamondDesktop.Catalogue.SizesFor(GradeOf("NO II")).Contains(uiMinus2));
 

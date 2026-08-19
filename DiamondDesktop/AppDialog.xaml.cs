@@ -20,7 +20,12 @@ public partial class AppDialog : Window
 {
     public enum Tone { Warning, Info }
 
+    /// Which button was pressed. Cancel is also what closing the window means, so a dialog that is
+    /// dismissed can never be read as a choice.
+    public enum Answer { Cancel, Primary, Tertiary }
+
     private bool _primaryChosen;
+    private Answer _answer = Answer.Cancel;
 
     private AppDialog() => InitializeComponent();
 
@@ -40,6 +45,23 @@ public partial class AppDialog : Window
         var dialog = Build(owner, Tone.Info, title, headline, subhead, facts, null, listTitle,
                            bullets, "Done", null, note);
         dialog.ShowDialog();
+    }
+
+    /// <summary>
+    /// Asks a question with two answers and a way out — "replace this" or "add to it", neither of
+    /// which is a no. Returns Cancel if the dialog is closed or escaped.
+    /// </summary>
+    public static Answer Choose(Window owner, string title, string headline, string? subhead,
+                                IEnumerable<(string Label, string Value)> facts,
+                                string? emphasis, string? listTitle, IEnumerable<string>? bullets,
+                                string primaryText, string tertiaryText, string cancelText)
+    {
+        var d = Build(owner, Tone.Warning, title, headline, subhead, facts, emphasis, listTitle,
+                      bullets, primaryText, cancelText, null);
+        d.TertiaryButton.Content = tertiaryText;
+        d.TertiaryButton.Visibility = Visibility.Visible;
+        d.ShowDialog();
+        return d._answer;
     }
 
     private bool ShowThenAnswer()
@@ -124,6 +146,13 @@ public partial class AppDialog : Window
     private void Primary_Click(object sender, RoutedEventArgs e)
     {
         _primaryChosen = true;
+        _answer = Answer.Primary;
+        Close();
+    }
+
+    private void Tertiary_Click(object sender, RoutedEventArgs e)
+    {
+        _answer = Answer.Tertiary;
         Close();
     }
 

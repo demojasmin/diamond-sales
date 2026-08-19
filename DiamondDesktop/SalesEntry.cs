@@ -16,6 +16,36 @@ public static class Catalogue
     public static ObservableCollection<Grade> Grades { get; } = [];
     public static ObservableCollection<SizeBucket> AllSizes { get; } = [];
 
+    /// <summary>
+    /// The sizes new work may be booked against — AllSizes minus the retired ones.
+    ///
+    /// Two collections rather than one filtered at the point of use, because the pickers bind to
+    /// this ONCE at load and the comment above holds: a list that gets replaced rather than filled
+    /// in place leaves every bound ComboBox showing the catalogue as it was at startup. A LINQ
+    /// Where would hand each of them a dead snapshot.
+    ///
+    /// AllSizes keeps every row on purpose. It resolves size_id to a code for the price grid and
+    /// builds the stock report's columns, and stock under a retired sieve still exists — hiding it
+    /// from the report would be preserving figures nobody can see.
+    ///
+    /// Maintained as a projection of AllSizes rather than filled alongside it. Filling both meant
+    /// every caller that touched one had to remember the other, and the first one that forgot was
+    /// the test harness — which seeds AllSizes directly and left the sales grid offering no sizes
+    /// at all. A rule the code enforces beats a rule everybody has to remember.
+    /// </summary>
+    public static ObservableCollection<SizeBucket> ActiveSizes { get; } = [];
+
+    static Catalogue()
+    {
+        // ponytail: rebuilds the whole list per change — the catalogue is a dozen sieves, and it
+        // is written twice a session. Index the delta if that ever stops being true.
+        AllSizes.CollectionChanged += (_, _) =>
+        {
+            ActiveSizes.Clear();
+            foreach (var s in AllSizes.Where(s => s.Active)) ActiveSizes.Add(s);
+        };
+    }
+
     public static readonly IReadOnlyList<string> DocTypes = ["BILL"];
 
     /// Every invoice is billed in INR — there is no currency picker on the entry screen, but
@@ -81,17 +111,34 @@ public static class Catalogue
     /// <summary>Whether any grade trades this size at all. See <see cref="_sellableSizes"/>.</summary>
     public static bool IsSellableSize(string code) =>
         _sellableSizes.Count == 0
-        || AllSizes.Any(s => s.Code == code && _sellableSizes.Contains(s.SizeId));
+        || AllSizes.Any(s => s.Code == code && s.Active && _sellableSizes.Contains(s.SizeId));
+
+    /// <summary>
+    /// Whether a sieve has been retired: still in the catalogue so history reads, closed to new
+    /// work. Distinct from "import only" — that is a size no grade sells, which is a statement
+    /// about the grade pairings, not about whether the office still uses the sieve at all.
+    /// </summary>
+    /// <summary>
+    /// Matched on the sieve key, not the text, so a file printing "6.5+" recognises the retired
+    /// "+6.5" as the same sieve. Without that the import offers to ADD a size the database will
+    /// only ever restore, and the popup describes the wrong act.
+    /// </summary>
+    public static bool IsRetiredSize(string printed) =>
+        AllSizes.Any(s => !s.Active
+                          && StockFileImport.SizeKey(s.Code) == StockFileImport.SizeKey(printed));
 
     public static IReadOnlyList<SizeBucket> SizesFor(Grade? grade)
     {
-        if (_gradeSizes.Count == 0) return AllSizes;
+        // ActiveSizes, not AllSizes: a retired sieve may still be paired in grade_size — 0035
+        // switches the size off and leaves the pairings alone — so the pairing check below would
+        // happily offer it. Nothing on the sales screen may write to a retired size.
+        if (_gradeSizes.Count == 0) return ActiveSizes;
 
         var allowed = grade is not null && _gradeSizes.TryGetValue(grade.GradeId, out var forGrade)
             ? forGrade
             : _sellableSizes;
 
-        return AllSizes.Where(s => allowed.Contains(s.SizeId)).ToList();
+        return ActiveSizes.Where(s => allowed.Contains(s.SizeId)).ToList();
     }
 }
 
@@ -141,6 +188,30 @@ public sealed class SaleLine : Notifier
     }
 
     public IReadOnlyList<SizeBucket> AllowedSizes => Catalogue.SizesFor(_grade);
+
+    /// <summary>
+    /// The catalogue was reloaded underneath this line.
+    ///
+    /// Two things go wrong without this. AllowedSizes is a computed property that only announces
+    /// itself when Grade is set, so a sieve added or retired since sign-in never reaches the
+    /// picker. And the reload replaces every Grade and SizeBucket with a new object while the
+    /// line still holds the old one — the pickers bind SelectedItem by REFERENCE, so both cells
+    /// would blank out and a half-typed line would look like lost work.
+    ///
+    /// Re-pointed by code rather than by id, because a size that was deleted and created again
+    /// keeps its code and not its id, and the code is what the person typed against.
+    /// </summary>
+    public void CatalogueChanged()
+    {
+        if (_grade is { } g)
+            _grade = Catalogue.Grades.FirstOrDefault(x => x.Code == g.Code) ?? _grade;
+        if (_size is { } s)
+            _size = Catalogue.AllSizes.FirstOrDefault(x => x.Code == s.Code) ?? _size;
+
+        Raise(nameof(Grade));
+        Raise(nameof(AllowedSizes));
+        Raise(nameof(Size));
+    }
 
     public SizeBucket? Size { get => _size; set => Set(ref _size, value); }
     public decimal GrossWeightCt { get => _grossWeightCt; set => Set(ref _grossWeightCt, value); }
@@ -273,6 +344,12 @@ public sealed class InvoiceEntry : Notifier
     {
         Lines.CollectionChanged += OnLinesChanged;
         Lines.Add(new SaleLine());
+    }
+
+    /// <summary>Tell every line the catalogue was reloaded. See <see cref="SaleLine.CatalogueChanged"/>.</summary>
+    public void CatalogueChanged()
+    {
+        foreach (var line in Lines) line.CatalogueChanged();
     }
 
     public ObservableCollection<SaleLine> Lines { get; } = [];

@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -31,15 +31,28 @@ public static class Outbox
     /// "1 held — needs attention" for an import nobody had made. A test that can write to the
     /// user's live state is a test that can lie to the user.
     /// </summary>
-    private static readonly string DbPath =
+    /// <summary>
+    /// ONE QUEUE PER PROJECT, named after the workspace's ref.
+    ///
+    /// A queued write carries grade_id and size_id values that mean something only in the project
+    /// it was composed against. Replayed into the other one it would either fail on a foreign key
+    /// or -- far worse -- land silently on a DIFFERENT grade that happens to share the id. The two
+    /// databases number their catalogues independently, so that is not a remote possibility.
+    ///
+    /// A property, not a field: the workspace is not known when this type is first touched, and the
+    /// queue is only ever read or written after somebody has signed in.
+    /// </summary>
+    private static string DbPath =>
         Environment.GetEnvironmentVariable("SOLITAIREDESK_OUTBOX") is { Length: > 0 } custom
             ? custom
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                           "SolitaireDesk", "outbox.db");
+                           "SolitaireDesk", $"outbox-{Db.Active.Ref}.db");
 
     private static readonly HttpClient Http = new();
     private static readonly SemaphoreSlim ReplayLock = new(1, 1);
-    private static readonly Task Ready = InitAsync();
+    /// Each queue file is prepared once, the first time it is opened. Keyed by path because there is
+    /// now more than one of them.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task> Prepared = new();
 
     /// Raised off the UI thread — subscribers must marshal.
     public static event Action<int>? PendingChanged;
@@ -235,16 +248,17 @@ public static class Outbox
 
     private static async Task<SqliteConnection> OpenAsync()
     {
-        await Ready;
-        var db = new SqliteConnection($"Data Source={DbPath}");
+        string path = DbPath;
+        await Prepared.GetOrAdd(path, InitAsync);
+        var db = new SqliteConnection($"Data Source={path}");
         await db.OpenAsync();
         return db;
     }
 
-    private static async Task InitAsync()
+    private static async Task InitAsync(string path)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
-        await using var db = new SqliteConnection($"Data Source={DbPath}");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await using var db = new SqliteConnection($"Data Source={path}");
         await db.OpenAsync();
 
         var cmd = db.CreateCommand();

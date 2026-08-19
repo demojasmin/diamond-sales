@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
 using DiamondDesktop.Data;
@@ -85,9 +85,27 @@ public sealed class IdleTimeout
         // fifteen-minute timeout it means relaunching the app after every cup of tea, and the
         // person who has to do that turns the timeout off — which is how a security setting stops
         // being one. The session is already gone; only the window is being reused.
+        // Which project the window behind this one is showing. If the next sign-in lands on a
+        // different one, none of what is on screen belongs to it.
+        string showing = Db.Active.Ref;
+
         var login = new LoginWindow { Owner = _owner };
         if (login.ShowDialog() == true && Db.CurrentUser is not null)
         {
+            // A DIFFERENT database. The window behind is full of the previous one's figures, and so
+            // are the static catalogue and every tab's cache -- reloading the current tab would
+            // leave the rest quietly wrong, which is the worst version of this.
+            //
+            // Restarting is blunt and it is certain. It happens only when somebody signs in as
+            // another company after a timeout, which is rare enough to be worth a relaunch and far
+            // too dangerous to paper over by reloading whatever we remembered to reload.
+            if (Db.Active.Ref != showing)
+            {
+                if (Environment.ProcessPath is { } exe) System.Diagnostics.Process.Start(exe);
+                Application.Current.Shutdown();
+                return;
+            }
+
             _lastInput = DateTime.UtcNow;
             _expired = false;
             _timer.Start();

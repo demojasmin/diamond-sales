@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Supabase.Postgrest.Exceptions;
 using static Supabase.Postgrest.Constants;
 
@@ -16,8 +16,13 @@ public sealed record PostOutcome(bool Ok, bool NeedsOverride, string? InvoiceNo,
     List<Shortfall> Shortfalls);
 
 /// <summary>What a stock import landed, for the report shown afterwards.</summary>
+/// <param name="BatchId">
+/// What the database stamped on this import's parcels. Read back from the function rather than sent
+/// and assumed, so the id shown afterwards is provably the id in the table.
+/// </param>
 public sealed record StockImportResult(int Parcels, int ReplacedParcels,
-                                       decimal TotalCarats, decimal TotalValue);
+                                       decimal TotalCarats, decimal TotalValue,
+                                       Guid? BatchId = null);
 
 /// <summary>
 /// A stock write that either failed, or went through with something worth saying. The warning
@@ -36,6 +41,15 @@ public static class Repo
     /// can outgrow that has to page, or it silently shows part of the truth.
     private const int PageSize = 1000;
 
+    // Column names, once each. They are strings because PostgREST names columns in the URL, and a
+    // typo in one is a filter that silently matches nothing rather than a compile error.
+    private const string InvoiceIdColumn = "invoice_id";
+    private const string MovementIdColumn = "movement_id";
+    private const string GradeIdColumn = "grade_id";
+    private const string SizeIdColumn = "size_id";
+    private const string GradeCodeColumn = "grade_code";
+    private const string SizeCodeColumn = "size_code";
+
     /// <summary>
     /// Reads a query to the end, a page at a time. The query must carry an ordering that breaks
     /// ties, otherwise rows can repeat or vanish between requests.
@@ -45,11 +59,16 @@ public static class Repo
         where T : Supabase.Postgrest.Models.BaseModel, new()
     {
         var all = new List<T>();
-        for (int offset = 0; ; offset += PageSize)
+        // A while, not a for: the stop condition is the size of the page just fetched, which no
+        // counter in a for-header can test. A short page is the last page — PostgREST gives no
+        // other sign that the end has been reached.
+        int offset = 0;
+        while (true)
         {
             var page = (await query().Range(offset, offset + PageSize - 1).Get()).Models;
             all.AddRange(page);
             if (page.Count < PageSize) return all;
+            offset += PageSize;
         }
     }
 
@@ -81,7 +100,7 @@ public static class Repo
 
     public static async Task<List<PriceList>> PricesAsync() =>
         (await Db.Client.From<PriceList>()
-            .Order("grade_id", Ordering.Ascending).Order("size_id", Ordering.Ascending)
+            .Order(GradeIdColumn, Ordering.Ascending).Order(SizeIdColumn, Ordering.Ascending)
             .Order("effective_from", Ordering.Descending).Get()).Models;
 
     // Paged for the same reason as ImportedInvoiceIdsAsync: 1370 invoices exist after an import and
@@ -89,7 +108,7 @@ public static class Repo
     // that quietly drops the oldest 370 invoices is worse than one that is slow.
     public static async Task<List<VInvoice>> InvoicesAsync() =>
         await AllPagesAsync(() => Db.Client.From<VInvoice>()
-            .Order("invoice_date", Ordering.Descending).Order("invoice_id", Ordering.Descending));
+            .Order("invoice_date", Ordering.Descending).Order(InvoiceIdColumn, Ordering.Descending));
 
     /// <summary>
     /// Every posted sales line in a date range, paged to the end. The dashboard's grade filter
@@ -106,7 +125,7 @@ public static class Repo
             .Order("line_id", Ordering.Ascending));
 
     public static async Task<List<VSalesLine>> LinesAsync(long invoiceId) =>
-        (await Db.Client.From<VSalesLine>().Filter("invoice_id", Operator.Equals, invoiceId)
+        (await Db.Client.From<VSalesLine>().Filter(InvoiceIdColumn, Operator.Equals, invoiceId)
             .Order("line_id", Ordering.Ascending).Get()).Models;
 
     // size_id, not size_code: the codes sort as text, which puts "+11" before "+6.5" and reads as
@@ -114,7 +133,7 @@ public static class Repo
     // +6.5, +11), the same ordering PricesAsync already uses.
     public static async Task<List<VStockPosition>> StockAsync() =>
         (await Db.Client.From<VStockPosition>()
-            .Order("grade_code", Ordering.Ascending).Order("size_id", Ordering.Ascending).Get()).Models;
+            .Order(GradeCodeColumn, Ordering.Ascending).Order(SizeIdColumn, Ordering.Ascending).Get()).Models;
 
     /// The grade × size buckets that have any ledger entry at all, for the Stock page's
     /// "hide empty buckets" filter. Balance alone cannot answer this: a bucket sold down to zero,
@@ -131,17 +150,59 @@ public static class Repo
     /// reported the truncated count as fact. movement_id breaks ties so pages cannot overlap.
     public static async Task<List<VStockMovement>> MovementsAsync(string gradeCode, string sizeCode) =>
         await AllPagesAsync(() => Db.Client.From<VStockMovement>()
-            .Filter("grade_code", Operator.Equals, gradeCode)
-            .Filter("size_code", Operator.Equals, sizeCode)
-            .Order("movement_date", Ordering.Descending).Order("movement_id", Ordering.Descending));
+            .Filter(GradeCodeColumn, Operator.Equals, gradeCode)
+            .Filter(SizeCodeColumn, Operator.Equals, sizeCode)
+            .Order("movement_date", Ordering.Descending).Order(MovementIdColumn, Ordering.Descending));
+
+    /// <summary>
+    /// Manual adjustments -- the corrections someone typed, as opposed to the movements a sale or
+    /// an import wrote. Read from the TABLE rather than v_stock_movement because the view does not
+    /// expose created_by, and "who changed this" is the whole point of showing them.
+    ///
+    /// Filtered server side. No new table: an adjustment has always been an ordinary ledger row.
+    /// </summary>
+    public static async Task<List<StockMovement>> ManualAdjustmentsAsync() =>
+        await AllPagesAsync(() => Db.Client.From<StockMovement>()
+            .Filter("movement_type", Operator.Equals, Movement.ADJUST)
+            .Filter("ref_type", Operator.Equals, "manual")
+            .Order(MovementIdColumn, Ordering.Descending));
+
+    /// <summary>
+    /// The movements the last stock import placed -- what the workbook said when it was imported.
+    ///
+    /// Same shape as RejectionsAsync: an existing view, filtered server side, no new table and no
+    /// new calculation. The office reads a BALANCE STOCK figure off their sheet and the app shows
+    /// a different one; this is the first of those two numbers, so the screen can show both and
+    /// the difference stops looking like a fault.
+    /// </summary>
+    public static async Task<List<VStockMovement>> ImportedStockAsync() =>
+        await AllPagesAsync(() => Db.Client.From<VStockMovement>()
+            .Filter("ref_type", Operator.Equals, StockImportRef)
+            .Order(MovementIdColumn, Ordering.Descending));
+
+    /// <summary>
+    /// Every REJECTION movement, filtered in the DATABASE rather than after the fact.
+    ///
+    /// There is no stored rejection total and no view that offers one -- v_stock_position carries
+    /// balances, not movement types -- so the figure is the sum of these rows. Filtering server
+    /// side keeps the read at the rejections instead of the whole ledger, which matters once the
+    /// migration lands and this table is measured in thousands.
+    ///
+    /// Both origins are included: a rejection taken off an invoice line (ref_type sales_line) and
+    /// one recorded by hand on Intake and movements. Both are carats that left stock as rejected.
+    /// </summary>
+    public static async Task<List<VStockMovement>> RejectionsAsync() =>
+        await AllPagesAsync(() => Db.Client.From<VStockMovement>()
+            .Filter("movement_type", Operator.Equals, Movement.REJECTION)
+            .Order(MovementIdColumn, Ordering.Descending));
 
     public static async Task<List<VReceivablesAgeing>> ReceivablesAsync() =>
         await AllPagesAsync(() => Db.Client.From<VReceivablesAgeing>()
-            .Order("due_date", Ordering.Ascending).Order("invoice_id", Ordering.Ascending));
+            .Order("due_date", Ordering.Ascending).Order(InvoiceIdColumn, Ordering.Ascending));
 
     public static async Task<List<VReconciliation>> ReconciliationAsync() =>
         (await Db.Client.From<VReconciliation>()
-            .Order("grade_code", Ordering.Ascending).Order("size_code", Ordering.Ascending).Get()).Models;
+            .Order(GradeCodeColumn, Ordering.Ascending).Order(SizeCodeColumn, Ordering.Ascending).Get()).Models;
 
     // ---------- Excel import (docs/08 §4) ----------
 
@@ -149,7 +210,6 @@ public static class Repo
     /// next_invoice_no(), so the two series can never overlap and a re-import can find its own
     /// previous rows without touching anything a user typed.
     public const string ImportedPrefix = "MIG-";
-    private const string InvoiceIdColumn = "invoice_id";
 
     /// <summary>
     /// Whether an invoice came from a workbook rather than from the entry screen. The number is
@@ -161,21 +221,12 @@ public static class Repo
 
     /// Unpaged, this silently missed 366 of 1366 imported invoices: a re-import then deleted 1000,
     /// inserted 1366, and left the remainder behind as duplicate MIG- numbers.
-    public static async Task<List<long>> ImportedInvoiceIdsAsync()
-    {
-        var ids = new List<long>();
-        for (int offset = 0; ; offset += PageSize)
-        {
-            var page = (await Db.Client.From<ImportedInvoice>()
-                .Filter("invoice_no", Operator.Like, ImportedPrefix + "%")
-                .Select("invoice_id")
-                .Order("invoice_id", Ordering.Ascending)
-                .Range(offset, offset + PageSize - 1).Get()).Models;
-
-            ids.AddRange(page.Select(i => i.InvoiceId));
-            if (page.Count < PageSize) return ids;
-        }
-    }
+    public static async Task<List<long>> ImportedInvoiceIdsAsync() =>
+        (await AllPagesAsync(() => Db.Client.From<ImportedInvoice>()
+            .Filter("invoice_no", Operator.Like, ImportedPrefix + "%")
+            .Select(InvoiceIdColumn)
+            .Order(InvoiceIdColumn, Ordering.Ascending)))
+        .Select(i => i.InvoiceId).ToList();
 
     /// <summary>
     /// Clears a previous import: receipts, then lines, then the invoices themselves — children
@@ -330,7 +381,7 @@ public static class Repo
                 // "is this still editable" Postgres' decision, not a stale read's — zero rows is the refusal.
                 id = d.InvoiceId.Value;
                 var updated = await Db.Client.From<SalesInvoice>()
-                    .Filter("invoice_id", Operator.Equals, id)
+                    .Filter(InvoiceIdColumn, Operator.Equals, id)
                     .Filter("status", Operator.Equals, InvoiceStatus.DRAFT)
                     .Set(x => x.InvoiceDate, d.InvoiceDate)
                     .Set(x => x.BuyerId, d.BuyerId)
@@ -345,7 +396,7 @@ public static class Repo
                 if (updated.Models.Count == 0)
                     throw new InvalidOperationException("This invoice is no longer an editable draft.");
 
-                await Db.Client.From<SalesLine>().Filter("invoice_id", Operator.Equals, id).Delete();
+                await Db.Client.From<SalesLine>().Filter(InvoiceIdColumn, Operator.Equals, id).Delete();
             }
 
             if (d.Lines.Count > 0)
@@ -371,6 +422,8 @@ public static class Repo
         }
     }
 
+    private const string NotEnoughStock = "Not enough stock for this invoice.";
+
     public static async Task<PostOutcome> PostAsync(long invoiceId, bool over = false)
     {
         try
@@ -378,50 +431,62 @@ public static class Repo
             var res = await Db.Client.Rpc("post_invoice",
                 new Dictionary<string, object?> { ["p_invoice_id"] = invoiceId, ["p_override"] = over });
 
-            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(res.Content) ? "{}" : res.Content!);
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(res.Content) ? "{}" : res.Content);
             var r = doc.RootElement;
 
             var ok = r.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.True;
             var needs = r.TryGetProperty("needs_override", out var nEl) && nEl.ValueKind == JsonValueKind.True;
+            List<Shortfall> shortfalls = r.TryGetProperty("shortfalls", out var sf) ? Shortfalls(sf) : [];
 
-            List<Shortfall> shortfalls = [];
-            if (r.TryGetProperty("shortfalls", out var sf) && sf.ValueKind == JsonValueKind.Array)
-                shortfalls = [.. sf.EnumerateArray().Select(x => new Shortfall(
-                    Str(x, "grade_code") ?? "", Str(x, "size_code") ?? "",
-                    Num(x, "balance_ct"), Num(x, "needed_ct")))];
-
-            var message = ok ? null
-                : needs ? "Not enough stock for this invoice."
-                : Str(r, "message") ?? "Posting refused.";
-
-            return new PostOutcome(ok, needs, Str(r, "invoice_no"), message, shortfalls);
+            return new PostOutcome(ok, needs, Str(r, "invoice_no"), PostMessage(ok, needs, r), shortfalls);
         }
         catch (Exception e)
         {
-            // Under negative_stock = block the function RAISES rather than returning
-            // needs_override, so the shortfalls arrive inside the exception text as
-            // "Posting would take stock negative: [ ... ]". Left alone the user is shown raw
-            // jsonb; the figures are all there, so lift them out and report them the same way
-            // the warn path already does.
             string text = Err(e);
-            int bracket = text.IndexOf('[');
-            if (bracket >= 0 && text.Contains("stock negative", StringComparison.OrdinalIgnoreCase))
-            {
-                try
-                {
-                    using var doc = JsonDocument.Parse(text[bracket..]);
-                    var shortfalls = doc.RootElement.EnumerateArray().Select(x => new Shortfall(
-                        Str(x, "grade_code") ?? "", Str(x, "size_code") ?? "",
-                        Num(x, "balance_ct"), Num(x, "needed_ct"))).ToList();
-
-                    if (shortfalls.Count > 0)
-                        return new PostOutcome(false, false, null,
-                            "Not enough stock for this invoice.", shortfalls);
-                }
-                catch (JsonException) { /* fall through to the raw text */ }
-            }
-            return new PostOutcome(false, false, null, text, []);
+            return RaisedShortfalls(text) ?? new PostOutcome(false, false, null, text, []);
         }
+    }
+
+    /// Nothing to say when it posted. When stock is the reason, the shortfall wording — the grid
+    /// underneath carries the detail. Otherwise whatever the database said.
+    private static string? PostMessage(bool ok, bool needsOverride, JsonElement r)
+    {
+        if (ok) return null;
+        if (needsOverride) return NotEnoughStock;
+        return Str(r, "message") ?? "Posting refused.";
+    }
+
+    /// <summary>The shortfall array, from wherever it arrived. Empty for anything that is not one.</summary>
+    private static List<Shortfall> Shortfalls(JsonElement array) =>
+        array.ValueKind != JsonValueKind.Array
+            ? []
+            : [.. array.EnumerateArray().Select(x => new Shortfall(
+                Str(x, "grade_code") ?? "", Str(x, "size_code") ?? "",
+                Num(x, "balance_ct"), Num(x, "needed_ct")))];
+
+    /// <summary>
+    /// Under negative_stock = block the function RAISES rather than returning needs_override, so the
+    /// shortfalls arrive inside the exception text as "Posting would take stock negative: [ ... ]".
+    /// Left alone the user is shown raw jsonb; the figures are all there, so lift them out and
+    /// report them the same way the warn path already does.
+    ///
+    /// Null when this was some other failure, which the caller reports as its own text.
+    /// </summary>
+    private static PostOutcome? RaisedShortfalls(string text)
+    {
+        int bracket = text.IndexOf('[');
+        if (bracket < 0 || !text.Contains("stock negative", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(text[bracket..]);
+            var shortfalls = Shortfalls(doc.RootElement);
+            return shortfalls.Count > 0
+                ? new PostOutcome(false, false, null, NotEnoughStock, shortfalls)
+                : null;
+        }
+        catch (JsonException) { return null; }      // fall back to the raw text
     }
 
     public static async Task<string?> CancelAsync(long invoiceId, string reason)
@@ -564,15 +629,26 @@ public static class Repo
         catch (Exception e) { return Wrote(e); }
     }
 
+    /// <param name="pricePerCt">
+    /// What the added carats are worth. Only read when the weight is POSITIVE, because
+    /// v_stock_position averages cost over inward movements only — a rate on a removal would be
+    /// stored and never looked at.
+    ///
+    /// Supplying it is not optional in spirit. Adding carats at no stated rate is what drove
+    /// NO 1 BB × 14+ from 58,000 to 16,153 a carat, and post_invoice stamps sales_line.cost_per_ct
+    /// from that same average, so the damage does not stop at one report. Null still goes through
+    /// the old function, which is how the Intake page's own adjustment has always behaved; 0028
+    /// refuses it on the new one.
+    /// </param>
     public static async Task<WriteResult> AdjustAsync(long gradeId, long sizeId, decimal signedWeightCt, string reason,
-        Guid? clientRef = null)
+        Guid? clientRef = null, decimal? pricePerCt = null)
     {
         // Returned, not thrown: every sibling reports failure this way, and callers are async void
         // click handlers where an escaping exception takes the whole app down.
         if (string.IsNullOrWhiteSpace(reason)) return new WriteResult("An adjustment reason is required.");
         try
         {
-            var res = await Db.Client.Rpc("adjust_stock", new Dictionary<string, object?>
+            var args = new Dictionary<string, object?>
             {
                 ["p_grade_id"] = gradeId,
                 ["p_size_id"] = sizeId,
@@ -580,7 +656,32 @@ public static class Repo
                 ["p_reason"] = reason,
                 ["p_date"] = D(Today),
                 ["p_client_ref"] = (clientRef ?? Guid.NewGuid()).ToString()
-            });
+            };
+
+            Supabase.Postgrest.Responses.BaseResponse res;
+            if (pricePerCt is null)
+            {
+                res = await Db.Client.Rpc("adjust_stock", args);
+            }
+            else
+            {
+                args["p_price_per_ct"] = pricePerCt;
+                // Falls back for the same reason the stock import does: the app may be newer than
+                // the database. Without 0028 the rate cannot be recorded, and an adjustment that
+                // silently drops it is the bug this argument exists to fix — so it says so.
+                try
+                {
+                    res = await Db.Client.Rpc("adjust_stock_at_cost", args);
+                }
+                catch (Exception e) when (IsMissingFunction(e))
+                {
+                    return new WriteResult(
+                        "This database cannot record the rate on an adjustment yet, and recording "
+                        + "the weight without it would wreck this bucket's average cost. Apply "
+                        + "migration 0028 and try again.");
+                }
+            }
+
             return Outcome(res.Content);
         }
         catch (Exception e) { return Wrote(e); }
@@ -617,21 +718,14 @@ public static class Repo
         catch (Exception) { return null; }
     }
 
-    public static async Task<List<long>> ImportedStockIdsAsync()
-    {
-        var ids = new List<long>();
-        for (int offset = 0; ; offset += PageSize)
-        {
-            var page = (await Db.Client.From<StockMovement>()
-                .Filter("ref_type", Operator.Equals, StockImportRef)
-                .Select("movement_id,ref_id")
-                .Order("movement_id", Ordering.Ascending)
-                .Range(offset, offset + PageSize - 1).Get()).Models;
-
-            ids.AddRange(page.Where(m => m.RefId.HasValue).Select(m => m.RefId!.Value));
-            if (page.Count < PageSize) return ids.Distinct().ToList();
-        }
-    }
+    public static async Task<List<long>> ImportedStockIdsAsync() =>
+        (await AllPagesAsync(() => Db.Client.From<StockMovement>()
+            .Filter("ref_type", Operator.Equals, StockImportRef)
+            .Select("movement_id,ref_id")
+            .Order(MovementIdColumn, Ordering.Ascending)))
+        // The "!" stays: HasValue is tested in a different lambda, which flow analysis cannot see
+        // through. Dropping it buys a CS8629 in exchange for nothing.
+        .Where(m => m.RefId.HasValue).Select(m => m.RefId!.Value).Distinct().ToList();
 
     // delete_imported_stock() (0016) is no longer called from here: replace_imported_stock does the
     // clear inside the same transaction as the rewrite, which is the whole point. The function
@@ -675,15 +769,70 @@ public static class Repo
         IReadOnlyDictionary<string, long> gradeIds, IReadOnlyDictionary<string, long> sizeIds) =>
         System.Text.Json.JsonSerializer.Serialize(StockImportArgs(rows, asAt, gradeIds, sizeIds));
 
+    /// <summary>
+    /// Every stock import that is still standing, newest first. Read before an import so the choice
+    /// between replacing and appending is made against what is actually there.
+    ///
+    /// NULL when the list could not be read at all — which is what happens before 0027 is applied,
+    /// because the view does not exist yet. Deliberately not an empty list: "there are no imports"
+    /// and "I cannot see the imports" are opposite answers, and the caller is about to offer to
+    /// DELETE whatever is there. Returning [] told the user nothing had been imported while 2,950
+    /// carats sat in the ledger.
+    /// </summary>
+    public static async Task<List<VStockImportBatch>?> StockImportBatchesAsync()
+    {
+        try
+        {
+            return (await Db.Client.From<VStockImportBatch>()
+                .Order("last_intake_id", Ordering.Descending)
+                .Limit(50).Get()).Models;
+        }
+        catch (Exception) { return null; }
+    }
+
+    /// <summary>How to land a sheet, as opposed to what is on it.</summary>
+    /// <param name="Replace">
+    /// True replaces every previously imported holding, which is what a full stock count means.
+    /// False adds this sheet on top of what is already there — two parcel lots counted separately,
+    /// both standing. The database does the choosing inside one transaction either way.
+    /// </param>
+    /// <param name="Batch">Stamped on the parcels so this import can be told from the last one.</param>
+    /// <param name="Source">Which reader produced the rows: "excel" or "pdf".</param>
+    public sealed record StockImportMode(bool Replace = true, Guid? Batch = null, string Source = "excel");
+
     public static async Task<StockImportResult> ImportStockAsync(
         IReadOnlyList<StockRow> rows, DateOnly asAt,
         IReadOnlyDictionary<string, long> gradeIds, IReadOnlyDictionary<string, long> sizeIds,
-        IProgress<ImportProgress>? progress = null)
+        IProgress<ImportProgress>? progress = null, StockImportMode? mode = null)
     {
-        progress?.Report(new ImportProgress(
-            $"Replacing the stock position… {rows.Count:N0} holding(s)", 0, rows.Count));
+        mode ??= new StockImportMode();
+        bool replace = mode.Replace;
 
-        var res = await Db.Client.Rpc("replace_imported_stock", StockImportArgs(rows, asAt, gradeIds, sizeIds));
+        progress?.Report(new ImportProgress(
+            (replace ? "Replacing the stock position… " : "Adding to the stock position… ")
+            + $"{rows.Count:N0} holding(s)", 0, rows.Count));
+
+        var args = StockImportArgs(rows, asAt, gradeIds, sizeIds);
+        args["p_replace"] = replace;
+        args["p_batch"] = (mode.Batch ?? Guid.NewGuid()).ToString();
+        args["p_source"] = mode.Source;
+
+        // import_stock arrives with 0027. Until that is applied the database still only knows
+        // replace_imported_stock, and an app that has been updated first must not lose the ability
+        // to import a workbook while it waits — a replace means exactly the same thing to both
+        // functions, so it falls back rather than failing. An APPEND has no older equivalent and
+        // says so plainly instead of quietly replacing, which would delete the position it was
+        // asked to add to.
+        Supabase.Postgrest.Responses.BaseResponse res;
+        try
+        {
+            res = await Db.Client.Rpc("import_stock", args);
+        }
+        catch (Exception e) when (replace && IsMissingFunction(e))
+        {
+            res = await Db.Client.Rpc("replace_imported_stock",
+                                      StockImportArgs(rows, asAt, gradeIds, sizeIds));
+        }
 
         var outcome = Json(res.Content);
         int written = Int(outcome, "written");
@@ -696,11 +845,13 @@ public static class Repo
             throw new InvalidOperationException(
                 $"Sent {rows.Count} holding(s) but the database wrote {written}.");
 
-        progress?.Report(new ImportProgress("Stock replaced", rows.Count, rows.Count));
+        progress?.Report(new ImportProgress(replace ? "Stock replaced" : "Stock added",
+                                            rows.Count, rows.Count));
 
         return new StockImportResult(written, deleted,
                                      rows.Sum(r => r.WeightCt),
-                                     rows.Sum(r => r.WeightCt * r.PricePerCt));
+                                     rows.Sum(r => r.WeightCt * r.PricePerCt),
+                                     Guid.TryParse(Str(outcome, "batch"), out var id) ? id : null);
     }
 
     /// The jsonb an RPC returned, or an empty object when it returned nothing parseable.
@@ -713,6 +864,51 @@ public static class Repo
     private static int Int(System.Text.Json.JsonElement e, string name) =>
         e.ValueKind == System.Text.Json.JsonValueKind.Object
         && e.TryGetProperty(name, out var v) && v.TryGetInt32(out int n) ? n : 0;
+
+    /// <summary>
+    /// Adds a grade the catalogue does not have, with the size pairings 0018's rule gives it (0030).
+    ///
+    /// Idempotent, and alias-aware: a code that is already a grade — or already an ALIAS of one —
+    /// returns that grade rather than creating a second row for the same goods.
+    ///
+    /// Deliberately never called by the importer on its own. A typo on a printed sheet would
+    /// otherwise become a permanent grade holding real carats. The user is shown the names first.
+    /// </summary>
+    public static async Task<WriteResult> AddGradeAsync(string code, string? displayName = null)
+    {
+        try
+        {
+            var res = await Db.Client.Rpc("add_grade", new Dictionary<string, object?>
+            {
+                ["p_code"] = code,
+                ["p_display_name"] = displayName,
+            });
+            return Outcome(res.Content);
+        }
+        catch (Exception e) { return new WriteResult(Err(e)); }
+    }
+
+    /// <summary>
+    /// Adds a sieve size named on a stock sheet, with the grade pairings 0018's rule gives it (0034).
+    ///
+    /// Idempotent and NOTATION-AWARE: "6.5+" returns the existing "+6.5" rather than making a twin.
+    /// That matters more here than it did for grades — these sheets write the same bucket four ways,
+    /// and two rows for one sieve would split the position between them with nothing to flag it.
+    ///
+    /// Never called on its own initiative. The user is shown the heading and the carats first.
+    /// </summary>
+    public static async Task<WriteResult> AddSizeAsync(string code)
+    {
+        try
+        {
+            var res = await Db.Client.Rpc("add_size", new Dictionary<string, object?>
+            {
+                ["p_code"] = code,
+            });
+            return Outcome(res.Content);
+        }
+        catch (Exception e) { return new WriteResult(Err(e)); }
+    }
 
     /// <summary>
     /// Renames a buyer, resets its default terms, or deactivates it. Set() names the columns, so
@@ -768,7 +964,7 @@ public static class Repo
     {
         try
         {
-            await Db.Client.From<Grade>().Filter("grade_id", Operator.Equals, gradeId)
+            await Db.Client.From<Grade>().Filter(GradeIdColumn, Operator.Equals, gradeId)
                 .Set(g => g.Aliases!, aliases.Length == 0 ? null! : aliases).Update();
             return null;
         }
@@ -790,8 +986,8 @@ public static class Repo
         try
         {
             var open = (await Db.Client.From<PriceList>()
-                .Filter("grade_id", Operator.Equals, gradeId)
-                .Filter("size_id", Operator.Equals, sizeId)
+                .Filter(GradeIdColumn, Operator.Equals, gradeId)
+                .Filter(SizeIdColumn, Operator.Equals, sizeId)
                 .Filter("context", Operator.Equals, context).Get())
                 .Models.Where(p => p.EffectiveTo is null);
 
@@ -866,8 +1062,13 @@ public static class Repo
 
     static string D(DateOnly d) => d.ToString("yyyy-MM-dd");
 
+    // The ValueKind guard is not decoration: TryGetProperty THROWS on anything that is not an
+    // object, and Json() returns a default JsonElement when an RPC answers with something
+    // unparseable. Reading a field off that reply must come back null, not take down the call.
     static string? Str(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        e.ValueKind == JsonValueKind.Object
+        && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString() : null;
 
     static decimal Num(JsonElement e, string name) =>
         e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDecimal() : 0m;
@@ -882,7 +1083,7 @@ public static class Repo
         if (failure is not null || string.IsNullOrWhiteSpace(json)) return new WriteResult(failure);
         try
         {
-            using var doc = JsonDocument.Parse(json!);
+            using var doc = JsonDocument.Parse(json);
             return new WriteResult(null, doc.RootElement.ValueKind == JsonValueKind.Object
                 ? Str(doc.RootElement, "warning")
                 : null);
@@ -896,7 +1097,7 @@ public static class Repo
         if (string.IsNullOrWhiteSpace(json)) return null;
         try
         {
-            using var doc = JsonDocument.Parse(json!);
+            using var doc = JsonDocument.Parse(json);
             var r = doc.RootElement;
             if (r.ValueKind != JsonValueKind.Object) return null;
             if (r.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False)
@@ -925,6 +1126,24 @@ public static class Repo
                && text.Contains("duplicate key", StringComparison.OrdinalIgnoreCase)
             ? new WriteResult(null, "Already recorded — this was sent once before.")
             : new WriteResult(text);
+    }
+
+    /// <summary>
+    /// PostgREST could not find the function that was called — the database is behind the app.
+    ///
+    /// Read off the error's own `code` field rather than by matching words in the message. Err()
+    /// deliberately drops the code when it composes something readable for a user, so testing its
+    /// output for "PGRST202" never matched and the fallback it guarded never ran.
+    /// </summary>
+    static bool IsMissingFunction(Exception e)
+    {
+        if (e is not PostgrestException { Content: { } content }) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(content);
+            return Str(doc.RootElement, "code") == "PGRST202";
+        }
+        catch (JsonException) { return false; }
     }
 
     static string Err(Exception e)

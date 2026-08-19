@@ -492,3 +492,15 @@ diamond.db-wal
 # publishable anon key. Never add a service_role key or a database password.
 publish/
 dist/
+
+# The client's exported ledger. Lives outside the repo entirely (D:\priya-backup);
+# this line is the second lock, so a stray copy can never be staged by a git add -A.
+priya-backup/
+
+# Probe scratch. tests/probes/Program.cs is a swap slot -- whichever suite is being
+# run sits in it -- and every earlier one was kept beside it as a .bak. The two that
+# are real suites are tracked under suite-*.cs.txt instead, so they survive a clone.
+*.bak
+
+# Duplicates new-project-setup/, and two copies of the same thing drift.
+new-project-setup.zip

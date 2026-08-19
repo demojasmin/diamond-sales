@@ -16,9 +16,9 @@
     <Company>Solitaire</Company>
     <Description>Diamond Sales &amp; Inventory</Description>
     <Copyright>Copyright © Solitaire</Copyright>
-    <Version>1.0.1</Version>
-    <FileVersion>1.0.1.0</FileVersion>
-    <AssemblyVersion>1.0.1.0</AssemblyVersion>
+    <Version>1.2.4</Version>
+    <FileVersion>1.2.4.0</FileVersion>
+    <AssemblyVersion>1.2.4.0</AssemblyVersion>
 
     <!-- Trimming is off deliberately: Supabase's Postgrest layer resolves models by reflection, so
          a trimmer that cannot see those types strips them and every read fails at runtime rather
@@ -46,6 +46,11 @@
     <!-- Backs the offline outbox (SYNC-001 / FR-SYNC-1): queued writes live in a local SQLite file
          so a post survives the app being closed while the network is down. -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <!-- Reads the printed stock sheet (PdfStockImport). Apache-2.0, pure managed, no native
+         binaries — which is why it is here and not iText (AGPL) or a Poppler wrapper (needs an
+         unmanaged DLL beside the exe, and the installer ships one file). It exposes each glyph's
+         position, and position is the only thing that reconstructs a table out of a print. -->
+    <PackageReference Include="PdfPig" Version="0.1.11" />
     <PackageReference Include="Supabase" Version="1.4.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.10" />
   </ItemGroup>

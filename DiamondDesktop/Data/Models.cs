@@ -39,6 +39,13 @@ public class SizeBucket : BaseModel
     [Column("lower_mm")] public decimal? LowerMm { get; set; }
     [Column("upper_mm")] public decimal? UpperMm { get; set; }
     [Column("sort_order")] public int SortOrder { get; set; }
+
+    /// <summary>
+    /// False for a sieve the office has retired. It is NOT a delete: a size that ever held stock
+    /// is part of what happened, and the movements, parcels and audit rows still point at it.
+    /// Retired sizes keep resolving everywhere history is read, and reach no picker or import.
+    /// </summary>
+    [Column("active")] public bool Active { get; set; } = true;
 }
 
 /// Which sieve sizes a grade actually trades in. +14 uses +14/+18/+23, nobody else does.
@@ -300,6 +307,22 @@ public class VStockPosition : BaseModel
     [Column("stock_value")] public decimal StockValue { get; set; }
     [Column("oldest_intake")] public DateOnly? OldestIntake { get; set; }
     [Column("age_days")] public int? AgeDays { get; set; }
+}
+
+/// <summary>
+/// One stock import, as 0027 groups them. BatchId is null for parcels imported before that
+/// migration — they are one unlabelled group rather than being left out of the list.
+/// </summary>
+[Table("v_stock_import_batch")]
+public class VStockImportBatch : BaseModel
+{
+    [Column("batch_id")] public Guid? BatchId { get; set; }
+    [Column("source")] public string Source { get; set; } = "";
+    [Column("as_at")] public DateOnly AsAt { get; set; }
+    [Column("last_intake_id")] public long LastIntakeId { get; set; }
+    [Column("parcels")] public int Parcels { get; set; }
+    [Column("carats")] public decimal Carats { get; set; }
+    [Column("value")] public decimal Value { get; set; }
 }
 
 [Table("v_stock_movement")]

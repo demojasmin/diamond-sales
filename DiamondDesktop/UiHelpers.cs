@@ -1,8 +1,9 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
+using Primitives = System.Windows.Controls.Primitives;
 
 namespace DiamondDesktop;
 
@@ -636,7 +637,10 @@ public sealed class SettingItem : System.ComponentModel.INotifyPropertyChanged
 public sealed class SellableSizeConverter : IValueConverter
 {
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is string code && Catalogue.IsSellableSize(code) ? "Yes" : "Import only";
+        value is not string code ? "Import only"
+        : Catalogue.IsRetiredSize(code) ? "Retired"
+        : Catalogue.IsSellableSize(code) ? "Yes"
+        : "Import only";
 
     public object ConvertBack(object? value, Type t, object? p, CultureInfo c) =>
         throw new NotSupportedException();
@@ -767,4 +771,177 @@ public sealed class CountLabelConverter : IValueConverter
     }
 
     public object ConvertBack(object? value, Type t, object? p, CultureInfo c) => Binding.DoNothing;
+}
+
+/// <summary>
+/// A validation message drawn directly under the field it is about.
+///
+/// WHY AN ADORNER
+///
+/// Every one of these used to land in the status bar at the foot of the window. On a form with a
+/// dozen inputs that means reading "Weight must be positive" a screen away from the weight box and
+/// then hunting for which of three weight fields it meant -- and on a tall page the message can be
+/// off-screen entirely while the field is not.
+///
+/// The adorner layer puts the text under the control without the control's container knowing about
+/// it: no per-field XAML, and nothing to add for a field introduced later.
+///
+/// An adorner draws OUTSIDE layout, though, which on a form of stacked rows means the message is
+/// painted straight over whatever sits beneath -- on the movements page, "Pick both sides" landed
+/// on top of the PRICE/CT label under it and neither could be read. So the field's bottom margin
+/// grows by the height of the message while it is shown, and is put back when it clears: the space
+/// is real, the message is legible, and the layout returns exactly to where it was.
+/// </summary>
+internal sealed class FieldErrorAdorner : System.Windows.Documents.Adorner
+{
+    private readonly System.Windows.Media.VisualCollection _children;
+    private readonly TextBlock _label;
+
+    public FieldErrorAdorner(UIElement target, string message) : base(target)
+    {
+        _label = new TextBlock
+        {
+            Text = message,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 11,
+            Margin = new Thickness(2, 3, 0, 0),
+        };
+        // Resource REFERENCE, not a fetched brush: the light/dark swap replaces the brush, and a
+        // copy taken once would keep the old theme's colour after the toggle.
+        _label.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
+
+        _children = new System.Windows.Media.VisualCollection(this) { _label };
+
+        // AFTER the collection exists, and that ordering is the whole point. Setting a dependency
+        // property on a Visual makes WPF walk the visual children, which lands in
+        // VisualChildrenCount below -- and with _children still null that is a
+        // NullReferenceException thrown out of a constructor, before anything is on screen.
+        //
+        // Not hit-testable because it hangs over whatever sits under the field, and swallowing a
+        // click on the control the user is being told to fix would be its own bug.
+        IsHitTestVisible = false;
+    }
+
+    public string Message { get => _label.Text; set => _label.Text = value; }
+
+    /// How much room the message needs under the field. Read after a layout pass, so it accounts
+    /// for a message long enough to wrap onto a second line.
+    public double MessageHeight => _label.DesiredSize.Height + _label.Margin.Top;
+
+    protected override int VisualChildrenCount => _children?.Count ?? 0;
+    protected override System.Windows.Media.Visual GetVisualChild(int index) => _children[index];
+
+    protected override Size MeasureOverride(Size constraint)
+    {
+        // At least 140px so a short field does not wrap the message one word per line.
+        _label.Measure(new Size(Math.Max(AdornedElement.RenderSize.Width, 140), double.PositiveInfinity));
+        return AdornedElement.RenderSize;
+    }
+
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        _label.Arrange(new Rect(0, finalSize.Height,
+                                Math.Max(finalSize.Width, 140), _label.DesiredSize.Height));
+        return finalSize;
+    }
+}
+
+/// <summary>
+/// Shows and clears the per-field messages. One entry per control, so asking twice replaces the
+/// text rather than stacking two messages on top of each other.
+/// </summary>
+public static class FieldError
+{
+    private static readonly Dictionary<UIElement, FieldErrorAdorner> Shown = [];
+    private static readonly HashSet<UIElement> Hooked = [];
+
+    /// <summary>
+    /// Put <paramref name="message"/> under <paramref name="target"/>. Silently does nothing if the
+    /// control is not in a visual tree with an adorner layer yet -- a field on a tab never opened.
+    /// The caller has already said what is wrong through its own return; losing the adorner is not
+    /// worth an exception.
+    /// </summary>
+    public static void Show(UIElement target, string message)
+    {
+        if (Shown.TryGetValue(target, out var existing)) { existing.Message = message; return; }
+
+        var layer = System.Windows.Documents.AdornerLayer.GetAdornerLayer(target);
+        if (layer is null) return;
+
+        var adorner = new FieldErrorAdorner(target, message);
+        layer.Add(adorner);
+        Shown[target] = adorner;
+        Reserve(target, adorner);
+
+        // Cleared the moment the user acts on it. Hooked once per control and never unhooked --
+        // these are long-lived form controls, and re-hooking on every Show would stack handlers.
+        if (Hooked.Add(target))
+        {
+            if (target is Primitives.TextBoxBase text) text.TextChanged += (s, _) => Clear((UIElement)s);
+            if (target is Primitives.Selector picker) picker.SelectionChanged += (s, _) => Clear((UIElement)s);
+            if (target is DatePicker date) date.SelectedDateChanged += (s, _) => Clear((UIElement)s);
+        }
+    }
+
+    public static void Clear(UIElement target)
+    {
+        if (!Shown.Remove(target, out var adorner)) return;
+        System.Windows.Documents.AdornerLayer.GetAdornerLayer(target)?.Remove(adorner);
+
+        // Put the layout back exactly as it was. Restored from the value captured the FIRST time
+        // this field ever showed a message, not from the current one -- otherwise a second message
+        // arriving before the first cleared would bank the inflated margin as the original and the
+        // form would creep downwards a line at a time.
+        if (target is FrameworkElement field && OriginalMargin.Remove(field, out var margin))
+            field.Margin = margin;
+    }
+
+    private static readonly Dictionary<FrameworkElement, Thickness> OriginalMargin = [];
+
+    /// <summary>Grow the field's bottom margin so the message has somewhere to sit.</summary>
+    private static void Reserve(UIElement target, FieldErrorAdorner adorner)
+    {
+        if (target is not FrameworkElement field) return;
+
+        // A grid cell is left alone: its row height is the grid's business, and widening a cell
+        // pushes every other column's row apart with it.
+        if (target is DataGridCell) return;
+
+        adorner.UpdateLayout();
+        double needed = Math.Max(adorner.MessageHeight, 15);
+
+        if (OriginalMargin.TryAdd(field, field.Margin))
+        {
+            var m = field.Margin;
+            field.Margin = new Thickness(m.Left, m.Top, m.Right, m.Bottom + needed);
+        }
+    }
+
+    /// <summary>
+    /// Wipe every message on every page. Called before each validation pass so a field fixed since
+    /// last time stops complaining, and on leaving a page so the message is not still hanging there
+    /// on the way back.
+    /// </summary>
+    public static void ClearAll()
+    {
+        foreach (var target in Shown.Keys.ToList()) Clear(target);
+    }
+}
+
+/// <summary>Visual-tree search, for the containers WPF only creates when a row is realised.</summary>
+public static class VisualTree
+{
+    public static T? FindChild<T>(DependencyObject? root) where T : DependencyObject
+    {
+        if (root is null) return null;
+
+        int count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            if (child is T hit) return hit;
+            if (FindChild<T>(child) is { } deeper) return deeper;
+        }
+        return null;
+    }
 }

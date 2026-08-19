@@ -1,0 +1,163 @@
+// The PDF reader against every layout we hold, plus the ones it must refuse.
+//
+// No database. The catalogue is built here so the suite runs anywhere and cannot
+// be broken by someone editing a grade in Supabase.
+using System.IO;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+var grades = new (string Code, string? Aliases)[]
+{
+    ("NO 1","NO1;NO 1;1"), ("NO 1 BB","1BB;1 BB;NO1BB;NO 1BB"), ("NO 2","NO2;2;NO-2"),
+    ("NO 2 BB","2BB;2 BB;NO2BB"), ("NO II","II;NOII;NO2SPOT"), ("NO DX","DX;NODX;DELUXE;NO-DX"),
+    ("EX 1","EX1;EXTRA 1;E1;Ex1"), ("NO 3","NO3;3;NO-3"), ("NO 4","NO4;4;NO-4"),
+    ("NO 5","NO5;5;NO-5"), ("NO 6","NO6;6;NO-6"), ("NO 7","NO7;7;NO-7"),
+    ("TOP-COL","TOPCOL;TOP COL;TC;T COLOR"), ("COL","COLOUR;COLOR;C"), ("OW","OFFWHITE;OFF WHITE;O/W"),
+    ("LC 1","LC1;L C 1;LC-1"), ("LC 2","LC2;L C 2;LC-2"), ("LC 3","LC3;L C 3;LC-3"),
+    ("GH","GHOST;GH-VVS;GHVVS"), ("LB 1","LB1;L B 1;LB-1"), ("LB 2","LB2;L B 2;LB-2"),
+    ("+14","14;PLUS14;P14"), ("EXTRA","EXTRA ASSORT;XTRA;ASSORT"), ("FL","F L;FL1"),
+    ("1MB","1 MB;NO1MB;NO 1 MB"), ("-2 MB",",-2 MB;-2MB;,-2MB"), ("MIX", null),
+}.Select((g, i) => new Grade { GradeId = i + 1, Code = g.Code, Aliases = g.Aliases, DisplayName = g.Code })
+ .ToList();
+
+string[] sizeCodes = ["-2", "-6.5", "+6.5", "+11", "14+", "+18", "+23", "0.2", "0.25"];
+
+var gradeMap = MainWindow.PdfGradeLabelMap(grades);
+var sizeMap  = MainWindow.PdfSizeLabelMap(sizeCodes);
+
+string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+StockImportPlan Read(string file) => PdfStockFile.Plan(Path.Combine(dir, file), gradeMap, sizeMap);
+bool Have(string file) => File.Exists(Path.Combine(dir, file));
+
+// ── layout A · three sizes, each with a rate beside it ──────────────────────
+if (Have("JADU APR-AUG'26.pdf"))
+{
+    var p = Read("JADU APR-AUG'26.pdf");
+    Check("A · reads", p.IsValid, PdfStockFile.ProblemText(p));
+    Check("A · totals what the sheet prints", p.TotalCarats == 508.71m, $"{p.TotalCarats:N2}");
+    Check("A · three size columns", p.SizeOrder.Count == 3, string.Join(",", p.SizeOrder));
+    Check("A · rates were read", p.Rows.Any(r => r.PricePerCt > 0));
+    Check("A · nothing unplaced", p.UnplacedCarats == 0m, $"{p.UnplacedCarats:N2}");
+}
+else Console.WriteLine("skipped layout A");
+
+// ── layout B · six sizes, NO rate column, two side-by-side panels ───────────
+if (Have("JADU 11-5-26.pdf"))
+{
+    var p = Read("JADU 11-5-26.pdf");
+    Check("B · reads", p.IsValid, PdfStockFile.ProblemText(p));
+    Check("B · totals what the sheet prints", p.TotalCarats == 258.84m, $"{p.TotalCarats:N2}");
+    Check("B · six size columns, not three", p.SizeOrder.Count == 6, string.Join(",", p.SizeOrder));
+    Check("B · no rate is invented where none is printed",
+          p.Rows.All(r => r.PricePerCt == 0m), $"{p.Rows.Count(r => r.PricePerCt != 0m)} priced");
+    Check("B · column order is the sheet's",
+          p.SizeOrder.SequenceEqual(new[] { "-6.5", "+6.5", "+11", "14+", "0.2", "0.25" }),
+          string.Join(",", p.SizeOrder));
+}
+else Console.WriteLine("skipped layout B");
+
+// ── layout C · three sizes and a grade the catalogue gained later ───────────
+if (Have("17-8-26.pdf"))
+{
+    var p = Read("17-8-26.pdf");
+    Check("C · reads", p.IsValid, PdfStockFile.ProblemText(p));
+    Check("C · totals what the sheet prints", p.TotalCarats == 2613.50m, $"{p.TotalCarats:N2}");
+    Check("C · all 60 holdings", p.Rows.Count == 60, $"{p.Rows.Count}");
+}
+else Console.WriteLine("skipped layout C");
+
+// ── layout D · same figures, first column headed with a size we do not hold ─
+// The one this work exists for. It must be REFUSED, and the refusal must name
+// the heading rather than blaming the reading.
+if (Have("JADU.pdf"))
+{
+    var p = Read("JADU.pdf");
+    Check("D · refused", !p.IsValid);
+    string text = PdfStockFile.ProblemText(p);
+    Check("D · the refusal names the heading", text.Contains("1/6"), text);
+    Check("D · and states both totals, the sheet's and what was read",
+          text.Contains("508.71") && text.Contains("226.72"), text);
+    Check("D · and points at Master data, not at the reader",
+          text.Contains("Master data"), text);
+    Check("D · nothing is offered for import", p.Rows.Count == 0 || !p.IsValid);
+    Check("D · it is NOT reported as an unreliable reading",
+          !text.Contains("could not be read reliably"), text);
+}
+else Console.WriteLine("skipped layout D");
+
+// ── the refusals must stay reachable ────────────────────────────────────────
+string junk = Path.Combine(Path.GetTempPath(), "not-a-pdf.pdf");
+File.WriteAllBytes(junk, "%PDF-1.4 this is not a pdf"u8.ToArray());
+var bad = PdfStockFile.Plan(junk, gradeMap, sizeMap);
+Check("a file that is not a PDF is refused", !bad.IsValid,
+      bad.IsValid ? "ACCEPTED JUNK" : bad.Problems[0].Message[..40]);
+File.Delete(junk);
+
+// Losing a size from the catalogue must be caught, not absorbed.
+if (Have("JADU APR-AUG'26.pdf"))
+{
+    var shortMap = new Dictionary<string, string>(sizeMap, StringComparer.OrdinalIgnoreCase);
+    foreach (string k in shortMap.Where(e => e.Value == "14+").Select(e => e.Key).ToList())
+        shortMap.Remove(k);
+
+    var p = PdfStockFile.Plan(Path.Combine(dir, "JADU APR-AUG'26.pdf"), gradeMap, shortMap);
+    Check("dropping a size from the catalogue is refused", !p.IsValid);
+    Check("and the refusal names the heading it could not place",
+          PdfStockFile.ProblemText(p).Contains("14+"), PdfStockFile.ProblemText(p));
+    Check("and states what the sheet claims against what was read",
+          PdfStockFile.ProblemText(p).Contains("508.71"), PdfStockFile.ProblemText(p));
+}
+
+// ── layout E · a sheet whose heading the catalogue gains ────────────────────
+// The same JADU.pdf as D, read against a catalogue that HAS "1/6". Nothing in
+// the parser changes between the two runs -- only the size list it is handed --
+// which is the whole claim: a new heading needs a catalogue row, never a code
+// change. This is what the confirmation dialog does for the user.
+if (Have("JADU.pdf"))
+{
+    var widened = MainWindow.PdfSizeLabelMap([.. sizeCodes, "1/6"]);
+    var p = PdfStockFile.Plan(Path.Combine(dir, "JADU.pdf"), gradeMap, widened);
+
+    Check("E . the same sheet now reads", p.IsValid, PdfStockFile.ProblemText(p));
+    Check("E . and totals what it prints", p.TotalCarats == 508.71m, $"{p.TotalCarats:N2}");
+    Check("E . the new size is one of the columns", p.SizeOrder.Contains("1/6"),
+          string.Join(",", p.SizeOrder));
+    Check("E . three columns, as the sheet shows", p.SizeOrder.Count == 3, string.Join(",", p.SizeOrder));
+    Check("E . nothing left unplaced", p.UnplacedCarats == 0m, $"{p.UnplacedCarats:N2}");
+}
+
+// ── the finding is offered as data, not only as prose ───────────────────────
+if (Have("JADU.pdf"))
+{
+    var p = Read("JADU.pdf");
+    Check("the unknown size is reported as data", p.UnknownSizes.Count == 1,
+          string.Join(",", p.UnknownSizes.Select(u => u.Label)));
+    Check("named exactly as the sheet prints it",
+          p.UnknownSizes.Count == 1 && p.UnknownSizes[0].Label == "1/6",
+          p.UnknownSizes.Count == 1 ? p.UnknownSizes[0].Label : "-");
+    Check("with the carats standing under it",
+          p.UnknownSizes.Count == 1 && p.UnknownSizes[0].Carats == 281.99m,
+          p.UnknownSizes.Count == 1 ? $"{p.UnknownSizes[0].Carats:N2}" : "-");
+}
+
+// ── notation that already exists must NOT be offered as new ─────────────────
+// The costly mistake this guards: "6.5+" and "+6.5" are one sieve.
+if (Have("JADU 11-5-26.pdf"))
+{
+    var p = Read("JADU 11-5-26.pdf");
+    Check("a sheet in the other notation offers nothing to add",
+          p.UnknownSizes.Count == 0, string.Join(",", p.UnknownSizes.Select(u => u.Label)));
+    Check("and resolves to the existing buckets",
+          p.SizeOrder.SequenceEqual(new[] { "-6.5", "+6.5", "+11", "14+", "0.2", "0.25" }),
+          string.Join(",", p.SizeOrder));
+}
+
+Console.WriteLine(fail == 0 ? "\nAll checks passed." : $"\n{fail} check(s) failed.");
+Environment.Exit(fail == 0 ? 0 : 1);

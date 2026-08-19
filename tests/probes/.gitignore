@@ -1,0 +1,10 @@
+# The suite being run is copied over Program.cs; the .bak files are the source of truth.
+Program.cs
+bin/
+obj/
+
+# Probe output. Suites render RenderTargetBitmap snapshots and dump CSV/text while
+# diagnosing a layout problem; they are evidence for one run, not part of the suite.
+*.png
+*.csv
+*.log

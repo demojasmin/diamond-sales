@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.RegularExpressions;
 using System.IO;
 using System.IO.Compression;
@@ -126,6 +126,15 @@ public sealed class ImportPlan
     /// calls these exceptions, not failures — the row is skipped and reported, and the rest of the
     /// file still imports. Aborting 1,369 good rows over 68 unmapped ones helps nobody.
     public List<ImportProblem> Exceptions { get; } = [];
+
+    /// <summary>
+    /// Sieve sizes the workbook names and the catalogue lacks, with the weight riding on each.
+    ///
+    /// Same shape and same purpose as the stock importer's list: carried as data so the caller can
+    /// offer to create them, rather than only telling the user a developer is needed.
+    /// </summary>
+    public List<UnknownSize> UnknownSizes { get; } = [];
+
     public int SkippedRows { get; set; }
     public List<PlannedInvoice> Invoices { get; } = [];
     public List<string> Buyers { get; } = [];
@@ -187,8 +196,31 @@ public static class SaleFileImport
             map[code] = code;
             if (code.Length > 1 && (code[0] == '+' || code[0] == '-'))
                 map.TryAdd(code[1..] + code[0], code);       // "+6.5" also accepts "6.5+"
+
+            // And under the sieve key, which catches what the sign-swap above cannot: "1/5" for
+            // 0.2, "6.50" for +6.5, any fraction a future sheet prints. Added rather than
+            // substituted so the literal spellings keep resolving exactly as they did.
+            if (StockFileImport.SizeKey(code) is { } key) map.TryAdd(key, code);
         }
         return map;
+    }
+
+    /// <summary>
+    /// The catalogue code a printed size means, or false if the catalogue has no such sieve.
+    ///
+    /// Literal spelling first, then the sieve key. Both sides of that key use the SAME rule the
+    /// database uses in public.sieve_key, and they have to: it is what decides whether add_size
+    /// returns an existing row or creates one. A second rule that disagreed would either offer to
+    /// add a sieve the database then refuses, or agree to add one it happily twins.
+    /// </summary>
+    private static bool ResolveSize(IReadOnlyDictionary<string, string> sizeMap, string printed,
+                                    out string code)
+    {
+        if (sizeMap.TryGetValue(printed, out string? direct)) { code = direct; return true; }
+        if (StockFileImport.SizeKey(printed) is { } key && sizeMap.TryGetValue(key, out string? byKey))
+        { code = byKey; return true; }
+        code = printed;
+        return false;
     }
 
     public static Dictionary<string, string> AliasMap(
@@ -286,7 +318,7 @@ public static class SaleFileImport
         foreach (var row in data)
         {
             int before = plan.Exceptions.Count;
-            var sale = ParseRow(row, gradeMap, sizeMap, plan.Exceptions);
+            var sale = ParseRow(row, gradeMap, sizeMap, plan.Exceptions, plan.UnknownSizes);
             if (sale is not null) parsed.Add(sale);
             else if (plan.Exceptions.Count > before) plan.SkippedRows++;
         }
@@ -310,7 +342,8 @@ public static class SaleFileImport
     private static SaleRow? ParseRow(Xlsx.Row row,
                                      IReadOnlyDictionary<string, string> gradeMap,
                                      IReadOnlyDictionary<string, string> sizeMap,
-                                     List<ImportProblem> problems)
+                                     List<ImportProblem> problems,
+                                     List<UnknownSize> unknownSizes)
     {
         // A row with no date and no weight is trailing formatting, not a record. Skipping it
         // silently is right; complaining about it would make every real file look broken.
@@ -340,15 +373,24 @@ public static class SaleFileImport
             grade = resolvedGrade;
 
         string size = row["G"].Trim();
+        string? unknownSize = null;
         if (size.Length == 0)
             problems.Add(new ImportProblem($"Row {row.Number}: the size (column G) is empty."));
-        else if (!sizeMap.TryGetValue(size, out string? resolvedSize))
+        else if (!ResolveSize(sizeMap, size, out string resolvedSize))
+        {
             problems.Add(new ImportProblem(
                 $"Row {row.Number}: size \"{size}\" is not in the catalogue and has no alias."));
+            unknownSize = size;
+        }
         else
             size = resolvedSize;
 
         decimal gross = Need(row, "I", "weight", row.Number, problems);
+
+        // Recorded after the weight is read, so the offer can say how much rides on the sieve.
+        // The row is still an exception and still skipped — this only makes the fault actionable.
+        if (unknownSize is not null)
+            StockFileImport.NoteUnknownSize(unknownSizes, unknownSize, Math.Abs(gross));
         decimal selection = Need(row, "K", "selection", row.Number, problems);
         decimal price = Need(row, "L", "price per ct", row.Number, problems);
 

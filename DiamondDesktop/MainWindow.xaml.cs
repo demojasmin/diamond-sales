@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
@@ -196,7 +196,7 @@ public partial class MainWindow : Window
         foreach (var box in new[] { IntakeSize, ConvFromSize, ConvToSize, RejSize, AdjSize,
                                     LedgerSize, PriceSizePicker })
         {
-            box.ItemsSource = Catalogue.AllSizes;
+            box.ItemsSource = Catalogue.ActiveSizes;
             box.ItemTemplate = (DataTemplate)FindResource("SizeCodeTemplate");
             box.ItemContainerStyle = (Style)FindResource("SizeItemContainer");
         }
@@ -242,7 +242,7 @@ public partial class MainWindow : Window
 
             FilterBuyer.ItemsSource = buyers;                  // the dashboard's buyer filter
 
-            Pill(true, $"Connected · {Catalogue.Grades.Count} grades · {buyers.Count} buyers");
+            Pill(true, $"{Db.Active.Name} · {Catalogue.Grades.Count} grades · {buyers.Count} buyers");
 
             // An empty picker looks like a broken screen. Say which it is.
             if (buyers.Count == 0) Say("No buyers came back from Supabase — add one on the Master data tab");
@@ -403,11 +403,12 @@ public partial class MainWindow : Window
         if (_saving) return false;
 
         Grid.CommitEdit();
+        FieldError.ClearAll();
 
         // Saying what is wrong and then leaving the user to find it is half a message. Send the
         // caret to the field that has to change.
-        if (_invoice.Validate() is { } error) { Say(error); FocusFirstProblem(error); return false; }
-        if (_invoice.BuyerId is not { } buyerId) { Say("Pick a buyer from the list"); BuyerPicker.Focus(); return false; }
+        if (_invoice.Validate() is { } error) { FocusFirstProblem(error); return false; }
+        if (_invoice.BuyerId is not { } buyerId) { Field(BuyerPicker, "Pick a buyer from the list"); return false; }
         if (Catalogue.BaseCurrencyId == 0) { Say("No INR row in the currency table — an invoice cannot be priced without it"); return false; }
 
         var draft = new DraftInvoice(
@@ -433,21 +434,30 @@ public partial class MainWindow : Window
         return true;
     }
 
-    /// Puts focus where the message points. Line errors already colour their row, so the grid only
-    /// needs scrolling to the offender; header problems need the caret in the control itself.
+    /// <summary>
+    /// Shows the message where it belongs and puts the caret there.
+    ///
+    /// A header problem names its own field, so it is written under that control. A LINE problem
+    /// cannot be: the offending value is a cell in a grid that scrolls, and a message pinned under
+    /// the grid would point at nothing in particular. Those rows already colour themselves and
+    /// carry the text on their tooltip, so the grid is scrolled to the offender and the sentence
+    /// stays in the status bar, where it is at least next to the row it is about.
+    /// </summary>
     private void FocusFirstProblem(string error)
     {
-        if (error.StartsWith("Buyer")) { BuyerPicker.Focus(); return; }
-        if (error.StartsWith("Terms")) { TermsBox.Focus(); TermsBox.SelectAll(); return; }
-        if (error.StartsWith("Broker %")) { BrokerPctBox.Focus(); BrokerPctBox.SelectAll(); return; }
+        if (error.StartsWith("Buyer")) { Field(BuyerPicker, error); return; }
+        if (error.StartsWith("Terms")) { Field(TermsBox, error); return; }
+        if (error.StartsWith("Broker %")) { Field(BrokerPctBox, error); return; }
 
         if (_invoice.RealLines.FirstOrDefault(l => l.Error is not null) is { } bad)
         {
-            Grid.ScrollIntoView(bad);
-            Grid.CurrentCell = new DataGridCellInfo(bad, Grid.Columns[0]);
-            Grid.Focus();
+            ShowLineError(bad, error);
             return;
         }
+
+        // "needs at least one line" and anything else that is about the invoice rather than about
+        // one cell. There is no field to pin it to, so the bar is the honest place for it.
+        Say(error);
 
         // "needs at least one line" — the row is there, it is just empty.
         if (_invoice.Lines.FirstOrDefault() is { } first)
@@ -741,7 +751,7 @@ public partial class MainWindow : Window
 
     private async void Receipt_Click(object sender, RoutedEventArgs e)
     {
-        if (InvoiceGrid.SelectedItem is not VInvoice invoice) { Say("Select an invoice first"); return; }
+        if (InvoiceGrid.SelectedItem is not VInvoice invoice) { Field(InvoiceGrid, "Select an invoice first"); return; }
         // A cancelled invoice has had its stock returned and owes nothing. Cash booked against it
         // lands in the receipt ledger against a document that no longer exists.
         if (invoice.Status == InvoiceStatus.CANCELLED) { Say("That invoice is cancelled — nothing can be received against it"); return; }
@@ -752,7 +762,8 @@ public partial class MainWindow : Window
         if (invoice.Status != InvoiceStatus.POSTED)
         { Say("That invoice is not posted yet — post it before recording a receipt"); return; }
 
-        if (!decimal.TryParse(ReceiptAmount.Text, out decimal amount) || amount <= 0) { Say("Enter a receipt amount"); return; }
+        if (!decimal.TryParse(ReceiptAmount.Text, out decimal amount) || amount <= 0)
+        { Field(ReceiptAmount, "Enter a receipt amount"); return; }
 
         // Nothing may be received beyond what is owed. Without this the outstanding goes negative,
         // and the Dashboard then disagrees with the Invoices page: dashboard_summary floors each
@@ -784,7 +795,7 @@ public partial class MainWindow : Window
 
     private async void CancelInvoice_Click(object sender, RoutedEventArgs e)
     {
-        if (InvoiceGrid.SelectedItem is not VInvoice invoice) { Say("Select an invoice first"); return; }
+        if (InvoiceGrid.SelectedItem is not VInvoice invoice) { Field(InvoiceGrid, "Select an invoice first"); return; }
 
         // Already cancelled: the RPC would refuse it anyway, and asking for a reason first makes
         // the user do work before being told no.
@@ -1087,7 +1098,7 @@ public partial class MainWindow : Window
 
     private async void PrintInvoice_Click(object sender, RoutedEventArgs e)
     {
-        if (InvoiceGrid.SelectedItem is not VInvoice invoice) { Say("Select an invoice first"); return; }
+        if (InvoiceGrid.SelectedItem is not VInvoice invoice) { Field(InvoiceGrid, "Select an invoice first"); return; }
 
         var lines = await Read(() => Repo.LinesAsync(invoice.InvoiceId));
         if (lines is null) return;
@@ -1117,12 +1128,23 @@ public partial class MainWindow : Window
         // "Hide empty buckets" now means ticked, whatever a bucket's history (see ApplyStockFilter),
         // so the second round trip fetched a set nothing consulted.
         List<VStockPosition>? rows;
+        List<VStockMovement>? rejections;
+        List<VStockMovement>? imported;
         using (Busy(StockRefresh, Loading, StockRefresh, StockExport, RunInvariants))
+        {
             rows = await Read(Repo.StockAsync);
+            // Inside the same busy scope: the breakdown card sits above the list and a second
+            // round trip after the buttons came back would repaint it a moment later, which reads
+            // as the figure correcting itself.
+            rejections = await Read(Repo.RejectionsAsync);
+            imported = await Read(Repo.ImportedStockAsync);
+        }
 
         if (rows is null) return;
 
         _stock = rows;
+        _rejections = rejections ?? [];
+        _importedStock = imported ?? [];
 
         StockChip.Text = Plural(rows.Count, "bucket");
 
@@ -1212,6 +1234,7 @@ public partial class MainWindow : Window
 
         StockGrid.ItemsSource = show;
         ShowStockKpis(show);
+        ShowStockBreakdown(grade, size, term, show);
 
         StockCount.Text = show.Count == 0
             ? NoFilterMatch
@@ -1222,6 +1245,74 @@ public partial class MainWindow : Window
 
         if (_stock.Count != 0 && show.Count != _stock.Count)
             Say($"Showing {show.Count} of {_stock.Count} buckets", ok: true);
+    }
+
+    /// <summary>
+    /// The breakdown card: carats held, and carats rejected to date.
+    ///
+    /// The two are NOT parts of one whole. Held comes from v_stock_position; rejected is the sum
+    /// of REJECTION rows in v_stock_movement, and those carats left stock when the rejection was
+    /// recorded. Subtracting one from the other, or showing them as a split of the same bar, would
+    /// deduct the same carats twice.
+    ///
+    /// Filtered by grade and size against the buckets currently on screen, so picking a grade
+    /// narrows both figures together and the card never describes a set the list is not showing.
+    /// </summary>
+    private void ShowStockBreakdown(string grade, string size, string term,
+                                    List<VStockPosition> show)
+    {
+        if (StockBreakdownTotal is null) return;
+        bool filtered = grade.Length != 0 || size.Length != 0 || term.Length != 0;
+
+        // Filtered by the SAME grade/size/search the list uses -- but not by which buckets survived
+        // "hide empty". Matching against the displayed rows lost every rejection whose bucket has
+        // since been emptied: NO 1 BB x -2 holds nothing today and 3.87 ct were rejected out of it,
+        // so the card read 200.47 where the ledger says 204.34. A rejection does not stop having
+        // happened because the bucket it came from is now empty.
+        var rejected = _rejections
+            .Where(m => grade.Length == 0 || m.GradeCode == grade)
+            .Where(m => size.Length == 0 || m.SizeCode == size)
+            .Where(m => term.Length == 0
+                        || m.GradeCode.Contains(term, StringComparison.OrdinalIgnoreCase)
+                        || m.SizeCode.Contains(term, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        StockBreakdownTotal.Text = $"{show.Sum(r => r.BalanceCt):N4} ct";
+
+        // Says what the figure IS relative to the workbook, because that is the question the
+        // office actually asks: their sheet reads 2,950.84 and the app reads 2,748.74, and without
+        // a word here the two look like a disagreement rather than a position that has moved.
+        // The number itself is unchanged -- this is the caption under it.
+        // Both numbers, on one line, with the arithmetic between them. The office reads their
+        // sheet's BALANCE STOCK and this screen's total; naming the relationship in words was not
+        // enough, because the figure they wanted to reconcile against was not on screen at all.
+        decimal held = show.Sum(r => r.BalanceCt);
+        decimal atImport = _importedStock
+            .Where(m => grade.Length == 0 || m.GradeCode == grade)
+            .Where(m => size.Length == 0 || m.SizeCode == size)
+            .Where(m => term.Length == 0
+                        || m.GradeCode.Contains(term, StringComparison.OrdinalIgnoreCase)
+                        || m.SizeCode.Contains(term, StringComparison.OrdinalIgnoreCase))
+            .Sum(m => m.WeightCt);
+
+        decimal moved = held - atImport;
+        StockBreakdownTotalNote.Text = atImport == 0m
+            ? (filtered ? "Carats on hand · filtered" : "Carats on hand")
+            : $"Workbook at import: {atImport:N4} ct · {Math.Abs(moved):N4} ct "
+              + (moved < 0 ? "out since" : "in since") + (filtered ? " · filtered" : "");
+
+        decimal ct = rejected.Sum(m => m.WeightCt);
+        StockBreakdownRejection.Text = $"{ct:N4} ct";
+        StockBreakdownRejectionNote.Text = rejected.Count == 0
+            ? "Nothing rejected from these buckets"
+            : $"{Plural(rejected.Count, "rejection")} to date · already out of stock";
+
+        // Where they came from, because a rejection off an invoice line and one entered by hand
+        // are different acts and the split is the first thing anyone asks about.
+        int onSales = rejected.Count(m => m.RefType == "sales_line");
+        StockBreakdownScope.Text = rejected.Count == 0
+            ? ""
+            : $"{onSales:N0} on sales lines · {rejected.Count - onSales:N0} recorded by hand";
     }
 
     /// The combo shows "No. 1 Clean (NO 1)"; v_stock_position carries the code. Empty label means
@@ -1354,7 +1445,7 @@ public partial class MainWindow : Window
 
     private async void Movements_Click(object sender, RoutedEventArgs e)
     {
-        if (StockGrid.SelectedItem is not VStockPosition row) { Say("Select a grade × size row"); return; }
+        if (StockGrid.SelectedItem is not VStockPosition row) { Field(StockGrid, "Select a grade × size row"); return; }
 
         List<VStockMovement>? rows;
         using (Busy(ShowMovements, Loading, ShowMovements, StockRefresh))
@@ -1528,7 +1619,7 @@ public partial class MainWindow : Window
     private async void LedgerLoad_Click(object sender, RoutedEventArgs e)
     {
         var (grade, size) = Pick(LedgerGrade, LedgerSize);
-        if (grade is null || size is null) { Say(PickGradeSize); return; }
+        if (grade is null || size is null) { Field(LedgerGrade, PickGradeSize); return; }
 
         List<VStockMovement>? rows;
         using (Busy(LedgerLoad, Loading))
@@ -1561,13 +1652,14 @@ public partial class MainWindow : Window
     private async void Intake_Click(object sender, RoutedEventArgs e)
     {
         var (grade, size) = Pick(IntakeGrade, IntakeSize);
-        if (grade is null || size is null) { Say(PickGradeSize); return; }
-        if (!decimal.TryParse(IntakeWeight.Text, out decimal weight) || weight <= 0) { Say("Weight must be positive"); return; }
+        if (grade is null || size is null) { Field(IntakeGrade, PickGradeSize); return; }
+        if (!decimal.TryParse(IntakeWeight.Text, out decimal weight) || weight <= 0)
+        { Field(IntakeWeight, "Weight must be positive"); return; }
         // rough_intake.price_per_ct is not nullable and feeds v_stock_position's avg_cost and
         // stock_value. A blank box parsed to 0 booked the parcel at zero value and dragged the
         // grade's average cost down with it, silently. Zero is fine — but it has to be typed.
         if (!decimal.TryParse(IntakePrice.Text, out decimal price) || price < 0)
-        { Say("Enter the price per carat — it sets this parcel's cost basis"); return; }
+        { Field(IntakePrice, "Enter the price per carat — it sets this parcel's cost basis"); return; }
 
         if (Bounds.TooLarge(weight, WeightField) is { } tooHeavy) { Say(tooHeavy); IntakeWeight.Focus(); return; }
         if (Bounds.TooLarge(price, "Price per carat") is { } tooDear) { Say(tooDear); IntakePrice.Focus(); return; }
@@ -1614,7 +1706,8 @@ public partial class MainWindow : Window
     {
         var (fromGrade, fromSize) = Pick(ConvFromGrade, ConvFromSize);
         var (toGrade, toSize) = Pick(ConvToGrade, ConvToSize);
-        if (fromGrade is null || fromSize is null || toGrade is null || toSize is null) { Say("Pick both sides"); return; }
+        if (fromGrade is null || fromSize is null || toGrade is null || toSize is null)
+        { Field(fromGrade is null || fromSize is null ? ConvFromGrade : ConvToGrade, "Pick both sides"); return; }
 
         // A conversion moves carats from one bucket to another. Both sides the same is not a
         // conversion — it books a movement out and a movement in for the same bucket, leaving the
@@ -1622,8 +1715,10 @@ public partial class MainWindow : Window
         if (fromGrade.GradeId == toGrade.GradeId && fromSize.SizeId == toSize.SizeId)
         { Say("From and To are the same bucket — a conversion has to move carats somewhere else"); return; }
 
-        if (!decimal.TryParse(ConvWeight.Text, out decimal weight) || weight <= 0) { Say("Weight must be positive"); return; }
-        if (!TypedPrice(ConvPrice, out decimal? price)) { Say("Price/ct must be a number, or left blank"); return; }
+        if (!decimal.TryParse(ConvWeight.Text, out decimal weight) || weight <= 0)
+        { Field(ConvWeight, "Weight must be positive"); return; }
+        if (!TypedPrice(ConvPrice, out decimal? price))
+        { Field(ConvPrice, "Price/ct must be a number, or left blank"); return; }
 
         if (Bounds.TooLarge(weight, WeightField) is { } tooHeavy) { Say(tooHeavy); ConvWeight.Focus(); return; }
         if (price is { } p && Bounds.TooLarge(p, "Price per carat") is { } tooDear) { Say(tooDear); ConvPrice.Focus(); return; }
@@ -1663,9 +1758,11 @@ public partial class MainWindow : Window
         DispositionGrid.CommitEdit(DataGridEditingUnit.Row, true);
 
         var (grade, size) = Pick(RejGrade, RejSize);
-        if (grade is null || size is null) { Say(PickGradeSize); return; }
-        if (!decimal.TryParse(RejWeight.Text, out decimal weight) || weight <= 0) { Say("Weight must be positive"); return; }
-        if (!TypedPrice(RejPrice, out decimal? price)) { Say("Price/ct must be a number, or left blank"); return; }
+        if (grade is null || size is null) { Field(RejGrade, PickGradeSize); return; }
+        if (!decimal.TryParse(RejWeight.Text, out decimal weight) || weight <= 0)
+        { Field(RejWeight, "Weight must be positive"); return; }
+        if (!TypedPrice(RejPrice, out decimal? price))
+        { Field(RejPrice, "Price/ct must be a number, or left blank"); return; }
 
         if (Bounds.TooLarge(weight, WeightField) is { } tooHeavy) { Say(tooHeavy); RejWeight.Focus(); return; }
         if (price is { } rp && Bounds.TooLarge(rp, "Price per carat") is { } tooDear) { Say(tooDear); RejPrice.Focus(); return; }
@@ -1725,9 +1822,11 @@ public partial class MainWindow : Window
     private async void Adjust_Click(object sender, RoutedEventArgs e)
     {
         var (grade, size) = Pick(AdjGrade, AdjSize);
-        if (grade is null || size is null) { Say(PickGradeSize); return; }
-        if (!decimal.TryParse(AdjWeight.Text, out decimal weight) || weight == 0) { Say("Adjust by a non-zero weight"); return; }
-        if (string.IsNullOrWhiteSpace(AdjReason.Text)) { Say("An adjustment needs a reason"); return; }
+        if (grade is null || size is null) { Field(AdjGrade, PickGradeSize); return; }
+        if (!decimal.TryParse(AdjWeight.Text, out decimal weight) || weight == 0)
+        { Field(AdjWeight, "Adjust by a non-zero weight"); return; }
+        if (string.IsNullOrWhiteSpace(AdjReason.Text))
+        { Field(AdjReason, "An adjustment needs a reason"); return; }
 
         // Signed on purpose (docs/12 §7) — TooLarge tests the magnitude, so a big correction
         // downwards is checked the same as a big one upwards.
@@ -2127,8 +2226,9 @@ public partial class MainWindow : Window
     private async void AddPrice_Click(object sender, RoutedEventArgs e)
     {
         var (grade, size) = Pick(PriceGradePicker, PriceSizePicker);
-        if (grade is null || size is null) { Say(PickGradeSize); return; }
-        if (!decimal.TryParse(PriceValue.Text, out decimal price) || price < 0) { Say("Enter a price"); return; }
+        if (grade is null || size is null) { Field(PriceGradePicker, PickGradeSize); return; }
+        if (!decimal.TryParse(PriceValue.Text, out decimal price) || price < 0)
+        { Field(PriceValue, "Enter a price"); return; }
 
         string context = (PriceContext.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "SALE";
 
@@ -3604,6 +3704,575 @@ public partial class MainWindow : Window
             _dispositions.Add(new DispositionRow());
     }
 
+    // ── Stock report · the client's own sheet, on screen ────────────────────
+    //
+    // Reads v_stock_position through Repo.StockAsync(), the same call the Stock page makes.
+    // Weight is balance_ct and Rate is avg_cost, both straight from the view. The only
+    // arithmetic here is adding up figures Postgres already produced -- a column total and a
+    // weight-weighted rate -- which is what the KPI tiles do as well. Nothing is recalculated.
+
+    /// <summary>
+    /// The sizes the printed sheet carries, and the notation it prints them in.
+    ///
+    /// The client writes fractions of a carat as "1/5" and "1/4"; the Size Master stores them as
+    /// "0.2" and "0.25". Mapped here rather than in the database because it is a presentation
+    /// choice belonging to one report -- adding them as size aliases would change what every
+    /// other screen and both importers accept.
+    /// </summary>
+    private static readonly Dictionary<string, string> ReportSizeLabels = new(StringComparer.Ordinal)
+    {
+        ["0.2"] = "1/5",
+        ["0.25"] = "1/4",
+    };
+
+    /// <summary>
+    /// The grade labels the printed sheet uses. Same reasoning as the sizes: the sheet writes
+    /// "No. II Spotted" as "#", which is a mark on one report and not a grade code anyone can type
+    /// into the app.
+    /// </summary>
+    private static readonly Dictionary<string, string> ReportGradeLabels = new(StringComparer.Ordinal)
+    {
+        ["NO II"] = "#",
+        ["NO 1 BB"] = "1BB",
+        ["EX 1"] = "EX1",
+        ["NO 2"] = "2",
+        ["NO DX"] = "DX1",
+        ["NO 3"] = "3",
+        ["NO 4"] = "4",
+        ["NO 5"] = "5",
+        ["NO 6"] = "6",
+        ["NO 7"] = "7",
+        ["TOP-COL"] = "TOP co",
+        ["COL"] = "color",
+    };
+
+    /// The sizes ticked when the page first opens. "14+" was one of these until it was retired;
+    /// a default that names a size the picker no longer offers just ticks nothing.
+    private static readonly string[] ReportDefaultSizes = ["0.2", "0.25"];
+
+    /// <summary>
+    /// The row order of the printed sheet, which is NOT the catalogue's.
+    ///
+    /// The catalogue sorts by sort_order and opens NO 1, NO 1 BB, NO 2, NO 2 BB, NO II...; the
+    /// client's page runs 1BB, #, EX1, 2, DX1, 3-7, TOP co, color, OW, LC 1, LC 2, GH, LB 1, LB 2.
+    /// Somebody reading the screen against the paper has to find the same grade on the same line,
+    /// so the paper wins here.
+    ///
+    /// Grades the sheet does not print -- NO 1, NO 2 BB, LC 3, +14, EXTRA -- follow underneath in
+    /// catalogue order rather than being dropped. Hiding a grade that holds stock because one
+    /// report never listed it is how carats go missing from a stock sheet; "Hide grades with no
+    /// stock" is there for anyone who wants the shorter page.
+    /// </summary>
+    private static readonly string[] ReportGradeOrder =
+    [
+        "NO 1 BB", "NO II", "EX 1", "NO 2", "NO DX", "NO 3", "NO 4", "NO 5", "NO 6", "NO 7",
+        "TOP-COL", "COL", "OW", "LC 1", "LC 2", "GH", "LB 1", "LB 2",
+    ];
+
+    /// Rejection movements, read once per Stock load and filtered on screen with the same
+    /// predicate as the position rows, so the card and the list always describe the same set.
+    private List<VStockMovement> _rejections = [];
+
+    /// What the last stock import placed -- the workbook's own figure, so the screen can show it
+    /// beside the current position instead of leaving the office to wonder why they differ.
+    private List<VStockMovement> _importedStock = [];
+
+    private readonly List<CheckBox> _reportSizeBoxes = [];
+    private List<VStockPosition> _reportRows = [];
+
+    private static string SizeLabel(string code) =>
+        ReportSizeLabels.TryGetValue(code, out string? l) ? l : code;
+
+    private static string GradeLabel(string code) =>
+        ReportGradeLabels.TryGetValue(code, out string? l) ? l : code;
+
+    /// <summary>
+    /// The printed sheet read backwards: what is on the page, answering with the catalogue code.
+    ///
+    /// These are the inverse of the two maps above, and deliberately built from them rather than
+    /// written out again. The Stock report tab and the PDF importer are looking at the same piece
+    /// of paper — one drawing it, one reading it — so a label that changes in one place must change
+    /// in the other, and two lists cannot be relied on to stay in step.
+    ///
+    /// A grade the sheet prints as its own code (OW, GH, LC 1) needs no entry in ReportGradeLabels
+    /// and is picked up from the catalogue here.
+    /// </summary>
+    /// <summary>
+    /// Takes the grades themselves rather than their codes, so the ALIASES count.
+    ///
+    /// Aliases are how the catalogue already absorbs the spellings a client's paperwork uses — the
+    /// workbook importer has resolved through them since day one. Reading a PDF against codes alone
+    /// meant a sheet printing "1 BB" or ",-2 MB" could only be accepted by renaming the grade, when
+    /// the catalogue has a field for exactly this.
+    /// </summary>
+    public static Dictionary<string, string> PdfGradeLabelMap(IEnumerable<Grade> grades)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var g in grades)
+        {
+            map[PdfStockFile.Normalise(g.Code)] = g.Code;
+            // The spaceless form too, so a sheet setting "NO 1 BB" as "1BB" and one setting it as
+            // "1 BB" both land on the same grade. TryAdd, not assignment: if two catalogue entries
+            // ever collapse to the same letters the first keeps the key rather than the last
+            // silently winning.
+            map.TryAdd(PdfStockFile.Normalise(g.Code).Replace(" ", ""), g.Code);
+        }
+
+        // After the codes, so a code is never displaced by another grade's alias.
+        foreach (var g in grades)
+            foreach (string alias in (g.Aliases ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                map.TryAdd(PdfStockFile.Normalise(alias), g.Code);
+                map.TryAdd(PdfStockFile.Normalise(alias).Replace(" ", ""), g.Code);
+            }
+
+        // Last, so a printed label always wins: these are the marks this particular sheet uses.
+        foreach (var (code, label) in ReportGradeLabels)
+        {
+            map[PdfStockFile.Normalise(label)] = code;
+            map[PdfStockFile.Normalise(label).Replace(" ", "")] = code;
+        }
+        return map;
+    }
+
+    public static Dictionary<string, string> PdfSizeLabelMap(IEnumerable<string> codes)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string code in codes)
+        {
+            map[PdfStockFile.Normalise(code)] = code;
+            // Keyed by sieve notation as well, which is how one sheet writes "6.5-" and "11+" for
+            // the buckets another writes "-6.5" and "+11". Same rule the workbook importer uses.
+            if (StockFileImport.SizeKey(code) is { } key) map.TryAdd(key, code);
+        }
+        foreach (var (code, label) in ReportSizeLabels) map[PdfStockFile.Normalise(label)] = code;
+        return map;
+    }
+
+    // ── Stock report · read only and edit mode ──────────────────────────────
+    //
+    // Editing a cell does NOT write to the cell. v_stock_position.balance_ct is derived from the
+    // movement ledger and there is nothing there to overwrite -- which is the point: the ledger is
+    // append-only (BR-INV-1) and two desks can post at once without one clobbering the other.
+    //
+    // So a "manual change" is the difference between what the report shows and what the user says
+    // it should be, recorded as one ADJUST movement through the same adjust_stock RPC the Intake
+    // page uses. The balance then moves because the ledger moved, every other screen agrees
+    // immediately, and who/when/why is captured by the audit trigger that already watches
+    // stock_movement -- no second source of truth and nothing new to store.
+
+    /// Manual ADJUST rows, so a corrected bucket can be marked and explained on hover.
+    private List<StockMovement> _reportAdjustments = [];
+    private Dictionary<Guid, string> _reportUserNames = new();
+
+    private bool ReportEditing => ReportEditMode?.IsChecked == true;
+
+    private void ReportEditMode_Click(object sender, RoutedEventArgs e)
+    {
+        // Belt and braces. The checkbox is hidden for anyone who may not adjust, but a hidden
+        // control is still reachable by automation, and the RPC would refuse anyway.
+        if (ReportEditing && !Db.IsManagerOrOwner)
+        {
+            ReportEditMode.IsChecked = false;
+            Say("Only a manager or owner may adjust stock.");
+            ApplyReportMode();
+            return;
+        }
+        // The chip lives in ApplyReportMode. Redrawing alone made the cells editable while the
+        // badge still read "Read only" -- the one thing a mode switch must never get wrong.
+        ApplyReportMode();
+        DrawStockReport();
+    }
+
+    /// <summary>
+    /// Shows which mode the page is in, and hides the switch from anyone who cannot use it.
+    /// </summary>
+    private void ApplyReportMode()
+    {
+        if (ReportEditMode is null) return;
+
+        ReportEditMode.Visibility = Db.IsManagerOrOwner ? Visibility.Visible : Visibility.Collapsed;
+        if (!Db.IsManagerOrOwner) ReportEditMode.IsChecked = false;
+
+        ReportModeText.Text = ReportEditing ? "Edit mode · click a weight to correct it" : "Read only";
+        ReportModeChip.SetResourceReference(Border.BackgroundProperty,
+            ReportEditing ? "WarningSoftBrush" : "Surface2Brush");
+    }
+
+    /// <summary>
+    /// A cell the user clicked in edit mode. Asks what the weight should be and why, works out the
+    /// difference, and records it. Nothing is written if the figure is unchanged.
+    /// </summary>
+    private async Task AdjustFromReportAsync(string gradeCode, string sizeCode, decimal current,
+                                             decimal currentRate)
+    {
+        var grade = Catalogue.Grades.FirstOrDefault(g => g.Code == gradeCode);
+        var size = Catalogue.AllSizes.FirstOrDefault(z => z.Code == sizeCode);
+        if (grade is null || size is null) { Say("That grade or size is no longer in the catalogue."); return; }
+
+        // The stock report still SHOWS retired sieves, because the stock under them is real and
+        // hiding it would be preserving figures nobody can see. Editing one is a different act:
+        // an adjustment is a new movement, and a retired size takes no new movements. Said in its
+        // own words rather than "no longer in the catalogue" — the row is right there on screen,
+        // and a message denying it exists reads as a bug.
+        if (!size.Active)
+        {
+            Say($"{SizeLabel(sizeCode)} has been retired — its stock can be read but not adjusted.");
+            return;
+        }
+
+        var values = AppFormDialog.Show(this, "Correct the stock",
+            $"{grade.DisplayName ?? gradeCode} × {SizeLabel(sizeCode)}",
+            $"Currently {current:N4} ct at {(currentRate == 0m ? "no recorded rate" : currentRate.ToString("N0") + " a carat")}. "
+            + "The difference is recorded as an adjustment on the ledger — the calculated balance "
+            + "is never overwritten.",
+            [
+                new FormFieldSpec("Corrected weight ct", current.ToString("N4"), Numeric: true, MaxLength: 16),
+                new FormFieldSpec("Rate per ct", currentRate == 0m ? "" : currentRate.ToString("0.##"),
+                                  Numeric: true, MaxLength: 16),
+                new FormFieldSpec("Reason", MaxLength: 120),
+            ],
+            v =>
+            {
+                if (!decimal.TryParse(v[0], out decimal target))
+                    return "Enter the weight this bucket should hold.";
+                if (Bounds.TooLarge(Math.Abs(target - current), WeightField) is { } tooHeavy)
+                    return tooHeavy;
+
+                decimal change = target - current;
+                if (change == 0m)
+                    // The rate is an average over the ledger's inward movements, not a figure
+                    // stored anywhere, so there is no cell to type a new one into. Re-importing
+                    // the sheet rewrites those movements, which is the honest way to restate it.
+                    return "That is the weight already shown. A rate on its own cannot be corrected "
+                         + "here — it is averaged from the ledger. Re-import the sheet to restate it.";
+
+                // Only asked for when carats are being ADDED: a removal contributes nothing to the
+                // average, so a rate on one would be recorded and never read.
+                if (change > 0m)
+                {
+                    if (!decimal.TryParse(v[1], out decimal rate) || rate <= 0m)
+                        return $"Enter the rate those {change:N4} ct are worth. Adding carats with no "
+                             + "rate would drag this bucket's average cost towards zero.";
+                    if (Bounds.TooLarge(rate, "Rate") is { } tooDear)
+                        return tooDear;
+                }
+
+                // adjust_stock enforces this too; saying it here saves a round trip to be told.
+                return string.IsNullOrWhiteSpace(v[2]) ? "A reason is required for every adjustment." : null;
+            },
+            "Record adjustment");
+
+        if (values is null) return;
+
+        decimal corrected = decimal.Parse(values[0]);
+        decimal delta = corrected - current;
+        decimal? price = delta > 0m && decimal.TryParse(values[1], out decimal p) ? p : null;
+
+        // The reason carries both figures, so the ledger reads as a correction rather than a bare
+        // number: the audit row keeps who and when, and this keeps what it was and what it became.
+        string reason = $"Stock report correction: {current:N4} -> {corrected:N4} ct "
+                      + $"({(delta < 0 ? "-" : "+")}{Math.Abs(delta):N4})"
+                      + (price is { } r ? $" at {r:N0}/ct" : "") + $". {values[2].Trim()}";
+
+        var result = await Read(() => Repo.AdjustAsync(grade.GradeId, size.SizeId, delta, reason,
+                                                       pricePerCt: price));
+        if (result is null) return;
+        if (!result.Ok) { Say(result.Failure!); return; }
+
+        Announce($"Adjusted {gradeCode} × {SizeLabel(sizeCode)} by {(delta < 0 ? "-" : "+")}{Math.Abs(delta):N4} ct",
+                 result.Warning);
+
+        // Reload from the database rather than patching the cell: the balance is derived, and the
+        // only figure worth showing is the one the view now returns.
+        await LoadStockReportAsync();
+    }
+
+    /// The most recent manual adjustment on a bucket, for the marker's tooltip.
+    private string? ReportAdjustmentNote(long gradeId, long sizeId)
+    {
+        var last = _reportAdjustments
+            .Where(m => m.GradeId == gradeId && m.SizeId == sizeId)
+            .OrderByDescending(m => m.MovementId).FirstOrDefault();
+        if (last is null) return null;
+
+        string who = last.CreatedBy is { } id && _reportUserNames.TryGetValue(id, out string? name)
+            ? name : "someone";
+        int total = _reportAdjustments.Count(m => m.GradeId == gradeId && m.SizeId == sizeId);
+
+        return $"Manually adjusted {(last.WeightCt < 0 ? "-" : "+")}{Math.Abs(last.WeightCt):N4} ct"
+             + $"\n{who} · {last.MovementDate:dd MMM yyyy}"
+             + $"\n{last.Reason}"
+             + (total > 1 ? $"\n\n{total} manual adjustments on this bucket in total." : "");
+    }
+
+    private async void LoadStockReport_Click(object sender, RoutedEventArgs e) => await LoadStockReportAsync();
+
+    private void ResetStockReport_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var box in _reportSizeBoxes)
+            box.IsChecked = ReportDefaultSizes.Contains((string)box.Tag);
+        ReportHideEmpty.IsChecked = false;
+        _ = LoadStockReportAsync();
+    }
+
+    /// <summary>
+    /// One read, then the whole sheet is drawn from it. Called on tab entry and on Refresh.
+    /// </summary>
+    private async Task LoadStockReportAsync()
+    {
+        // The size tick-boxes are built once, from the catalogue, so a size added to the Size
+        // Master appears here without this report knowing about it in advance.
+        if (_reportSizeBoxes.Count == 0) BuildReportSizeBoxes();
+
+        var rows = await Read(Repo.StockAsync);
+        if (rows is null) return;
+        _reportRows = rows;
+
+        // Which buckets carry a manual correction, and who made it. Failing to read these must not
+        // stop the report drawing -- the figures are the point, the markers are the annotation.
+        _reportAdjustments = await Read(Repo.ManualAdjustmentsAsync) ?? [];
+        if (_reportAdjustments.Count > 0 && _reportUserNames.Count == 0)
+            _reportUserNames = (await Read(Repo.UsersAsync) ?? [])
+                .ToDictionary(u => u.Id, u => u.FullName ?? "someone");
+
+        ApplyReportMode();
+        DrawStockReport();
+    }
+
+    private void BuildReportSizeBoxes()
+    {
+        var panel = new List<UIElement>();
+        foreach (var size in Catalogue.AllSizes)
+        {
+            var box = new CheckBox
+            {
+                Content = SizeLabel(size.Code),
+                Tag = size.Code,
+                IsChecked = ReportDefaultSizes.Contains(size.Code),
+                Margin = new Thickness(0, 0, 12, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            box.Click += LoadStockReport_Click;
+            _reportSizeBoxes.Add(box);
+            panel.Add(box);
+        }
+        ReportSizes.ItemsSource = panel;
+    }
+
+    // The sheet's rules: heavy on the outside and between size groups, hairline between a
+    // size's own Weight and Rate. Matching the printed page is the whole point of this screen.
+    private static readonly Thickness CellRule = new(0.6);
+    private static readonly Thickness GroupRule = new(1.6, 0.6, 0.6, 0.6);
+
+    private Border ReportCell(string text, bool bold, TextAlignment align, Thickness rule,
+                              bool header = false)
+    {
+        var block = new TextBlock
+        {
+            Text = text,
+            TextAlignment = align,
+            FontWeight = bold ? FontWeights.Bold : FontWeights.Normal,
+            FontSize = header ? 14 : 12.5,
+            Margin = new Thickness(8, 4, 8, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        // The figures use the app's tabular font so columns of numbers line up, exactly as they
+        // do everywhere else money and carats are shown.
+        if (align == TextAlignment.Right || header)
+            block.SetResourceReference(TextBlock.FontFamilyProperty, "MonoFont");
+        block.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
+
+        var cell = new Border { BorderThickness = rule, Child = block, MinWidth = 74 };
+        cell.SetResourceReference(Border.BorderBrushProperty, "TextBrush");
+        return cell;
+    }
+
+    private void DrawStockReport()
+    {
+        ReportTable.Children.Clear();
+        ReportTable.ColumnDefinitions.Clear();
+        ReportTable.RowDefinitions.Clear();
+        ReportTotals.Children.Clear();
+        ReportTotals.ColumnDefinitions.Clear();
+
+        var sizes = _reportSizeBoxes.Where(b => b.IsChecked == true)
+            .Select(b => (string)b.Tag)
+            .OrderBy(code => Catalogue.AllSizes.FirstOrDefault(z => z.Code == code)?.SizeId ?? long.MaxValue)
+            .ToList();
+
+        // The printed sheet's order first, then anything else the catalogue holds.
+        var grades = Catalogue.Grades.Select(g => g.Code)
+            .OrderBy(code =>
+            {
+                int i = Array.IndexOf(ReportGradeOrder, code);
+                return i >= 0 ? i : int.MaxValue;
+            })
+            .ToList();
+
+        decimal Weight(string grade, string size) =>
+            _reportRows.FirstOrDefault(r => r.GradeCode == grade && r.SizeCode == size)?.BalanceCt ?? 0m;
+        decimal Rate(string grade, string size) =>
+            _reportRows.FirstOrDefault(r => r.GradeCode == grade && r.SizeCode == size)?.AvgCost ?? 0m;
+
+        if (ReportHideEmpty.IsChecked == true)
+            grades = grades.Where(g => sizes.Any(s => Weight(g, s) != 0m)).ToList();
+
+        bool anything = sizes.Count > 0 && grades.Count > 0;
+        ReportEmpty.Visibility = anything ? Visibility.Collapsed : Visibility.Visible;
+        ReportTitleBox.Visibility = anything ? Visibility.Visible : Visibility.Collapsed;
+        if (!anything) { ReportChip.Text = "Nothing to show"; return; }
+
+        // 1 label + 2 per size + 1 label, as the sheet prints it.
+        int columns = 1 + sizes.Count * 2 + 1;
+        for (int c = 0; c < columns; c++)
+            ReportTable.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        int row = 0;
+        void AddRow() { ReportTable.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); }
+
+        // ── header: the size name centred over its Weight/Rate pair ──────────
+        AddRow();
+        ReportTable.Children.Add(Place(ReportCell("", false, TextAlignment.Center, CellRule), row, 0));
+        for (int i = 0; i < sizes.Count; i++)
+        {
+            var head = ReportCell(SizeLabel(sizes[i]), true, TextAlignment.Center, GroupRule, header: true);
+            System.Windows.Controls.Grid.SetColumnSpan(head, 2);
+            ReportTable.Children.Add(Place(head, row, 1 + i * 2));
+        }
+        ReportTable.Children.Add(Place(ReportCell("", false, TextAlignment.Center, CellRule), row, columns - 1));
+
+        // ── the blank band the sheet leaves under the header ─────────────────
+        row++; AddRow();
+        for (int c = 0; c < columns; c++)
+        {
+            var rule = c > 0 && c < columns - 1 && (c - 1) % 2 == 0 ? GroupRule : CellRule;
+            ReportTable.Children.Add(Place(ReportCell("", false, TextAlignment.Center, rule), row, c));
+        }
+
+        // ── one row per grade ────────────────────────────────────────────────
+        foreach (string grade in grades)
+        {
+            row++; AddRow();
+            ReportTable.Children.Add(
+                Place(ReportCell(GradeLabel(grade), false, TextAlignment.Right, CellRule), row, 0));
+
+            for (int i = 0; i < sizes.Count; i++)
+            {
+                string sizeCode = sizes[i];
+                decimal w = Weight(grade, sizeCode);
+                decimal r = Rate(grade, sizeCode);
+
+                // Blank, not "0.00": the printed sheet leaves an untraded cell empty, and a zero
+                // reads as "measured and found to be nothing" rather than "nothing here".
+                var weightCell = ReportCell(w == 0m ? "" : w.ToString("N2"), false,
+                                            TextAlignment.Right, GroupRule);
+
+                // A bucket someone has corrected by hand is marked and explained, so a reader can
+                // tell a figure the ledger derived from one a person typed.
+                var ids = _reportRows.FirstOrDefault(x => x.GradeCode == grade && x.SizeCode == sizeCode);
+                if (ids is not null && ReportAdjustmentNote(ids.GradeId, ids.SizeId) is { } note)
+                {
+                    weightCell.ToolTip = note;
+                    if (weightCell.Child is TextBlock marked)
+                    {
+                        marked.SetResourceReference(TextBlock.ForegroundProperty, "WarningBrush");
+                        marked.FontStyle = FontStyles.Italic;
+                    }
+                }
+
+                var rateCell = ReportCell(r == 0m ? "" : r.ToString("N0"), false,
+                                          TextAlignment.Right, CellRule);
+
+                if (ReportEditing)
+                {
+                    // BOTH halves of the pair open the same correction. The two figures are one
+                    // fact — carats and what they are worth — and clicking the rate to be told
+                    // nothing happens is how the left cell came to look like the only one that
+                    // works. The rate is not separately editable, because it is averaged from the
+                    // ledger rather than stored; the dialog says so when only it is changed.
+                    string capturedGrade = grade;
+                    decimal capturedWeight = w;
+                    decimal capturedRate = r;
+
+                    foreach (var cell in new[] { weightCell, rateCell })
+                    {
+                        cell.Cursor = System.Windows.Input.Cursors.Hand;
+                        cell.SetResourceReference(Border.BackgroundProperty, "Surface2Brush");
+                        cell.ToolTip ??= "Click to correct this holding.";
+                        cell.MouseLeftButtonUp += async (_, _) =>
+                            await AdjustFromReportAsync(capturedGrade, sizeCode, capturedWeight,
+                                                        capturedRate);
+                    }
+                }
+
+                ReportTable.Children.Add(Place(weightCell, row, 1 + i * 2));
+                ReportTable.Children.Add(Place(rateCell, row, 2 + i * 2));
+            }
+
+            ReportTable.Children.Add(
+                Place(ReportCell(GradeLabel(grade), false, TextAlignment.Left, CellRule), row, columns - 1));
+        }
+
+        DrawStockReportTotals(sizes, grades, Weight, Rate);
+    }
+
+    private static UIElement Place(UIElement element, int row, int column)
+    {
+        System.Windows.Controls.Grid.SetRow(element, row);
+        System.Windows.Controls.Grid.SetColumn(element, column);
+        return element;
+    }
+
+    /// <summary>
+    /// The two totals lines, drawn outside the ruled box exactly as the sheet prints them: a
+    /// per-size weight and rate, then one grand total.
+    ///
+    /// The rate is weighted by carats, not averaged: averaging the rates would give a bucket
+    /// holding 0.16 ct the same say as one holding 53.97 ct.
+    /// </summary>
+    private void DrawStockReportTotals(List<string> sizes, List<string> grades,
+                                       Func<string, string, decimal> weight,
+                                       Func<string, string, decimal> rate)
+    {
+        int columns = 1 + sizes.Count * 2 + 1;
+        for (int c = 0; c < columns; c++)
+            ReportTotals.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        ReportTotals.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        ReportTotals.RowDefinitions.Add(new RowDefinition { Height = new GridLength(18) });
+        ReportTotals.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var none = new Thickness(0);
+        decimal grandWeight = 0m, grandValue = 0m;
+
+        for (int i = 0; i < sizes.Count; i++)
+        {
+            decimal w = grades.Sum(g => weight(g, sizes[i]));
+            decimal v = grades.Sum(g => weight(g, sizes[i]) * rate(g, sizes[i]));
+            grandWeight += w;
+            grandValue += v;
+
+            ReportTotals.Children.Add(Place(
+                ReportCell(w == 0m ? "" : w.ToString("N2"), true, TextAlignment.Right, none), 0, 1 + i * 2));
+            ReportTotals.Children.Add(Place(
+                ReportCell(w == 0m ? "" : (v / w).ToString("N0"), true, TextAlignment.Right, none),
+                0, 2 + i * 2));
+        }
+
+        ReportTotals.Children.Add(Place(
+            ReportCell("TOTAL", true, TextAlignment.Right, none), 2, 0));
+        ReportTotals.Children.Add(Place(
+            ReportCell(grandWeight.ToString("N2"), true, TextAlignment.Right, none), 2, 1));
+        ReportTotals.Children.Add(Place(
+            ReportCell(grandWeight == 0m ? "" : (grandValue / grandWeight).ToString("N0"),
+                       true, TextAlignment.Right, none), 2, 2));
+
+        ReportChip.Text = $"{grandWeight:N2} ct";
+        ReportSubtitle.Text = $"{grades.Count} grade(s) × {sizes.Count} size(s) · "
+                            + $"{string.Join(", ", sizes.Select(SizeLabel))} · as at {DateTime.Now:dd MMM yyyy}";
+    }
+
     private void CopyUserId_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as FrameworkElement)?.DataContext is not Profile user) return;
@@ -3771,6 +4440,20 @@ public partial class MainWindow : Window
     /// said yes to losing the previous import, so a bad workbook cannot leave the database
     /// half-way between two datasets.
     /// </summary>
+    /// <summary>
+    /// The catalogue an import may resolve against: retired sieves taken out.
+    ///
+    /// Applied to the READ rather than to the alias map, because the same list also builds the
+    /// code-to-id dictionary the write uses. Filtering only the map would let a sheet be parsed
+    /// against one catalogue and posted against another — the exact mismatch the "read against the
+    /// catalogue as it stands right now" note further down exists to prevent.
+    ///
+    /// A sheet still printing a retired column is not silently dropped: the heading resolves to
+    /// nothing, so the reader's own checksum fails and names it. That refusal is the point.
+    /// </summary>
+    private static List<SizeBucket> ImportableSizes(List<SizeBucket> sizes) =>
+        [.. sizes.Where(s => s.Active)];
+
     private async void ImportExcel_Click(object sender, RoutedEventArgs e)
     {
         var picker = new Microsoft.Win32.OpenFileDialog
@@ -3812,23 +4495,48 @@ public partial class MainWindow : Window
         }
 
         ImportPlan? plan;
-        List<Grade>? grades;
-        List<SizeBucket>? sizes;
+        List<Grade>? grades = null;
+        List<SizeBucket>? sizes = null;
 
-        using (Busy(ImportExcel, "Checking…", ImportExcel))
+        // Read as a local function so the workbook can be parsed again against a catalogue that has
+        // just gained a size, exactly as the two stock importers do.
+        async Task<ImportPlan?> ReadWorkbookAsync()
         {
-            grades = await Read(Repo.GradesAsync);
-            sizes = await Read(Repo.SizesAsync);
-            if (grades is null || sizes is null) return;
+            using (Busy(ImportExcel, "Checking…", ImportExcel))
+            {
+                grades = await Read(Repo.GradesAsync);
+                sizes = await Read(Repo.SizesAsync);
+                if (grades is null || sizes is null) return null;
+                sizes = ImportableSizes(sizes);
 
-            // Grades carry aliases for the spellings the legacy workbooks use ("II" → "NO II").
-            // Sizes need no stored aliases: their variants are notation (MDM-004), so a rule covers
-            // every catalogue code without anything to seed or maintain.
-            var gradeMap = SaleFileImport.AliasMap(grades.Select(g => (g.Code, g.Aliases)));
-            var sizeMap = SaleFileImport.SizeAliasMap(sizes.Select(s => s.Code));
+                // Grades carry aliases for the spellings the legacy workbooks use ("II" → "NO II").
+                // Sizes need no stored aliases: their variants are notation (MDM-004), so a rule covers
+                // every catalogue code without anything to seed or maintain.
+                var gradeMap = SaleFileImport.AliasMap(grades.Select(g => (g.Code, g.Aliases)));
+                var sizeMap = SaleFileImport.SizeAliasMap(sizes.Select(s => s.Code));
 
-            // Parsing a large sheet is CPU work; off the UI thread so the window stays alive.
-            plan = await Task.Run(() => SaleFileImport.Plan(picker.FileName, gradeMap, sizeMap));
+                // Parsing a large sheet is CPU work; off the UI thread so the window stays alive.
+                return await Task.Run(() => SaleFileImport.Plan(picker.FileName, gradeMap, sizeMap));
+            }
+        }
+
+        plan = await ReadWorkbookAsync();
+        if (plan is null) return;
+
+        // Same rule as the stock workbook: an unknown sieve is a skipped row here, not a failed
+        // file, so refusing to add it has to stop the import explicitly. An invoice imported with
+        // its size rows dropped is a sale whose weight no longer matches the paper.
+        if (plan.UnknownSizes.Count > 0)
+        {
+            if (!await AddMissingSizesAsync(plan.UnknownSizes,
+                                            System.IO.Path.GetFileName(picker.FileName), ImportExcel))
+            {
+                Say("Import cancelled — a sieve size in the workbook is not in the catalogue");
+                return;
+            }
+
+            plan = await ReadWorkbookAsync();
+            if (plan is null) return;
         }
 
         // 1-3 · nothing missing, or stop and say exactly what.
@@ -3912,43 +4620,70 @@ public partial class MainWindow : Window
         if (picker.ShowDialog(this) != true) return;
 
         StockImportPlan? plan;
-        List<Grade>? grades;
-        List<SizeBucket>? sizes;
+        List<Grade>? grades = null;
+        List<SizeBucket>? sizes = null;
 
-        using (Busy(ImportStock, "Checking…", ImportStock))
+        // A local function, not a straight-line block, so the workbook can be read a SECOND time
+        // against a catalogue that has just gained a size. Same shape as the PDF importer above:
+        // a plan read against one catalogue must never be imported against another.
+        async Task<StockImportPlan?> ReadWorkbookAsync()
         {
-            // Offline, fall back to the catalogue already in memory — it was loaded at sign-in and
-            // grades and sizes do not change while a connection is down. Without this the handler
-            // returned here on the failed read and never reached the offline branch below, so
-            // picking a file simply did nothing: no dialog, no queue, no explanation.
-            if (Db.IsOnline)
+            using (Busy(ImportStock, "Checking…", ImportStock))
             {
-                grades = await Read(Repo.GradesAsync);
-                sizes = await Read(Repo.SizesAsync);
-            }
-            else
-            {
-                grades = [.. Catalogue.Grades];
-                sizes = [.. Catalogue.AllSizes];
-            }
+                // Offline, fall back to the catalogue already in memory — it was loaded at sign-in and
+                // grades and sizes do not change while a connection is down. Without this the handler
+                // returned here on the failed read and never reached the offline branch below, so
+                // picking a file simply did nothing: no dialog, no queue, no explanation.
+                if (Db.IsOnline)
+                {
+                    grades = await Read(Repo.GradesAsync);
+                    sizes = await Read(Repo.SizesAsync);
+                }
+                else
+                {
+                    grades = [.. Catalogue.Grades];
+                    sizes = [.. Catalogue.ActiveSizes];
+                }
 
-            if (grades is null || sizes is null) return;
+                if (grades is null || sizes is null) return null;
+                sizes = ImportableSizes(sizes);
 
-            // Never signed in online this session, so there is no cached catalogue to validate
-            // against. Saying so beats validating every row against an empty list and reporting
-            // that the workbook names grades the catalogue does not have.
-            if (grades.Count == 0 || sizes.Count == 0)
+                // Never signed in online this session, so there is no cached catalogue to validate
+                // against. Saying so beats validating every row against an empty list and reporting
+                // that the workbook names grades the catalogue does not have.
+                if (grades.Count == 0 || sizes.Count == 0)
+                {
+                    Say("The catalogue has not loaded yet — connect once before importing offline");
+                    return null;
+                }
+
+                // Grade aliases are the same ones the sale import uses. Sizes need their own map: the
+                // stock sheet writes them bare ("6.5", "11") where the sale file signs them.
+                var gradeMap = SaleFileImport.AliasMap(grades.Select(g => (g.Code, g.Aliases)));
+                var sizeMap = StockFileImport.SizeMap(sizes.Select(s => s.Code));
+
+                return await Task.Run(() => StockFileImport.Plan(picker.FileName, gradeMap, sizeMap));
+            }
+        }
+
+        plan = await ReadWorkbookAsync();
+        if (plan is null) return;
+
+        // A sieve size the workbook names and the catalogue lacks. Unlike the PDF reader, this one
+        // does NOT invalidate the plan over it -- the row is an exception and the rest of the file
+        // still imports -- so saying no has to stop the import HERE. Letting it run would post a
+        // stock position with a whole sieve silently missing from it, which is worse than no import.
+        if (plan.UnknownSizes.Count > 0)
+        {
+            if (!await AddMissingSizesAsync(plan.UnknownSizes,
+                                            System.IO.Path.GetFileName(picker.FileName), ImportStock))
             {
-                Say("The catalogue has not loaded yet — connect once before importing offline");
+                Say("Stock import cancelled — a sieve size in the workbook is not in the catalogue");
                 return;
             }
 
-            // Grade aliases are the same ones the sale import uses. Sizes need their own map: the
-            // stock sheet writes them bare ("6.5", "11") where the sale file signs them.
-            var gradeMap = SaleFileImport.AliasMap(grades.Select(g => (g.Code, g.Aliases)));
-            var sizeMap = StockFileImport.SizeMap(sizes.Select(s => s.Code));
-
-            plan = await Task.Run(() => StockFileImport.Plan(picker.FileName, gradeMap, sizeMap));
+            plan = await ReadWorkbookAsync();
+            if (plan is null) return;
         }
 
         if (!plan.IsValid)
@@ -4082,6 +4817,451 @@ public partial class MainWindow : Window
         await LoadPartiesAsync();
 
         Say($"Stock imported · {result.Parcels:N0} parcel(s), {result.TotalCarats:N2} ct", ok: true);
+    }
+
+    // ── Stock import · the printed sheet ────────────────────────────────────────
+    //
+    // Same destination as the workbook importer, and deliberately the same plumbing: the PDF reader
+    // hands back a StockImportPlan of StockRows, which is exactly what StockFileImport produces, so
+    // the validation, the confirmation, the write and the report afterwards are all the existing
+    // ones. The only genuinely new decisions are what a print says (PdfStockImport) and whether this
+    // sheet REPLACES the imported position or ADDS to it.
+    //
+    // That second question is the whole reason this is not a file-type filter on the Excel button.
+    // A workbook is a full count and can only replace. A printed sheet is often one parcel lot, and
+    // two of those both stand.
+
+    private async void ImportStockPdf_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose the printed stock sheet to import",
+            Filter = "Stock sheet (*.pdf)|*.pdf",
+            CheckFileExists = true,
+        };
+        if (picker.ShowDialog(this) != true) return;
+
+        // Unlike the workbook path there is no offline queue here. A queued replace can be checked
+        // against a fingerprint before it replays (0018); a queued APPEND cannot — replaying one
+        // after somebody else has imported would add a second copy of the same carats, and there is
+        // no way to tell that apart from a genuine second lot. Refusing beats guessing.
+        if (!Db.IsOnline)
+        {
+            Say("A stock sheet can only be imported while connected");
+            return;
+        }
+
+        // The catalogue this sheet was read against. Held outside the reader because the import
+        // needs the same one to turn codes into ids — a sheet read against a catalogue that has
+        // since gained a grade would look up an id that was not there when it was parsed.
+        List<Grade>? grades = null;
+        List<SizeBucket>? sizes = null;
+
+        // Read against the catalogue as it stands right now. Called twice when grades are added in
+        // between, because the second read has to see them.
+        async Task<StockImportPlan?> ReadSheetAsync()
+        {
+            using (Busy(ImportStockPdf, "Reading…", ImportStockPdf))
+            {
+                grades = await Read(Repo.GradesAsync);
+                sizes = await Read(Repo.SizesAsync);
+                if (grades is null || sizes is null) return null;
+                sizes = ImportableSizes(sizes);
+
+                var gradeLabels = PdfGradeLabelMap(grades);
+                var sizeLabels = PdfSizeLabelMap(sizes.Select(s => s.Code));
+
+                return await Task.Run(() => PdfStockFile.Plan(picker.FileName, gradeLabels, sizeLabels));
+            }
+        }
+
+        var plan = await ReadSheetAsync();
+        if (plan is null) return;
+
+        // A sheet whose ONLY fault is a name the catalogue has never seen is not a bad sheet — it
+        // is a catalogue that has not caught up. The office adds a grade when the office adds a
+        // grade, and three sheets in a row have now needed one. Offering it here is the difference
+        // between a stock count that loads and a stock count that waits on a developer.
+        //
+        // The refusal itself stays exactly as strict: nothing is created until the names are on
+        // screen and somebody has agreed to them.
+        if (plan.Problems.Count == 1 && plan.UnplacedRows > 0
+            && await AddMissingGradesAsync(plan, System.IO.Path.GetFileName(picker.FileName)))
+        {
+            plan = await ReadSheetAsync();
+            if (plan is null) return;
+        }
+
+        // A column headed with a sieve size the catalogue has never seen. Same reasoning as the
+        // grades above, and the same shape: shown first, created only on a yes.
+        //
+        // NOT created silently, though the database function would allow it. The heading that
+        // started this work — "1/6" where another copy of the same sheet said "14+" — was a
+        // RELABELLED column, not a new sieve. Creating it unasked would have split one position
+        // across two buckets and reported success.
+        // Saying no deliberately falls through rather than returning: the plan is already invalid
+        // (UnknownSizes is only ever populated by a FAILED checksum), so the branch below names the
+        // heading and both totals. A bare "cancelled" would throw that explanation away.
+        if (plan.UnknownSizes.Count > 0
+            && await AddMissingSizesAsync(plan.UnknownSizes,
+                                          System.IO.Path.GetFileName(picker.FileName), ImportStockPdf))
+        {
+            plan = await ReadSheetAsync();
+            if (plan is null) return;
+        }
+
+        if (!plan.IsValid)
+        {
+            ImportStatus.Text = "";
+            // Named, because the usual cause is the wrong file: a folder of invoices, receipts and
+            // reports with two stock sheets in it. "This sheet cannot be imported" over a dialog
+            // that never says WHICH left nothing to check against.
+            string name = System.IO.Path.GetFileName(picker.FileName);
+            MessageBox.Show(this, $"{name} cannot be imported:\n\n" + PdfStockFile.ProblemText(plan),
+                "Cannot import this sheet", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Say($"Stock import cancelled · {name}");
+            return;
+        }
+
+        // Every figure, shown back before anything is written. The reader reconciles to the sheet's
+        // own printed totals, but reconciling to the wrong sheet is still the wrong sheet.
+        if (!PdfStockPreview.Confirm(this, plan, System.IO.Path.GetFileName(picker.FileName),
+                                     SizeLabel))
+        { Say("Stock import cancelled"); return; }
+
+        // The print carries no date either — the same reason the workbook is asked.
+        var answer = AppFormDialog.Show(this, "Stock date", "What date is this stock position?",
+            "The sheet holds no date of its own, so the parcels need one.",
+            [new FormFieldSpec("Date (dd-MM-yyyy)", DateTime.Today.ToString("dd-MM-yyyy"))],
+            v => ParseStockDate(v[0]) is null ? "Enter a date as dd-MM-yyyy." : null,
+            "Continue");
+        if (answer is null) { Say("Stock import cancelled"); return; }
+        if (ParseStockDate(answer[0]) is not { } asAt) { Say("Stock import cancelled"); return; }
+
+        // Null means the list could not be read, which before 0027 is applied is what happens: the
+        // view does not exist. Stopping here rather than carrying on is the whole point — the next
+        // dialog offers to DELETE what is already imported, and it cannot honestly offer that
+        // against a list it could not read. Treating the failure as "nothing is imported" showed
+        // "Already imported: nothing" over a ledger holding 2,950 ct.
+        // The "!" is about the GENERIC, not the value: Read<T> is constrained to a non-nullable
+        // reference type, and this is the one repo call that answers null on purpose. The null
+        // still comes through — Read returns what it was given — and is handled below.
+        var batches = await Read<List<VStockImportBatch>>(
+            async () => (await Repo.StockImportBatchesAsync())!);
+        if (batches is null)
+        {
+            AppDialog.Info(this,
+                title: "Not available yet",
+                headline: "This database cannot record stock imports in batches yet",
+                subhead: System.IO.Path.GetFileName(picker.FileName),
+                facts: [("Sheet read", $"{plan.Rows.Count:N0} holding(s), {plan.TotalCarats:N4} ct")],
+                listTitle: "What to do",
+                bullets:
+                [
+                    "Apply migration 0027 (supabase/migrations/0027_stock_import_batches.sql).",
+                    "Then import this sheet again — it has already been read and checked, so nothing "
+                        + "about it needs redoing.",
+                ],
+                note: "Nothing was written. The stock position is exactly as it was.");
+            Say("Stock import cancelled — migration 0027 has not been applied");
+            return;
+        }
+
+        var choice = AskReplaceOrAdd(plan, System.IO.Path.GetFileName(picker.FileName), asAt, batches);
+        if (choice == AppDialog.Answer.Cancel) { Say("Stock import cancelled"); return; }
+
+        bool replace = choice == AppDialog.Answer.Primary;
+
+        // Unreachable: a plan exists only if both reads succeeded. Stated so the compiler sees it.
+        if (grades is null || sizes is null) return;
+
+        var gradeIds = grades.ToDictionary(g => g.Code, g => g.GradeId, StringComparer.Ordinal);
+        var sizeIds = sizes.ToDictionary(s => s.Code, s => s.SizeId, StringComparer.Ordinal);
+
+        StockImportResult? result;
+        var progressDialog = AppProgressDialog.Start(this, "Importing the stock sheet, please wait…");
+        try
+        {
+            result = await Read(() => Repo.ImportStockAsync(plan.Rows, asAt, gradeIds, sizeIds,
+                                                            progressDialog.Progress,
+                                                            new Repo.StockImportMode(replace, Guid.NewGuid(), "pdf")));
+        }
+        finally
+        {
+            progressDialog.Finish();
+        }
+
+        ImportStatus.Text = "";
+        // No message of our own here. Read() has already put the database's own words on screen,
+        // and "Stock import failed — nothing further was written" was overwriting them — which left
+        // the user looking at a failure with the reason for it deleted a moment earlier.
+        if (result is null) return;
+
+        await ReportStockImportAsync(result, plan, System.IO.Path.GetFileName(picker.FileName),
+                                     asAt, replace);
+    }
+
+    /// <summary>
+    /// The one question a printed sheet raises that a workbook does not: does this count replace
+    /// what is already imported, or stand beside it?
+    ///
+    /// Shown every time, and with what is currently imported listed by batch — the choice is
+    /// between two real outcomes, and "replace" throws away carats somebody counted. Neither
+    /// answer is the safe default, so neither is preselected by being the only button.
+    /// </summary>
+    /// <summary>
+    /// Offers to add the grade names a sheet uses and the catalogue does not have. True when at
+    /// least one was added, which means the sheet is worth reading again.
+    ///
+    /// Named as printed, deliberately. Nobody here knows what "MIX" or "FL" stands for, and a
+    /// guessed display name is wrong on every screen for as long as the grade exists. Renaming one
+    /// later is a single update; unpicking a wrong name that has been read as correct for a month
+    /// is not.
+    /// </summary>
+    private async Task<bool> AddMissingGradesAsync(StockImportPlan plan, string fileName)
+    {
+        var missing = plan.UnplacedLabels;
+        bool one = missing.Count == 1;
+
+        if (!AppDialog.Confirm(this,
+                title: one ? "A grade this sheet uses is not in the catalogue"
+                           : "Grades this sheet uses are not in the catalogue",
+                headline: one ? $"\"{missing[0]}\" has never been seen before"
+                              : $"{missing.Count:N0} names on this sheet have never been seen before",
+                subhead: fileName,
+                facts:
+                [
+                    ("Read correctly", $"{plan.Rows.Count:N0} line(s), {plan.TotalCarats:N2} ct"),
+                    (one ? "Held by that grade" : "Held by those grades",
+                        $"{plan.UnplacedRows:N0} line(s), {plan.UnplacedCarats:N2} ct"),
+                    ("Sheet total", $"{plan.TotalCarats + plan.UnplacedCarats:N2} ct"),
+                ],
+                emphasis: $"Adding {(one ? "it" : "them")} takes nothing away. "
+                        + "The sheet is then read again and you still see every figure before "
+                        + "anything is imported.",
+                listTitle: one ? "The name, exactly as the sheet prints it"
+                               : "The names, exactly as the sheet prints them",
+                bullets: missing,
+                primaryText: one ? "Add it and carry on" : "Add them and carry on",
+                secondaryText: "Cancel"))
+            return false;
+
+        var failures = new List<string>();
+        using (Busy(ImportStockPdf, "Adding…", ImportStockPdf))
+            foreach (string label in missing)
+            {
+                var wrote = await Repo.AddGradeAsync(label);
+                if (!wrote.Ok) failures.Add($"{label} — {wrote.Failure}");
+            }
+
+        if (failures.Count > 0)
+        {
+            AppDialog.Info(this,
+                title: "Could not add the grade(s)",
+                headline: "The catalogue was not changed",
+                subhead: fileName,
+                facts: [],
+                listTitle: "What the database said",
+                bullets: failures,
+                note: "Nothing was imported and the stock position is exactly as it was. "
+                    + "If this says the function does not exist, apply migration 0030 "
+                    + "(supabase/migrations/0030_add_grade.sql).");
+            return false;
+        }
+
+        // The catalogue moved, so the pickers built from it are stale — and the second read of the
+        // sheet goes through Repo.GradesAsync anyway, which will now see the new rows.
+        await Catalogue.LoadAsync();
+        Say($"Added {missing.Count:N0} grade(s) · {string.Join(", ", missing)}");
+        return true;
+    }
+
+    /// <summary>
+    /// Offers to add the sieve sizes a sheet is headed with that the catalogue does not have. True
+    /// when at least one was added, which means the sheet is worth reading again.
+    ///
+    /// The database decides what "does not have" means, not this dialog: add_size (0034) matches on
+    /// the normalised sieve key, so answering yes to "6.5+" when "+6.5" already exists returns the
+    /// existing row instead of creating a twin. That check cannot live here — the app would have to
+    /// reimplement it and the two would drift.
+    /// </summary>
+    private async Task<bool> AddMissingSizesAsync(IReadOnlyList<UnknownSize> missing, string fileName,
+                                                  System.Windows.Controls.Button busyOn)
+    {
+        bool one = missing.Count == 1;
+
+        // A sieve the office retired is a different proposition from one nobody has ever seen, and
+        // saying "has never been seen before" about a size somebody deliberately switched off last
+        // week reads as the app having lost track. Retirement is not permanent -- a sheet turning
+        // up next quarter with that column on it is a normal event -- so the offer is the same, but
+        // it is honest about which act it is: this one brings a row back, keeping its id and its
+        // history, rather than creating anything.
+        bool anyRetired = missing.Any(m => Catalogue.IsRetiredSize(m.Label));
+        bool allRetired = missing.All(m => Catalogue.IsRetiredSize(m.Label));
+
+        if (!AppDialog.Confirm(this,
+                title: one ? "A sieve size this file uses is not in the catalogue"
+                           : "Sieve sizes this file uses are not in the catalogue",
+                headline: allRetired
+                    ? one ? $"\"{missing[0].Label}\" was retired and this file still uses it"
+                          : $"{missing.Count:N0} sieve sizes were retired and this file still uses them"
+                    : one ? $"\"{missing[0].Label}\" has never been seen before"
+                          : $"{missing.Count:N0} sieve sizes have never been seen before",
+                subhead: fileName,
+                facts: [.. missing.Select(m => (m.Label,
+                    $"{m.Carats:N2} ct stands under it"
+                    + (Catalogue.IsRetiredSize(m.Label) ? " · retired, would be brought back" : "")))],
+                emphasis: anyRetired
+                    ? "A retired sieve comes back as the SAME row, so its old stock and history stay "
+                    + "attached and nothing is duplicated. Check the heading against the paper all "
+                    + "the same: bringing one back means the desk can book new stock to it again."
+                    : "Check it against the paper before saying yes. A size relabelled by "
+                    + "mistake becomes a second size holding real stock, and the position "
+                    + "then splits across two buckets that are the same sieve.",
+                listTitle: null,
+                bullets: null,
+                primaryText: allRetired
+                    ? one ? "Bring it back and carry on" : "Bring them back and carry on"
+                    : one ? "Add it and carry on" : "Add them and carry on",
+                secondaryText: "Cancel"))
+            return false;
+
+        var failures = new List<string>();
+        using (Busy(busyOn, allRetired ? "Restoring…" : "Adding…", busyOn))
+            foreach (var m in missing)
+            {
+                // The LABEL is what the file printed and what the dialog showed; the CODE is
+                // what gets stored. "'+18" is the first and must never be the second.
+                var wrote = await Repo.AddSizeAsync(StockFileImport.CleanCode(m.Label));
+                if (!wrote.Ok) failures.Add($"{m.Label} — {wrote.Failure}");
+            }
+
+        if (failures.Count > 0)
+        {
+            AppDialog.Info(this,
+                title: "Could not add the size(s)",
+                headline: "The catalogue was not changed",
+                subhead: fileName,
+                facts: [],
+                listTitle: "What the database said",
+                bullets: failures,
+                note: "Nothing was imported and the stock position is exactly as it was. "
+                    + "If this says the function does not exist, apply migration 0034; if it says the sieve "
+                    + "is retired and cannot take new stock, apply 0036, which lets a retired one "
+                    + "be brought back "
+                    + "(supabase/migrations/0034_add_size.sql).");
+            return false;
+        }
+
+        await Catalogue.LoadAsync();
+        Say($"{(allRetired ? "Restored" : "Added")} {missing.Count:N0} size(s) · "
+            + string.Join(", ", missing.Select(m => m.Label)));
+        return true;
+    }
+
+    private AppDialog.Answer AskReplaceOrAdd(StockImportPlan plan, string fileName, DateOnly asAt,
+                                             IReadOnlyList<VStockImportBatch> batches)
+    {
+        decimal onHand = batches.Sum(b => b.Carats);
+
+        List<(string, string)> facts =
+        [
+            ("This sheet", $"{plan.Rows.Count:N0} holding(s), {plan.TotalCarats:N4} ct"),
+            ("As at", asAt.ToString("dd MMM yyyy")),
+            ("Already imported", batches.Count == 0
+                ? "nothing"
+                : $"{batches.Count:N0} import(s), {onHand:N4} ct"),
+        ];
+
+        if (batches.Count > 0)
+            facts.Add(("If both are kept", $"{onHand + plan.TotalCarats:N4} ct"));
+
+        // Named, not counted: "2 imports" tells nobody which two, and the person choosing has to
+        // recognise the one they are about to delete.
+        List<string> bullets = batches
+            .Take(6)
+            .Select(b => $"{b.Source.ToUpperInvariant()} · {b.AsAt:dd MMM yyyy} · "
+                       + $"{b.Parcels:N0} parcel(s), {b.Carats:N4} ct"
+                       + (b.BatchId is null ? " · imported before batches were recorded" : ""))
+            .ToList();
+        if (batches.Count > 6) bullets.Add($"… and {batches.Count - 6:N0} more");
+
+        return AppDialog.Choose(this,
+            title: "Replace or add?",
+            headline: "Replace the imported stock, or add this sheet to it?",
+            subhead: fileName,
+            facts: facts,
+            emphasis: batches.Count == 0
+                ? "Nothing has been imported yet, so both answers do the same thing here."
+                : $"Removing the old data deletes {onHand:N4} ct of previously imported stock and "
+                + "leaves only this sheet. Hand-entered intakes, sales, conversions and "
+                + "adjustments are untouched either way.",
+            listTitle: batches.Count == 0 ? null : "Currently imported",
+            bullets: bullets,
+            primaryText: "Remove old & import latest",
+            tertiaryText: "Keep old & add latest",
+            cancelText: "Cancel");
+    }
+
+    /// <summary>
+    /// What an import landed, read back out of the ledger. Shared by both stock importers so the
+    /// two cannot come to describe the same write differently.
+    /// </summary>
+    private async Task ReportStockImportAsync(StockImportResult result, StockImportPlan plan,
+                                              string fileName, DateOnly asAt, bool replaced)
+    {
+        List<string> notes = [];
+        if (plan.SkippedRows > 0)
+            notes.AddRange(PdfStockFile.ProblemText(plan)
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.TrimStart(' ', '•').Trim()));
+
+        var position = await CurrentStockAsync();
+
+        List<(string, string)> facts =
+        [
+            ("Buckets in this sheet", $"{result.Parcels:N0}"),
+            ("Carats in this sheet", $"{result.TotalCarats:N4}"),
+            ("Value in this sheet", Money.Short(result.TotalValue)),
+        ];
+
+        if (position is { } p)
+        {
+            facts.Add(("Current stock buckets", $"{p.Buckets:N0}"));
+            facts.Add(("Current stock position", $"{p.Carats:N4} ct"));
+            facts.Add(("Current stock value", Money.Short(p.Value)));
+        }
+
+        facts.Add(("Previous parcels replaced", $"{result.ReplacedParcels:N0}"));
+        // The id the database stamped, so this import can be found again in rough_intake.
+        if (result.BatchId is { } id) facts.Add(("Import batch", id.ToString()[..8]));
+
+        notes.Add(replaced
+            ? "Everything previously imported was replaced by this sheet. Hand intakes, sales and "
+              + "adjustments are untouched."
+            : "This sheet was added to what was already imported; nothing was removed. Both imports "
+              + "now count towards the position, and each is tagged with its own batch.");
+
+        AppDialog.Info(this,
+            title: "Stock import complete",
+            headline: replaced ? "Stock replaced" : "Stock added",
+            subhead: $"{fileName} · as at {asAt:dd MMM yyyy}",
+            facts: facts,
+            listTitle: "Worth knowing",
+            bullets: notes,
+            note: plan.SkippedRows == 0 ? "Every holding on the sheet was imported." : null);
+
+        // Everything on screen predates the write. The Stock page and the Stock report are both
+        // repainted rather than left to be refreshed by hand — an import that lands while the page
+        // still shows the old position is exactly the confusion the breakdown card exists to end.
+        // Only if they have been opened: _stock is empty until the page is first loaded, and
+        // populating it here would leave the page looking loaded without its filters ever having run.
+        await LoadPartiesAsync();
+        if (_stock.Count > 0) LoadStock_Click(this, new RoutedEventArgs());
+        if (_reportRows.Count > 0) await LoadStockReportAsync();
+
+        Say($"Stock {(replaced ? "replaced" : "added")} · {result.Parcels:N0} parcel(s), "
+          + $"{result.TotalCarats:N2} ct", ok: true);
     }
 
     /// <summary>
@@ -4302,7 +5482,7 @@ public partial class MainWindow : Window
 
                 // Put the header back to what it says on a healthy connection, so the pill does not
                 // sit on "Offline" through a page that has just loaded.
-                Pill(true, $"Connected · {Catalogue.Grades.Count} grades · {_invoice.Buyers.Count} buyers");
+                Pill(true, $"{Db.Active.Name} · {Catalogue.Grades.Count} grades · {_invoice.Buyers.Count} buyers");
             }
             return result;
         }
@@ -4378,6 +5558,46 @@ public partial class MainWindow : Window
 
     private void ThemeToggle_Click(object sender, RoutedEventArgs e) => ThemeManager.Toggle();
 
+    /// <summary>
+    /// Signs out and returns to the login screen.
+    ///
+    /// RESTARTS the application rather than reusing this window, and that is deliberate. Whoever
+    /// signs in next may be on the other database, or on this one with a different role -- and the
+    /// navigation, the static catalogue and every tab's cache were all built for the person who is
+    /// leaving. Reloading only the parts we remembered to reload is how a "sales" user ends up
+    /// looking at the previous owner's Settings tab, or at the other company's figures.
+    ///
+    /// The same rule already covers a sign-in after an idle timeout. One rule, no exceptions, no
+    /// list of caches to keep in step as the app grows.
+    /// </summary>
+    private async void SignOut_Click(object sender, RoutedEventArgs e)
+    {
+        // Signing out mid-write would leave the desk with no window and no idea whether the write
+        // landed. The database survives either way -- the person watching does not know that.
+        if (_inFlight > 0)
+        {
+            Say("Something is still being saved. Wait for it to finish, then sign out.");
+            return;
+        }
+
+        if (!AppDialog.Confirm(this,
+                title: "Sign out",
+                headline: $"Sign out of {Db.Active.Name}?",
+                subhead: Db.CurrentUser?.FullName,
+                facts: [],
+                emphasis: "Solitaire Desk will close and reopen at the sign-in screen.",
+                listTitle: null,
+                bullets: null,
+                primaryText: "Sign out",
+                secondaryText: "Stay signed in"))
+            return;
+
+        await Db.SignOutAsync();
+
+        if (Environment.ProcessPath is { } exe) System.Diagnostics.Process.Start(exe);
+        Application.Current.Shutdown();
+    }
+
     /// Top-bar caption per screen. Same strings the nav uses, so the two never disagree.
     private static readonly Dictionary<string, string> ScreenSubtitles = new()
     {
@@ -4397,6 +5617,37 @@ public partial class MainWindow : Window
     /// Reloads the page currently on screen. Used after an idle sign-out and a fresh sign-in: the
     /// window outlived the session, so everything on it was fetched with a token that is gone.
     /// </summary>
+    /// <summary>
+    /// Reload the catalogue and the parties without signing out.
+    ///
+    /// LoadPartiesAsync is the same call sign-in makes, so this is exactly a re-read rather than a
+    /// second, slightly different refresh path that could drift from it.
+    ///
+    /// Offline is refused rather than attempted: a failed read here would leave the pickers holding
+    /// whatever survived, which is worse than not having tried.
+    /// </summary>
+    private async void RefreshCatalogue_Click(object sender, RoutedEventArgs e)
+    {
+        if (!Db.IsOnline) { Say("Not connected — the catalogue cannot be reloaded right now"); return; }
+
+        // Busy rather than a bare IsEnabled: it swaps the caption too, so the button says what is
+        // happening instead of just going dead. Sign out is disabled alongside it — signing out
+        // mid-reload restarts the app over a read that is already in flight.
+        using (Busy(RefreshCatalogue, "Refreshing…", RefreshCatalogue, SignOut))
+        {
+            await LoadPartiesAsync();
+
+            // Every Grade and SizeBucket in memory is a NEW object after that call, and the entry
+            // grid binds SelectedItem by reference — so a half-typed line would show empty Grade
+            // and Size cells and read as lost work. Re-point them to the equivalent rows first.
+            _invoice.CatalogueChanged();
+
+            ReloadCurrentTab();
+            Say($"Catalogue reloaded · {Catalogue.Grades.Count:N0} grades, "
+                + $"{Catalogue.ActiveSizes.Count:N0} sizes, {_invoice.Buyers.Count:N0} buyers");
+        }
+    }
+
     private void ReloadCurrentTab()
     {
         _dashStock = null;
@@ -4407,6 +5658,8 @@ public partial class MainWindow : Window
     private void Tabs_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (e.OriginalSource != Tabs || Tabs.SelectedItem is not TabItem tab) return;
+
+        FieldError.ClearAll();
 
         string header = tab.Header?.ToString() ?? "";
         ScreenTitle.Text = header;
@@ -4435,6 +5688,7 @@ public partial class MainWindow : Window
             case "Invoices": LoadInvoices_Click(this, e); break;
             case "Receivables": LoadReceivables_Click(this, e); break;
             case "Stock": LoadStock_Click(this, e); break;
+            case "Stock report": _ = LoadStockReportAsync(); break;
             case "Master data": _ = LoadMasterAsync(); break;
             case "Dashboard": LoadDashboard_Click(this, e); break;
             case "Audit": LoadAudit_Click(this, e); break;
@@ -4471,6 +5725,65 @@ public partial class MainWindow : Window
 
         price = typed;
         return true;
+    }
+
+    /// <summary>
+    /// The column a line message is about. Matched on the message rather than on a code, because
+    /// the message is what the user is reading and the two must agree -- a mapping keyed off
+    /// something invisible drifts the moment somebody rewords a sentence.
+    /// </summary>
+    private static string ColumnHeaderFor(string message) =>
+        message.Contains("Grade is required") ? "Grade"
+        : message.Contains("Size is required") || message.Contains("does not use size") ? "Size"
+        : message.Contains("Weight") ? "Weight"
+        : message.Contains("Price") ? "Price/ct"
+        : "";
+
+    /// <summary>
+    /// Put a line message on the cell it is about.
+    ///
+    /// A DataGrid virtualises its rows, so the cell to write under may not exist as a visual at
+    /// all until the row is scrolled to and the layout has run -- hence ScrollIntoView and
+    /// UpdateLayout before anything is looked up. When the cell still cannot be found the message
+    /// goes to the status bar rather than nowhere: a validation message that silently fails to
+    /// appear is worse than one in the wrong place.
+    /// </summary>
+    private void ShowLineError(SaleLine bad, string error)
+    {
+        Grid.ScrollIntoView(bad);
+        Grid.UpdateLayout();
+
+        int column = Grid.Columns
+            .Select((c, i) => (Header: c.Header?.ToString() ?? "", Index: i))
+            .FirstOrDefault(c => c.Header == ColumnHeaderFor(error)).Index;
+
+        Grid.CurrentCell = new DataGridCellInfo(bad, Grid.Columns[column]);
+        Grid.Focus();
+
+        var row = Grid.ItemContainerGenerator.ContainerFromItem(bad) as DataGridRow;
+        var cells = VisualTree.FindChild<System.Windows.Controls.Primitives.DataGridCellsPresenter>(row);
+        if (cells?.ItemContainerGenerator.ContainerFromIndex(column) is DataGridCell cell)
+            FieldError.Show(cell, error);
+        else
+            Say(error);
+    }
+
+    /// <summary>
+    /// A validation message shown under the field it is about, with the caret sent there.
+    ///
+    /// This replaces Say for FIELD problems only. Say still carries everything that is about the
+    /// screen rather than about one control -- "Import cancelled", "Draft saved", a transport
+    /// failure -- because those belong to no field and a message pinned under an arbitrary box
+    /// would be worse than one in the status bar.
+    ///
+    /// The message text is not touched on the way through: this changes where it appears, not what
+    /// it says.
+    /// </summary>
+    private static void Field(Control target, string message)
+    {
+        FieldError.Show(target, message);
+        target.Focus();
+        if (target is TextBox box) box.SelectAll();
     }
 
     private void Say(string message, bool ok = false)

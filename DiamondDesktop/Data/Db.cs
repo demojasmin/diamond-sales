@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
@@ -9,24 +9,110 @@ using Supabase.Gotrue.Interfaces;
 
 namespace DiamondDesktop.Data;
 
-/// The one Supabase client for the app. The anon key is publishable on purpose — RLS is the boundary,
-/// and every request rides the signed-in user's token.
+/// <summary>
+/// The Supabase projects this install can reach, and which one is currently in play.
+///
+/// ONE CLIENT PER WORKSPACE, built once and kept. A Supabase client owns a token-refresh timer and
+/// a session handler, so rebuilding one per sign-in attempt would leave those running against a
+/// project nobody is signed in to any more.
+///
+/// The workspaces are ISOLATED, and that is the whole point of this type. Nothing is shared between
+/// them: not the client, not the saved session, not the offline queue. A token minted by one is
+/// never presented to another, because each keeps its own session file named after its project ref.
+///
+/// The anon key is publishable on purpose: RLS is the boundary and every request rides the
+/// signed-in user's token.
+/// </summary>
 public static class Db
 {
-    // Read from appsettings.json beside the executable, with the shipped values as the fallback.
-    // See AppConfig for why the anon key is fine in a plain file and what must never join it.
-    private static string Url => AppSettings.Current.Url;
-    private static string AnonKey => AppSettings.Current.AnonKey;
     private const string Offline = "No connection to the server.";
 
-    private static readonly IGotrueSessionPersistence<Session> Sessions = new EncryptedSession();
+    /// <summary>
+    /// The two refusals that mean "the password was right, this account just cannot be used HERE".
+    ///
+    /// Named because the sign-in loop has to tell them apart from a wrong password. An account
+    /// deactivated in one project is how the same address is kept out of it while still belonging
+    /// to another, and counting that as a failed attempt would slowly lock the address out of a
+    /// project it was never trying to enter.
+    /// </summary>
+    public const string Deactivated = "This account is deactivated.";
+    public const string NoProfile = "This login has no profile. Ask the owner to set one up.";
 
-    public static Supabase.Client Client { get; } = new(Url, AnonKey, new Supabase.SupabaseOptions
+    /// Where "the workspace this desk used last" is written down, so a restart reaches for the right
+    /// project first instead of whichever happens to be listed first.
+    private static readonly string LastUsedFile = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "SolitaireDesk", "workspace.txt");
+
+    private static readonly Dictionary<string, Supabase.Client> Clients = [];
+    // The interface, not EncryptedSession itself: that type is file-local, and a file-local type
+    // cannot appear in a member signature of a type that is not.
+    private static readonly Dictionary<string, IGotrueSessionPersistence<Session>> SessionStores = [];
+    private static readonly Dictionary<string, Task<string?>> Initialising = [];
+
+    /// <summary>Every project a sign-in may be tried against, the last-used one first.</summary>
+    public static IReadOnlyList<Workspace> Workspaces { get; } = InTryOrder();
+
+    /// <summary>
+    /// The project every call below talks to.
+    ///
+    /// Never null. It starts at the last-used workspace and moves only when a sign-in succeeds
+    /// somewhere else -- a failed probe must not leave the app pointing at a database the user
+    /// never got into.
+    /// </summary>
+    public static Workspace Active { get; private set; } = Workspaces[0];
+
+    public static Supabase.Client Client => ClientFor(Active);
+
+    private static IReadOnlyList<Workspace> InTryOrder()
     {
-        AutoRefreshToken = true,
-        AutoConnectRealtime = false,
-        SessionHandler = Sessions
-    });
+        var all = AppSettings.All;
+        string? last = null;
+        try { last = File.ReadAllText(LastUsedFile).Trim(); }
+        catch { /* never used on this desk, or unreadable -- the listed order stands */ }
+
+        return string.IsNullOrEmpty(last)
+            ? all
+            : [.. all.OrderByDescending(w => string.Equals(w.Name, last, StringComparison.OrdinalIgnoreCase))];
+    }
+
+    private static Supabase.Client ClientFor(Workspace w)
+    {
+        if (Clients.TryGetValue(w.Ref, out var existing)) return existing;
+
+        var sessions = new EncryptedSession(w.Ref);
+        SessionStores[w.Ref] = sessions;
+
+        var client = new Supabase.Client(w.Url, w.AnonKey, new Supabase.SupabaseOptions
+        {
+            AutoRefreshToken = true,
+            AutoConnectRealtime = false,
+            SessionHandler = sessions
+        });
+        Clients[w.Ref] = client;
+        return client;
+    }
+
+    /// <summary>
+    /// Points every later call at this project. Does NOT sign anybody in, and deliberately does not
+    /// remember the choice -- only a successful sign-in does that.
+    /// </summary>
+    public static void Use(Workspace w)
+    {
+        if (w.Ref == Active.Ref) return;
+        Active = w;
+        CurrentUser = null;      // whoever was signed in belonged to the other project
+    }
+
+    private static void RememberActive()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(LastUsedFile)!);
+            File.WriteAllText(LastUsedFile, Active.Name);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
 
     public static Profile? CurrentUser { get; private set; }
     public static Guid? UserId => Guid.TryParse(Client.Auth.CurrentUser?.Id, out var id) ? id : null;
@@ -59,14 +145,23 @@ public static class Db
             if (ex is HttpRequestException or TaskCanceledException) { IsOnline = false; return; }
     }
 
-    /// Cached so initialisation happens exactly once however many callers race for it. Sign-in awaits
-    /// this too: clicking the button before the window's own Loaded handler finished would otherwise
-    /// reach Auth on an unconfigured client, and a fast typist can do that.
-    private static Task<string?>? _initialising;
+    /// <summary>
+    /// Restores and refreshes a saved session for the ACTIVE workspace if one is on disk. Null means
+    /// "ready" -- check CurrentUser to decide whether the login window is still needed.
+    ///
+    /// Cached per workspace rather than per process. Cached once, the second workspace tried during
+    /// a sign-in would hand back the FIRST one's result and never initialise its own client, which
+    /// reads as "wrong email or password" against a project that was never asked.
+    /// </summary>
+    public static Task<string?> InitializeAsync()
+    {
+        string key = Active.Ref;
+        if (Initialising.TryGetValue(key, out var running)) return running;
 
-    /// Restores and refreshes a saved session if one is on disk. Null means "ready" — check CurrentUser
-    /// to decide whether the login window is still needed.
-    public static Task<string?> InitializeAsync() => _initialising ??= InitialiseCoreAsync();
+        var task = InitialiseCoreAsync();
+        Initialising[key] = task;
+        return task;
+    }
 
     private static async Task<string?> InitialiseCoreAsync()
     {
@@ -100,7 +195,12 @@ public static class Db
             return Fail(ex);
         }
 
-        return await AdoptSessionAsync();
+        // Written here, not when the workspace was selected: this is the first moment we know the
+        // credentials belong to THIS project, and it is what stops the next start from probing the
+        // wrong one first.
+        string? problem = await AdoptSessionAsync();
+        if (problem is null) RememberActive();
+        return problem;
     }
 
     public static async Task SignOutAsync()
@@ -110,9 +210,10 @@ public static class Db
         try { await Client.Auth.SignOut(Constants.SignOutScope.Local); }
         catch { /* offline or an expired token — the server-side session lapses on its own */ }
 
-        // Gotrue skips its own cleanup when that call throws, and a surviving session.dat would sign the
-        // next person at this desk in as the previous user.
-        Sessions.DestroySession();
+        // Gotrue skips its own cleanup when that call throws, and a surviving session file would sign
+        // the next person at this desk in as the previous user. Only THIS workspace's file goes --
+        // signing out of one project must not sign anybody out of the other.
+        if (SessionStores.TryGetValue(Active.Ref, out var store)) store.DestroySession();
     }
 
     /// A token without a usable profile row is worse than no token: RLS denies everything and the user
@@ -142,8 +243,8 @@ public static class Db
             return Fail(ex);
         }
 
-        if (CurrentUser is null) return "This login has no profile. Ask the owner to set one up.";
-        if (!CurrentUser.Active) { CurrentUser = null; return "This account is deactivated."; }
+        if (CurrentUser is null) return NoProfile;
+        if (!CurrentUser.Active) { CurrentUser = null; return Deactivated; }
         return null;
     }
 
@@ -175,10 +276,18 @@ public static class Db
 
 /// DPAPI ties the ciphertext to this Windows account, so a copied session.dat is useless on another
 /// machine or under another user.
-file sealed class EncryptedSession : IGotrueSessionPersistence<Session>
+file sealed class EncryptedSession(string projectRef) : IGotrueSessionPersistence<Session>
 {
-    private static readonly string SessionFile = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SolitaireDesk", "session.dat");
+    /// <summary>
+    /// One file per project, named after its ref.
+    ///
+    /// Two workspaces sharing a single session.dat would restore whichever token was written last
+    /// against whichever project happens to be active -- signing somebody in to a database that
+    /// never issued their login, with their own project's data nowhere to be seen.
+    /// </summary>
+    private readonly string SessionFile = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "SolitaireDesk", $"session-{projectRef}.dat");
 
     public void SaveSession(Session session)
     {

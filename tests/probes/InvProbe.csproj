@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Offscreen probe harness.
+
+    Each Program.<suite>.bak is one suite. run_all.sh copies one over Program.cs, builds and runs
+    it, then moves to the next — so only one suite compiles at a time and they can each be a
+    top-level program.
+
+    UseWPF and the windows target are not optional: several suites construct the real MainWindow
+    and drive its real handlers, which is the only way to test WPF layout and click behaviour
+    without a person clicking.
+
+    Lived in a temp scratchpad until 13 Aug 2026, when it was cleared and 41 of 56 suites were
+    lost with no copy anywhere. That is why it is in the repository now.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>InvProbe</AssemblyName>
+    <RootNamespace>InvProbe</RootNamespace>
+    <NoWarn>$(NoWarn);CS8618;CS8602;CS8604;NU1510;NU1903</NoWarn>
+    <!-- The .bak files are the suites; only the copied-in Program.cs is compiled. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Shared by every suite: machine-specific paths and the session restore. -->
+    <Compile Include="ProbeEnv.cs" />
+    <Compile Include="Program.cs" Condition="Exists('Program.cs')" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\DiamondDesktop\DiamondDesktop.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.10" />
+  </ItemGroup>
+
+</Project>

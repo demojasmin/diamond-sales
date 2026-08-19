@@ -35,8 +35,17 @@
             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
             Padding="22,14">
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <!-- Cancel sits furthest from the two real answers, not between them. The two choices are a
+             pair — replace or add, both of which import — and separating them with the way out read
+             as three unrelated buttons. On a two-button dialog the tertiary is collapsed and this
+             is the same [Cancel] [Confirm] it always was. -->
         <Button x:Name="SecondaryButton" MinWidth="104" Height="34" Margin="0,0,10,0"
                 Style="{StaticResource AppButton}" Click="Secondary_Click" IsCancel="True"/>
+        <!-- A third answer, hidden unless the caller asks for one. Two real choices plus a way out
+             is not a yes/no question, and squeezing it into one would mean asking twice. -->
+        <Button x:Name="TertiaryButton" MinWidth="104" Height="34" Margin="0,0,10,0"
+                Visibility="Collapsed"
+                Style="{StaticResource AppButton}" Click="Tertiary_Click"/>
         <Button x:Name="PrimaryButton" MinWidth="124" Height="34"
                 Style="{StaticResource AppPrimaryButton}" Click="Primary_Click" IsDefault="True"/>
       </StackPanel>
