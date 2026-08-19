@@ -4523,6 +4523,28 @@ public partial class MainWindow : Window
         plan = await ReadWorkbookAsync();
         if (plan is null) return;
 
+        // A grade the workbook names and the catalogue lacks. Same offer the two stock importers
+        // make, and for the same reason -- and offered BEFORE the sizes, because a file naming both
+        // should ask once for each rather than sending the user round the loop twice.
+        if (plan.UnknownGrades.Count > 0)
+        {
+            if (!await AddMissingGradesAsync(plan.UnknownGrades,
+                                             System.IO.Path.GetFileName(picker.FileName), ImportExcel,
+                [
+                    ("Read correctly", $"{plan.LineCount:N0} line(s) on {plan.Invoices.Count:N0} invoice(s)"),
+                    (plan.UnknownGrades.Count == 1 ? "The name" : "The names",
+                        string.Join(", ", plan.UnknownGrades.Take(4))),
+                    ("Rows affected", $"{plan.SkippedRows:N0} skipped"),
+                ]))
+            {
+                Say("Import cancelled — a grade in the workbook is not in the catalogue");
+                return;
+            }
+
+            plan = await ReadWorkbookAsync();
+            if (plan is null) return;
+        }
+
         // Same rule as the stock workbook: an unknown sieve is a skipped row here, not a failed
         // file, so refusing to add it has to stop the import explicitly. An invoice imported with
         // its size rows dropped is a sale whose weight no longer matches the paper.
@@ -4669,6 +4691,17 @@ public partial class MainWindow : Window
         plan = await ReadWorkbookAsync();
         if (plan is null) return;
 
+        // A grade the workbook names and the catalogue lacks. Same offer the printed sheet gets,
+        // and for the same reason: the office adds a grade when the office adds a grade, and a
+        // workbook naming one is a catalogue that has not caught up rather than a bad file.
+        if (plan.Problems.Count == 1 && plan.UnplacedRows > 0
+            && await AddMissingGradesAsync(plan, System.IO.Path.GetFileName(picker.FileName),
+                                           ImportStock))
+        {
+            plan = await ReadWorkbookAsync();
+            if (plan is null) return;
+        }
+
         // A sieve size the workbook names and the catalogue lacks. Unlike the PDF reader, this one
         // does NOT invalidate the plan over it -- the row is an exception and the rest of the file
         // still imports -- so saying no has to stop the import HERE. Letting it run would post a
@@ -4736,7 +4769,14 @@ public partial class MainWindow : Window
         }
 
         ImportStatus.Text = "";
-        if (result is null) { Say("Stock import failed — nothing further was written"); return; }
+        if (result is null)
+        {
+            // The database's own words, in full. A refusal can name several buckets and the reason
+            // for each; the bar alone showed the first line and cut the rest.
+            ShowWriteRefusal("The stock could not be replaced",
+                             System.IO.Path.GetFileName(picker.FileName));
+            return;
+        }
 
         List<string> notes = [];
         if (plan.SkippedRows > 0)
@@ -4886,7 +4926,8 @@ public partial class MainWindow : Window
         // The refusal itself stays exactly as strict: nothing is created until the names are on
         // screen and somebody has agreed to them.
         if (plan.Problems.Count == 1 && plan.UnplacedRows > 0
-            && await AddMissingGradesAsync(plan, System.IO.Path.GetFileName(picker.FileName)))
+            && await AddMissingGradesAsync(plan, System.IO.Path.GetFileName(picker.FileName),
+                                          ImportStockPdf))
         {
             plan = await ReadSheetAsync();
             if (plan is null) return;
@@ -4992,10 +5033,16 @@ public partial class MainWindow : Window
         }
 
         ImportStatus.Text = "";
-        // No message of our own here. Read() has already put the database's own words on screen,
-        // and "Stock import failed — nothing further was written" was overwriting them — which left
-        // the user looking at a failure with the reason for it deleted a moment earlier.
-        if (result is null) return;
+        // No message of our OWN here -- Read() has already put the database's words in the bar, and
+        // a generic "stock import failed" was overwriting them, leaving the user looking at a
+        // failure with its reason deleted a moment earlier. What this adds is room: the bar holds
+        // one line, and a refusal naming three buckets needs more than one.
+        if (result is null)
+        {
+            ShowWriteRefusal("The stock could not be replaced",
+                             System.IO.Path.GetFileName(picker.FileName));
+            return;
+        }
 
         await ReportStockImportAsync(result, plan, System.IO.Path.GetFileName(picker.FileName),
                                      asAt, replace);
@@ -5018,9 +5065,30 @@ public partial class MainWindow : Window
     /// later is a single update; unpicking a wrong name that has been read as correct for a month
     /// is not.
     /// </summary>
-    private async Task<bool> AddMissingGradesAsync(StockImportPlan plan, string fileName)
+    private Task<bool> AddMissingGradesAsync(StockImportPlan plan, string fileName,
+                                             System.Windows.Controls.Button busyOn) =>
+        AddMissingGradesAsync(plan.UnplacedLabels, fileName, busyOn,
+        [
+            ("Read correctly", $"{plan.Rows.Count:N0} line(s), {plan.TotalCarats:N2} ct"),
+            (plan.UnplacedLabels.Count == 1 ? "Held by that grade" : "Held by those grades",
+                $"{plan.UnplacedRows:N0} line(s), {plan.UnplacedCarats:N2} ct"),
+            ("Sheet total", $"{plan.TotalCarats + plan.UnplacedCarats:N2} ct"),
+        ]);
+
+    /// <summary>
+    /// Offers to create the grade names a file uses and the catalogue does not have.
+    ///
+    /// Shared by the printed sheet, the stock workbook and the sale workbook, because the answer is
+    /// the same in all three: a name the catalogue has never seen is a catalogue that has not caught
+    /// up, not a bad file. The office adds a grade when the office adds a grade.
+    ///
+    /// The name created is the one the FILE writes -- "1 BB", not "No. 1 Bottom Black". Existing
+    /// grades are never touched or renamed; this only ever adds.
+    /// </summary>
+    private async Task<bool> AddMissingGradesAsync(IReadOnlyList<string> missing, string fileName,
+                                                   System.Windows.Controls.Button busyOn,
+                                                   IReadOnlyList<(string Label, string Value)> facts)
     {
-        var missing = plan.UnplacedLabels;
         bool one = missing.Count == 1;
 
         if (!AppDialog.Confirm(this,
@@ -5029,13 +5097,7 @@ public partial class MainWindow : Window
                 headline: one ? $"\"{missing[0]}\" has never been seen before"
                               : $"{missing.Count:N0} names on this sheet have never been seen before",
                 subhead: fileName,
-                facts:
-                [
-                    ("Read correctly", $"{plan.Rows.Count:N0} line(s), {plan.TotalCarats:N2} ct"),
-                    (one ? "Held by that grade" : "Held by those grades",
-                        $"{plan.UnplacedRows:N0} line(s), {plan.UnplacedCarats:N2} ct"),
-                    ("Sheet total", $"{plan.TotalCarats + plan.UnplacedCarats:N2} ct"),
-                ],
+                facts: facts,
                 emphasis: $"Adding {(one ? "it" : "them")} takes nothing away. "
                         + "The sheet is then read again and you still see every figure before "
                         + "anything is imported.",
@@ -5047,9 +5109,12 @@ public partial class MainWindow : Window
             return false;
 
         var failures = new List<string>();
-        using (Busy(ImportStockPdf, "Adding…", ImportStockPdf))
+        using (Busy(busyOn, "Adding…", busyOn))
             foreach (string label in missing)
             {
+                // The label as the SHEET prints it -- "1 BB", not "No. 1 Bottom Black". A grade
+                // invented under a tidier name would not match the next sheet, which prints the
+                // short form, and the office would be asked to add it a second time.
                 var wrote = await Repo.AddGradeAsync(label);
                 if (!wrote.Ok) failures.Add($"{label} — {wrote.Failure}");
             }
@@ -5469,6 +5534,7 @@ public partial class MainWindow : Window
         {
             var result = await read();
             Db.NoteTransport(null);
+            _lastFailure = null;
 
             // A "cannot reach the server" is deliberately permanent — an empty grid with no message
             // reads as "there is no data" rather than "this did not load". But permanent meant it
@@ -5500,6 +5566,10 @@ public partial class MainWindow : Window
             // either message alone.
             if (!Db.IsOnline) Pill(false, "Offline — changes are saved on this machine");
 
+            // Kept whole, unflattened, for callers that can afford a dialog. The status bar gets
+            // the same words on one line; a refusal naming several buckets deserves both.
+            _lastFailure = Friendly.Message(ex.Message);
+
             Say(ex.Message);
             return null;
         }
@@ -5509,6 +5579,10 @@ public partial class MainWindow : Window
     /// Set when a read failed with a message that stays on screen, so the next successful read
     /// knows there is something stale to clear.
     private bool _transportFailed;
+
+    /// The database's own words from the last failed read or write, with the PostgREST envelope
+    /// already opened. Held because the status bar is one line and some refusals are a list.
+    private string? _lastFailure;
 
     /// <summary>
     /// How many reads or writes are in flight. Counted rather than a flag because they nest —
@@ -5646,6 +5720,43 @@ public partial class MainWindow : Window
             Say($"Catalogue reloaded · {Catalogue.Grades.Count:N0} grades, "
                 + $"{Catalogue.ActiveSizes.Count:N0} sizes, {_invoice.Buyers.Count:N0} buyers");
         }
+    }
+
+    /// <summary>
+    /// The database's refusal, shown as a dialog rather than a line at the foot of the window.
+    ///
+    /// A stock import that is refused says WHY, and the why can be a list: which bucket, what the
+    /// sheet brings, what has gone out against it. That does not fit on one line, and the one line
+    /// it was getting cut the explanation off mid-sentence. The bar still carries the same words --
+    /// this adds a place where all of them fit.
+    ///
+    /// The message is split the way the database writes it: the opening sentence is the headline,
+    /// the "- bucket ..." lines become the list, and whatever closes it becomes the note. A message
+    /// with no list at all still renders -- it simply has no bullets.
+    /// </summary>
+    private void ShowWriteRefusal(string title, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(_lastFailure)) return;
+
+        var lines = _lastFailure.Split('\n')
+                                .Select(l => l.Trim())
+                                .Where(l => l.Length > 0)
+                                .ToList();
+
+        var bullets = lines.Where(l => l.StartsWith("- ", StringComparison.Ordinal))
+                           .Select(l => l[2..].Trim())
+                           .ToList();
+
+        var prose = lines.Where(l => !l.StartsWith("- ", StringComparison.Ordinal)).ToList();
+
+        AppDialog.Refused(this,
+            title: title,
+            headline: prose.Count > 0 ? prose[0] : "The import was refused",
+            subhead: fileName,
+            facts: [],
+            listTitle: bullets.Count > 0 ? "Which buckets" : null,
+            bullets: bullets.Count > 0 ? bullets : null,
+            note: prose.Count > 1 ? string.Join(" ", prose.Skip(1)) : null);
     }
 
     private void ReloadCurrentTab()
@@ -5794,8 +5905,16 @@ public partial class MainWindow : Window
         // Every message on every screen passes through here, so this is the one place a database
         // failure has to be made readable. The original is kept on the tooltip — a support call
         // still needs the real text, it just should not be the first thing a user reads.
-        Status.Text = Friendly.Message(message);
-        Status.ToolTip = Friendly.Translates(message) ? message : null;
+        string friendly = Friendly.Message(message);
+
+        // The bar is a single line that does not wrap, and a database refusal can name several
+        // buckets on several lines. Flattened with a separator so every one of them is still on
+        // screen instead of the first line only -- and the unflattened text goes on the tooltip,
+        // where line breaks survive and a support call can read the whole thing.
+        Status.Text = System.Text.RegularExpressions.Regex.Replace(friendly, "[\r\n]+", "  ·  ").Trim();
+        Status.ToolTip = friendly.Contains('\n') ? friendly
+                       : Friendly.Translates(message) ? message
+                       : null;
 
         // How long it stays depends on what it is. The rule used to be "confirmations clear,
         // everything else is permanent", which left a prompt like "Pick a grade and size" sitting

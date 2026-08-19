@@ -227,5 +227,46 @@ foreach (string file in new[] { "stk 13-08-26.xlsx", "stk BKC-JAN.xlsx" })
 }
 Console.WriteLine();
 
+// ── the sale workbook offers to add a grade, like the two stock importers ──
+// An unknown grade used to be reported as a skipped row and nothing more, leaving the user to
+// open Master data, type the name themselves and run the import again. The two stock paths
+// have offered to add it for a while; this is the sale path catching up.
+foreach (string file in new[] { "Sale File Sample.xlsx", "Sale File - 5 months sample.xlsx" })
+{
+    if (!Have(file)) { Console.WriteLine($"SKIP  {file} - not in Downloads"); continue; }
+
+    var baseline = SaleFileImport.Plan(At(file), gradeMap, SaleFileImport.SizeAliasMap(full));
+    var used = baseline.Invoices.SelectMany(i => i.Lines).Select(l => l.GradeCode).Distinct().ToList();
+
+    Check($"SALEGRADE · {file} offers nothing when every grade resolves",
+          baseline.UnknownGrades.Count == 0, string.Join(",", baseline.UnknownGrades));
+
+    if (used.Count == 0) continue;
+
+    // Drop one grade the file actually uses. It must be NAMED, not merely skipped.
+    string drop = used[0];
+    var thin = SaleFileImport.AliasMap(
+        grades.Where(g => g.Code != drop).Select(g => (g.Code, g.Aliases)));
+    var missing = SaleFileImport.Plan(At(file), thin, SaleFileImport.SizeAliasMap(full));
+
+    Check($"SALEGRADE · {file} names the grade it cannot place",
+          missing.UnknownGrades.Count > 0, string.Join(",", missing.UnknownGrades));
+
+    // Named once, however many rows use it -- the dialog lists names, not occurrences.
+    Check($"SALEGRADE · {file} lists it once, not once per row",
+          missing.UnknownGrades.Count == missing.UnknownGrades.Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+          $"{missing.UnknownGrades.Count} name(s), {missing.SkippedRows} row(s) skipped");
+
+    // The name offered is the one the SHEET writes, so a grade created from it matches the next
+    // workbook too. Never a tidied-up version, and never an existing display name.
+    Check($"SALEGRADE · {file} offers the sheet's own spelling",
+          missing.UnknownGrades.All(g => g.Trim().Length > 0 && g == g.Trim()),
+          string.Join(" | ", missing.UnknownGrades.Take(3)));
+
+    Check($"SALEGRADE · {file} still refuses to import those rows",
+          missing.LineCount < baseline.LineCount,
+          $"{missing.LineCount} vs {baseline.LineCount} lines");
+}
+
 Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} check(s) failed.");
 Environment.Exit(fail == 0 ? 0 : 1);

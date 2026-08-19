@@ -206,10 +206,53 @@ public static class Friendly
     {
         if (string.IsNullOrWhiteSpace(raw)) return "";
 
+        raw = Unwrap(raw);
+
         foreach (var (needle, message) in Known)
             if (raw.Contains(needle, StringComparison.OrdinalIgnoreCase)) return message;
 
         return raw;
+    }
+
+    /// <summary>
+    /// PostgREST reports a failure as a JSON object, not as a sentence:
+    ///
+    ///     {"code":"23514","details":null,"hint":null,"message":"This sheet cannot replace ..."}
+    ///
+    /// Every word the database was careful to write sits inside "message", and printing the
+    /// envelope put a wall of punctuation in front of it -- the status bar showed
+    /// `{"code":"23514","details":null,...` and cut the actual sentence off mid-way.
+    ///
+    /// So the envelope is opened first and the table above matches on what was inside it. A
+    /// string that is not JSON is returned untouched, which is every message the app writes
+    /// itself.
+    /// </summary>
+    private static string Unwrap(string raw)
+    {
+        string s = raw.Trim();
+        if (s.Length < 2 || s[0] != '{') return raw;
+
+        try
+        {
+            var o = Newtonsoft.Json.Linq.JObject.Parse(s);
+
+            string? message = (string?)o["message"];
+            if (string.IsNullOrWhiteSpace(message)) return raw;
+
+            // hint and details are where Postgres puts "and here is what to do about it". Kept
+            // when present, dropped when null -- which is most of the time.
+            string? hint = (string?)o["hint"];
+            string? details = (string?)o["details"];
+
+            return string.Join(" ", new[] { message, details, hint }
+                .Where(x => !string.IsNullOrWhiteSpace(x)));
+        }
+        catch (Newtonsoft.Json.JsonException)
+        {
+            // Not JSON after all -- a message that merely begins with a brace. The original is
+            // still the best thing to show.
+            return raw;
+        }
     }
 
     /// <summary>True when <see cref="Message"/> would replace the text — the caller keeps the original.</summary>
@@ -810,7 +853,7 @@ internal sealed class FieldErrorAdorner : System.Windows.Documents.Adorner
         // copy taken once would keep the old theme's colour after the toggle.
         _label.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
 
-        _children = new System.Windows.Media.VisualCollection(this) { _label };
+_children = new System.Windows.Media.VisualCollection(this) { _label };
 
         // AFTER the collection exists, and that ordering is the whole point. Setting a dependency
         // property on a Visual makes WPF walk the visual children, which lands in
@@ -824,8 +867,8 @@ internal sealed class FieldErrorAdorner : System.Windows.Documents.Adorner
 
     public string Message { get => _label.Text; set => _label.Text = value; }
 
-    /// How much room the message needs under the field. Read after a layout pass, so it accounts
-    /// for a message long enough to wrap onto a second line.
+    /// Room the message needs under the field, read after a layout pass so a wrapped
+    /// second line is counted.
     public double MessageHeight => _label.DesiredSize.Height + _label.Margin.Top;
 
     protected override int VisualChildrenCount => _children?.Count ?? 0;
@@ -833,15 +876,18 @@ internal sealed class FieldErrorAdorner : System.Windows.Documents.Adorner
 
     protected override Size MeasureOverride(Size constraint)
     {
-        // At least 140px so a short field does not wrap the message one word per line.
-        _label.Measure(new Size(Math.Max(AdornedElement.RenderSize.Width, 140), double.PositiveInfinity));
+        // At least 150px so a narrow field does not wrap the message one word per line, and no
+        // wider than 320 so a long sentence does not run off across the form.
+        _label.Measure(new Size(Math.Clamp(AdornedElement.RenderSize.Width, 150, 320),
+                               double.PositiveInfinity));
         return AdornedElement.RenderSize;
     }
 
     protected override Size ArrangeOverride(Size finalSize)
     {
+        // Directly under the field, left-aligned with it. Nothing else moves.
         _label.Arrange(new Rect(0, finalSize.Height,
-                                Math.Max(finalSize.Width, 140), _label.DesiredSize.Height));
+                                _label.DesiredSize.Width, _label.DesiredSize.Height));
         return finalSize;
     }
 }
@@ -883,39 +929,58 @@ public static class FieldError
         }
     }
 
-    public static void Clear(UIElement target)
-    {
-        if (!Shown.Remove(target, out var adorner)) return;
-        System.Windows.Documents.AdornerLayer.GetAdornerLayer(target)?.Remove(adorner);
-
-        // Put the layout back exactly as it was. Restored from the value captured the FIRST time
-        // this field ever showed a message, not from the current one -- otherwise a second message
-        // arriving before the first cleared would bank the inflated margin as the original and the
-        // form would creep downwards a line at a time.
-        if (target is FrameworkElement field && OriginalMargin.Remove(field, out var margin))
-            field.Margin = margin;
-    }
 
     private static readonly Dictionary<FrameworkElement, Thickness> OriginalMargin = [];
 
-    /// <summary>Grow the field's bottom margin so the message has somewhere to sit.</summary>
+    /// <summary>
+    /// Grow the field's bottom margin so the message has real room, in the containers where that
+    /// works -- and deliberately NOT in the ones where it does not.
+    ///
+    /// The forms differ. Intake and Master data sit in a plain WrapPanel whose rows size to their
+    /// content, so a taller field genuinely pushes what follows out of the way. The Sales entry
+    /// header sits in a WrapPanel with ItemHeight fixed at 40, and its fields are centred in that
+    /// fixed cell -- so extra margin cannot make room, it only re-centres that one field and leaves
+    /// Buyer sitting higher than Broker, Terms and Type. Which is exactly what it did.
+    ///
+    /// So the rule is: reserve only when an ancestor can grow. Where it cannot, the message draws
+    /// over what is beneath, which on that header is empty space anyway.
+    /// </summary>
     private static void Reserve(UIElement target, FieldErrorAdorner adorner)
     {
-        if (target is not FrameworkElement field) return;
-
-        // A grid cell is left alone: its row height is the grid's business, and widening a cell
-        // pushes every other column's row apart with it.
-        if (target is DataGridCell) return;
+        if (target is not FrameworkElement field || target is DataGridCell) return;
+        if (InFixedHeightRow(field)) return;
 
         adorner.UpdateLayout();
         double needed = Math.Max(adorner.MessageHeight, 15);
 
+        // TryAdd, not assignment: a second message arriving before the first cleared would
+        // otherwise bank the inflated margin as the original and the form would creep downwards.
         if (OriginalMargin.TryAdd(field, field.Margin))
         {
             var m = field.Margin;
             field.Margin = new Thickness(m.Left, m.Top, m.Right, m.Bottom + needed);
         }
     }
+
+    /// <summary>Whether some ancestor pins the row height, making extra margin pointless.</summary>
+    private static bool InFixedHeightRow(DependencyObject node)
+    {
+        for (var at = node; at is not null; at = System.Windows.Media.VisualTreeHelper.GetParent(at))
+            if (at is System.Windows.Controls.WrapPanel { ItemHeight: var h } && !double.IsNaN(h))
+                return true;
+        return false;
+    }
+
+    public static void Clear(UIElement target)
+    {
+        if (!Shown.Remove(target, out var adorner)) return;
+        System.Windows.Documents.AdornerLayer.GetAdornerLayer(target)?.Remove(adorner);
+
+        if (target is FrameworkElement field && OriginalMargin.Remove(field, out var margin))
+            field.Margin = margin;
+
+    }
+
 
     /// <summary>
     /// Wipe every message on every page. Called before each validation pass so a field fixed since

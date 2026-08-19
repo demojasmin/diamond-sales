@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -42,10 +42,16 @@ public partial class PdfStockPreview : Window
         // Carats alone when the sheet states no rates. "avg 0 /ct · value 0.00" was arithmetic on
         // figures that were never on the page, and a zero reads as a measurement rather than as an
         // absence — the same reason an untraded cell above is left blank instead of showing 0.00.
-        w.FooterNote.Text = $"{plan.TotalCarats:N4} ct"
-            + (plan.TotalValue == 0m || plan.TotalCarats == 0m
+        // Read through the SAME helper the TOTAL row in the grid uses. They were computed
+        // separately -- footer from plan.TotalCarats, grid from the size subtotals -- and two
+        // routes to one number is two chances to disagree, on the one figure the whole window
+        // exists to confirm.
+        var (footCt, footValue) = GrandTotal(plan, ColumnsFor(plan));
+
+        w.FooterNote.Text = $"{footCt:N4} ct"
+            + (footValue == 0m || footCt == 0m
                 ? " · this sheet states no rates"
-                : $" · avg {plan.TotalValue / plan.TotalCarats:N0} /ct · value {Money.Short(plan.TotalValue)}");
+                : $" · avg {footValue / footCt:N0} /ct · value {Money.Short(footValue)}");
 
         // The parse reconciles to the sheet's own subtotals, or the plan would not be valid — the
         // reader refuses a sheet whose lines do not add up to what it prints. Saying so here is the
@@ -69,14 +75,29 @@ public partial class PdfStockPreview : Window
         return w._accepted;
     }
 
+    /// <summary>
+    /// The size columns this window shows: every column the sheet PRINTS, holdings or not.
+    ///
+    /// The same rule as the grade rows, and for the same reason. It used to drop any size with no
+    /// rows, which on the six-size sheet silently removed "1/4" -- that column prints 0.00 all the
+    /// way down, so it yields no holding and vanished from a window whose only job is to be held
+    /// against the paper. A column of zeros is what the sheet says; a missing column is a question
+    /// somebody has to go and answer.
+    ///
+    /// Public and static so it can be asserted without standing up a window -- the rule is worth
+    /// a test even though the drawing is not.
+    /// </summary>
+    public static List<string> ColumnsFor(StockImportPlan plan) =>
+        plan.SizeOrder.Count > 0
+            ? plan.SizeOrder.ToList()
+            : plan.Rows.Select(r => r.SizeCode).Distinct().ToList();
+
     private void Draw(StockImportPlan plan, Func<string, string> sizeLabel)
     {
         // The sheet's own column order, not the order the rows happened to be built in. Those
         // differ: rows are made grade by grade, so the first grade holding stock decides what is
         // discovered first — which put "-6.5" third on a sheet that prints it first.
-        var sizes = plan.SizeOrder.Count > 0
-            ? plan.SizeOrder.Where(c => plan.Rows.Any(r => r.SizeCode == c)).ToList()
-            : plan.Rows.Select(r => r.SizeCode).Distinct().ToList();
+        var sizes = ColumnsFor(plan);
         // Every line the sheet PRINTS, in its order — including the ones holding nothing. Built
         // from holdings alone, this dropped "-2 BB", "LB 3" and "14+" from a 24-row sheet, and the
         // whole point of the window is that it can be held against the paper.
@@ -133,25 +154,92 @@ public partial class PdfStockPreview : Window
             }
         }
 
-        // The totals, both of them, exactly as the sheet prints them at its own foot: carats under
-        // each size and the rate beside it.
+        // The sheet prints TWO lines at its foot and the preview showed only one of them: a row of
+        // per-size subtotals, and under it a single grand TOTAL. The row below used to be labelled
+        // "TOTAL" while carrying the subtotals, which is the sheet's first line wearing the second
+        // line's name.
         //
-        // That rate is a WEIGHTED average -- the parcel's value over its weight -- not the average
-        // of the rates in the column. On this sheet the two differ by thousands a carat, because
-        // 53.97 ct at 30,000 and 0.16 ct at 19,000 do not carry equal weight in what the parcel is
-        // worth. Checked against the printed figures: 29,567 / 28,550 / 34,659, all to the rupee.
+        // The rate on both is a WEIGHTED average -- the parcel's value over its weight -- not the
+        // average of the rates in the column. On this sheet the two differ by thousands a carat,
+        // because 53.97 ct at 30,000 and 0.16 ct at 19,000 do not carry equal weight in what the
+        // parcel is worth. Checked against the printed figures: 29,567 / 28,550 / 34,659, to the
+        // rupee.
+        row++;
+        Table.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Cell("Size subtotal", 0, row, header: true, right: false);
+        for (int i = 0; i < sizes.Count; i++)
+        {
+            var (ct, _) = SubtotalFor(plan, sizes[i]);
+            Cell($"{ct:N2}", 1 + i * span, row, header: true);
+            if (rates)
+                Cell(SubtotalRate(plan, sizes[i]) is { } r ? $"{r:N0}" : "",
+                     2 + i * span, row, header: true);
+        }
+
+        // The grand total, laid out as the paper lays it out: the label, then the figure, then the
+        // rate, with the rest of the row empty. Summed FROM the subtotals above rather than from
+        // plan.Rows, so the row visibly adds up the row above it -- if those two ever disagreed the
+        // screen would be lying about its own arithmetic.
+        var (allCt, allValue) = GrandTotal(plan, sizes);
+
         row++;
         Table.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         Cell("TOTAL", 0, row, header: true, right: false);
-        for (int i = 0; i < sizes.Count; i++)
-        {
-            var forSize = plan.Rows.Where(r => r.SizeCode == sizes[i]).ToList();
-            decimal ct = forSize.Sum(r => r.WeightCt);
-            decimal value = forSize.Sum(r => r.WeightCt * r.PricePerCt);
+        Cell($"{allCt:N2}", 1, row, header: true);
+        if (rates) Cell(allCt == 0 ? "" : $"{allValue / allCt:N0}", 2, row, header: true);
+    }
 
-            Cell($"{ct:N2}", 1 + i * span, row, header: true);
-            if (rates) Cell(ct == 0 ? "" : $"{value / ct:N0}", 2 + i * span, row, header: true);
+    /// <summary>One size column's carats and value, as the sheet's subtotal line states them.</summary>
+    public static (decimal Ct, decimal Value) SubtotalFor(StockImportPlan plan, string sizeCode)
+    {
+        var forSize = plan.Rows.Where(r => r.SizeCode == sizeCode).ToList();
+        return (forSize.Sum(r => r.WeightCt), forSize.Sum(r => r.WeightCt * r.PricePerCt));
+    }
+
+    /// <summary>
+    /// The rate the sheet prints on its subtotal line for one size column.
+    ///
+    /// Weighted -- value over weight -- while the column holds carats, which is what the paper
+    /// does and what matches its printed figures to the rupee.
+    ///
+    /// A column holding NOTHING is the interesting case. It still prints a rate: 1/4 on the
+    /// reference sheet holds 0.00 ct down its whole length and states 34,921. That cannot be a
+    /// weighted average, because there is no weight to weight it by -- it is the plain mean of the
+    /// rates printed in the column, and 19 values averaging 34,921.05 is exactly what the sheet
+    /// shows. Rendering nothing there left a cell blank that the paper fills in.
+    /// </summary>
+    public static decimal? SubtotalRate(StockImportPlan plan, string sizeCode)
+    {
+        var (ct, value) = SubtotalFor(plan, sizeCode);
+        if (ct != 0m) return value / ct;
+
+        var printed = plan.Printed
+            .Where(e => e.Key.Size == sizeCode && e.Value.Rate is > 0m)
+            .Select(e => e.Value.Rate!.Value)
+            .ToList();
+
+        return printed.Count == 0 ? null : printed.Sum() / printed.Count;
+    }
+
+    /// <summary>
+    /// The sheet's grand total: the size subtotals added up.
+    ///
+    /// Deliberately built from the subtotals rather than from plan.Rows directly. They are the same
+    /// number, and that is the point -- the TOTAL row on screen must be the visible sum of the row
+    /// above it, or the window is asserting arithmetic it has not done.
+    ///
+    /// Public and static so it can be asserted without standing up a window.
+    /// </summary>
+    public static (decimal Ct, decimal Value) GrandTotal(StockImportPlan plan, IEnumerable<string> sizes)
+    {
+        decimal ct = 0m, value = 0m;
+        foreach (string size in sizes)
+        {
+            var (c, v) = SubtotalFor(plan, size);
+            ct += c;
+            value += v;
         }
+        return (ct, value);
     }
 
     private void Cell(string text, int column, int row, bool header = false, bool muted = false,

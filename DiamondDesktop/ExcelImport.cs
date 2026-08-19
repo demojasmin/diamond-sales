@@ -135,6 +135,16 @@ public sealed class ImportPlan
     /// </summary>
     public List<UnknownSize> UnknownSizes { get; } = [];
 
+    /// <summary>
+    /// Grades the workbook names and the catalogue lacks, with the weight riding on each.
+    ///
+    /// Same shape and same purpose as UnknownSizes: carried as data so the caller can offer to
+    /// create them. A grade reported only as a skipped row leaves the user to add it by hand and
+    /// re-run the import, which is the difference between a file that loads and a file that waits
+    /// on somebody opening Master data.
+    /// </summary>
+    public List<string> UnknownGrades { get; } = [];
+
     public int SkippedRows { get; set; }
     public List<PlannedInvoice> Invoices { get; } = [];
     public List<string> Buyers { get; } = [];
@@ -318,7 +328,8 @@ public static class SaleFileImport
         foreach (var row in data)
         {
             int before = plan.Exceptions.Count;
-            var sale = ParseRow(row, gradeMap, sizeMap, plan.Exceptions, plan.UnknownSizes);
+            var sale = ParseRow(row, gradeMap, sizeMap, plan.Exceptions, plan.UnknownSizes,
+                                plan.UnknownGrades);
             if (sale is not null) parsed.Add(sale);
             else if (plan.Exceptions.Count > before) plan.SkippedRows++;
         }
@@ -343,7 +354,8 @@ public static class SaleFileImport
                                      IReadOnlyDictionary<string, string> gradeMap,
                                      IReadOnlyDictionary<string, string> sizeMap,
                                      List<ImportProblem> problems,
-                                     List<UnknownSize> unknownSizes)
+                                     List<UnknownSize> unknownSizes,
+                                     List<string> unknownGrades)
     {
         // A row with no date and no weight is trailing formatting, not a record. Skipping it
         // silently is right; complaining about it would make every real file look broken.
@@ -367,8 +379,15 @@ public static class SaleFileImport
         if (grade.Length == 0)
             problems.Add(new ImportProblem($"Row {row.Number}: the grade (column H) is empty."));
         else if (!gradeMap.TryGetValue(grade, out string? resolvedGrade))
+        {
             problems.Add(new ImportProblem(
                 $"Row {row.Number}: grade \"{grade}\" is not in the catalogue and has no alias."));
+
+            // Recorded under the name the SHEET writes, so anything created from it matches the
+            // next workbook too. Listed once however many rows use it.
+            if (!unknownGrades.Contains(grade, StringComparer.OrdinalIgnoreCase))
+                unknownGrades.Add(grade);
+        }
         else
             grade = resolvedGrade;
 

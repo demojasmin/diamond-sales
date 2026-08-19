@@ -159,5 +159,283 @@ if (Have("JADU 11-5-26.pdf"))
           string.Join(",", p.SizeOrder));
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LAYOUT REGRESSIONS · one entry per real sheet, asserting the figure the paper
+// prints on itself. These are the checks that would have caught both faults
+// found on 19 Aug, and a NEW layout added to the table below picks up every
+// invariant at once.
+// ═══════════════════════════════════════════════════════════════════════════
+var sheets = new (string File, decimal Printed, string[] Sizes, string Note)[]
+{
+    ("JADU APR-AUG'26.pdf", 508.71m,  new[]{ "14+", "0.2", "0.25" },
+     "three sizes, rates beside each"),
+    ("17-8-26.pdf",         2613.50m, new[]{ "-6.5", "+6.5", "+11" },
+     "report grade labels"),
+    ("JADU 11-5-26.pdf",    258.84m,  new[]{ "-6.5", "+6.5", "+11", "14+", "0.2", "0.25" },
+     "six sizes, no rate columns, two side-by-side panels"),
+    ("kalpesh.pdf",         107.76m,  new[]{ "-6.5", "+6.5", "+11", "1/6", "0.2", "0.25" },
+     "landscape, TOTAL printed INSIDE the first weight column"),
+    ("107.pdf",             107.76m,  new[]{ "-6.5", "+6.5", "+11", "1/6", "0.2", "0.25" },
+     "portrait, TWO stacked tables sharing identical column x-positions"),
+};
+
+// Its own catalogue, deliberately. The shared `sizeMap` above omits 1/6 because an earlier
+// check depends on that absence to prove the unknown-size refusal -- so reusing it here would
+// test the refusal path a second time instead of the layouts.
+var everySize = MainWindow.PdfSizeLabelMap([.. sizeCodes, "1/6", "1/3"]);
+StockImportPlan ReadAll(string f) => PdfStockFile.Plan(Path.Combine(dir, f), gradeMap, everySize);
+
+foreach (var sheet in sheets)
+{
+    if (!Have(sheet.File)) { Console.WriteLine($"SKIP  {sheet.File} - not in Downloads"); continue; }
+    var q = ReadAll(sheet.File);
+
+    Check($"LAYOUT {sheet.File} reads ({sheet.Note})", q.IsValid,
+          q.IsValid ? $"{q.TotalCarats:N2} ct" : PdfStockFile.ProblemText(q));
+
+    // The whole point. A sheet that reads but disagrees with its own printed total has been
+    // read wrongly, and that is the failure which does not announce itself.
+    Check($"LAYOUT {sheet.File} totals exactly what it prints",
+          q.TotalCarats == sheet.Printed, $"read {q.TotalCarats:N2}, printed {sheet.Printed:N2}");
+
+    Check($"LAYOUT {sheet.File} finds every size column",
+          q.SizeOrder.OrderBy(x => x).SequenceEqual(sheet.Sizes.OrderBy(x => x)),
+          string.Join(",", q.SizeOrder));
+
+    // A rate is thousands of rupees; carats on these sheets are hundreds. Guarding the ORDER
+    // OF MAGNITUDE catches "a rate read as a weight" even on a sheet nobody has written an
+    // expected total for yet.
+    Check($"LAYOUT {sheet.File} never reads a rate as carats", q.TotalCarats < 20000m,
+          $"{q.TotalCarats:N2} ct");
+
+    // Two tables merged, or a heading claiming a column twice, surfaces here before it
+    // surfaces in anyone's stock position.
+    Check($"LAYOUT {sheet.File} lists no size twice",
+          q.SizeOrder.Distinct().Count() == q.SizeOrder.Count, string.Join(",", q.SizeOrder));
+
+    Check($"LAYOUT {sheet.File} rows sum to the plan total",
+          q.Rows.Sum(r => r.WeightCt) == q.TotalCarats, $"{q.Rows.Count} rows");
+}
+
+// ── the same stock printed two ways must read the same ─────────────────────
+// kalpesh.pdf is one landscape table; 107.pdf is the same figures as two stacked tables.
+// Layout may not change the answer. When the reader merged the two tables it read 107.pdf as
+// 23.88 / 65.35 / 18.53 against a printed 21.35 / 64.36 / 18.53 -- each inflated by exactly
+// the table below it.
+if (Have("kalpesh.pdf") && Have("107.pdf"))
+{
+    var flat = ReadAll("kalpesh.pdf");
+    var stacked = ReadAll("107.pdf");
+
+    Check("CROSS one table and two stacked tables agree on the total",
+          flat.IsValid && stacked.IsValid && flat.TotalCarats == stacked.TotalCarats,
+          $"{flat.TotalCarats:N2} vs {stacked.TotalCarats:N2}");
+
+    Check("CROSS and on every size",
+          flat.SizeOrder.OrderBy(x => x).SequenceEqual(stacked.SizeOrder.OrderBy(x => x)),
+          $"[{string.Join(",", flat.SizeOrder)}] vs [{string.Join(",", stacked.SizeOrder)}]");
+
+    Check("CROSS and on the carats within each size",
+          flat.SizeOrder.All(s =>
+              flat.Rows.Where(r => r.SizeCode == s).Sum(r => r.WeightCt)
+              == stacked.Rows.Where(r => r.SizeCode == s).Sum(r => r.WeightCt)),
+          string.Join(" ", flat.SizeOrder.Select(s =>
+              $"{s}={flat.Rows.Where(r => r.SizeCode == s).Sum(r => r.WeightCt):N2}")));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 100% OF THE SHEET · kalpesh.pdf is the fixed reference layout. Every printed
+// row must reach the screen, every size column must be found, and every one of
+// the sheet's own subtotals must reconcile before a carat is written.
+// ═══════════════════════════════════════════════════════════════════════════
+if (Have("kalpesh.pdf"))
+{
+    var k = ReadAll("kalpesh.pdf");
+
+    Check("SHEET · reads", k.IsValid, $"{k.TotalCarats:N4} ct");
+
+    // The paper prints 22 rows: two with a blank grade cell, then twenty named ones.
+    // A preview showing 20 is a preview that cannot be checked against the paper.
+    Check("SHEET · every printed row is listed", k.GradeOrder.Count == 22,
+          $"{k.GradeOrder.Count} rows");
+
+    Check("SHEET · the two unnamed rows are shown, not swallowed",
+          k.GradeOrder.Count(g => g.StartsWith(PdfStockFile.NoGradeName, StringComparison.Ordinal)) == 2,
+          string.Join(" | ", k.GradeOrder.Take(3)));
+
+    // Order matters: the preview is read against the paper line by line.
+    Check("SHEET · in the sheet's own order, unnamed rows first",
+          k.GradeOrder[0].StartsWith(PdfStockFile.NoGradeName, StringComparison.Ordinal)
+          && k.GradeOrder[1].StartsWith(PdfStockFile.NoGradeName, StringComparison.Ordinal)
+          && k.GradeOrder[2] == "1 MB" && k.GradeOrder[3] == "1 BB"
+          && k.GradeOrder[^1] == "LB 2",
+          string.Join(" | ", k.GradeOrder.Take(4)) + " ... " + k.GradeOrder[^1]);
+
+    // All six columns, including 1/4 which prints 0.00 the whole way down. A size column
+    // dropped for holding nothing is a column nobody can check.
+    Check("SHEET · all six size columns are found",
+          k.SizeOrder.OrderBy(x => x).SequenceEqual(new[] { "-6.5", "+11", "+6.5", "0.2", "0.25", "1/6" }),
+          string.Join(",", k.SizeOrder));
+
+    // The sheet's own subtotals, one by one. 21.35 + 64.36 + 18.53 + 2.53 + 0.99 + 0.00 = 107.76
+    var printed = new (string Size, decimal Ct)[]
+    {
+        ("-6.5", 21.35m), ("+6.5", 64.36m), ("+11", 18.53m),
+        ("1/6", 2.53m), ("0.2", 0.99m), ("0.25", 0.00m),
+    };
+    foreach (var (size, ct) in printed)
+        Check($"SHEET · {size} totals the {ct:N2} ct the sheet prints",
+              k.Rows.Where(r => r.SizeCode == size).Sum(r => r.WeightCt) == ct,
+              $"{k.Rows.Where(r => r.SizeCode == size).Sum(r => r.WeightCt):N4}");
+
+    Check("SHEET · and the six add up to the printed TOTAL",
+          printed.Sum(x => x.Ct) == 107.76m && k.TotalCarats == 107.76m, $"{k.TotalCarats:N4}");
+
+    // The regression that cost an hour: TOTAL is printed INSIDE the first weight column on
+    // this sheet, so a check written against the label margin never sees it -- and the grand
+    // total was read as a holding of 27,933 ct, which is the rate.
+    Check("SHEET · the TOTAL line is never read as a holding",
+          !k.GradeOrder.Any(g => g.Contains("TOTAL", StringComparison.OrdinalIgnoreCase))
+          && k.Rows.All(r => r.WeightCt < 1000m),
+          k.Rows.Count == 0 ? "-" : $"largest holding {k.Rows.Max(r => r.WeightCt):N2} ct");
+
+    Check("SHEET · nor is the subtotal line",
+          k.Rows.Where(r => r.SizeCode == "-6.5").Sum(r => r.WeightCt) == 21.35m,
+          "a subtotal read as a holding would double this");
+
+    // Rates are read alongside weights and must not leak into either.
+    Check("SHEET · no rate is ever stored as a weight",
+          k.Rows.All(r => r.WeightCt < 1000m) && k.Rows.Any(r => r.PricePerCt > 1000m),
+          $"max weight {k.Rows.Max(r => r.WeightCt):N2}, max rate {k.Rows.Max(r => r.PricePerCt):N0}");
+}
+
+// A row carrying carats with no grade against it must STOP the import -- never be guessed at,
+// never be quietly dropped. An import replaces, so a dropped line is stock that ceases to exist.
+if (Have("kalpesh.pdf"))
+{
+    // The same sheet read against a catalogue missing "GH" -- chosen because no other grade
+    // aliases that label, so the row genuinely cannot be resolved. It carries
+    // 0.39 + 2.79 + 1.35 + 0.42 + 0.18 ct, so it must not pass silently.
+    var thin = grades.Where(g => g.Code != "GH").ToList();
+    var p = PdfStockFile.Plan(Path.Combine(dir, "kalpesh.pdf"),
+                              MainWindow.PdfGradeLabelMap(thin), everySize);
+
+    Check("UNPLACED · a grade the catalogue lacks stops the import", !p.IsValid);
+    Check("UNPLACED · and the carats are counted, not lost",
+          p.UnplacedCarats > 0m, $"{p.UnplacedCarats:N4} ct unplaced");
+    Check("UNPLACED · nothing short is offered for import",
+          p.TotalCarats < 107.76m, $"{p.TotalCarats:N4} ct read");
+}
+
+// ── the preview shows the sheet, not a summary of it ───────────────────────
+// The parser finding a column is not the same as the user seeing it. The preview used to drop
+// any size holding nothing, which removed "1/4" from the six-size sheet -- it prints 0.00 all
+// the way down. The window exists to be checked against paper, so a column of zeros belongs on
+// it and a missing column does not.
+if (Have("kalpesh.pdf"))
+{
+    var k = ReadAll("kalpesh.pdf");
+    var columns = PdfStockPreview.ColumnsFor(k);
+
+    Check("PREVIEW · shows every size column the sheet prints",
+          columns.Count == 6, string.Join(",", columns));
+
+    Check("PREVIEW · including one that holds nothing at all",
+          columns.Contains("0.25") && !k.Rows.Any(r => r.SizeCode == "0.25"),
+          "0.25 is 1/4, printed 0.00 down the whole column");
+
+    Check("PREVIEW · in the sheet's own left-to-right order",
+          columns.SequenceEqual(k.SizeOrder), string.Join(",", columns));
+
+    // Rows follow the same rule and always have -- asserted here so the two cannot drift apart
+    // again, which is exactly how the column filter survived: rows were fixed, columns were not.
+    Check("PREVIEW · and every printed row, named or not",
+          k.GradeOrder.Count == 22
+          && k.GradeOrder.Count(g => g.StartsWith(PdfStockFile.NoGradeName, StringComparison.Ordinal)) == 2,
+          $"{k.GradeOrder.Count} rows");
+}
+
+// ── the sheet's two closing lines, both of them ────────────────────────────
+// The paper ends with a row of per-size subtotals and then a single grand TOTAL. The preview
+// used to draw only the first, labelled "TOTAL" -- the sheet's first closing line wearing the
+// second one's name -- so the figure a reader most wants to confirm, 107.76, was nowhere in
+// the grid.
+if (Have("kalpesh.pdf"))
+{
+    var k = ReadAll("kalpesh.pdf");
+    var cols = PdfStockPreview.ColumnsFor(k);
+
+    // Per-size subtotals, against the figures printed on the paper.
+    var paper = new (string Size, decimal Ct)[]
+    {
+        ("-6.5", 21.35m), ("+6.5", 64.36m), ("+11", 18.53m),
+        ("1/6", 2.53m), ("0.2", 0.99m), ("0.25", 0.00m),
+    };
+    foreach (var (size, ct) in paper)
+        Check($"TOTALS · subtotal row states {ct:N2} ct for {size}",
+              PdfStockPreview.SubtotalFor(k, size).Ct == ct,
+              $"{PdfStockPreview.SubtotalFor(k, size).Ct:N4}");
+
+    var (grandCt, grandValue) = PdfStockPreview.GrandTotal(k, cols);
+
+    Check("TOTALS · the TOTAL row states the 107.76 ct the sheet prints",
+          grandCt == 107.76m, $"{grandCt:N4}");
+
+    // The row must be the visible sum of the row above it, or the screen is asserting
+    // arithmetic it has not done.
+    Check("TOTALS · and it is exactly the size subtotals added up",
+          grandCt == paper.Sum(x => x.Ct), $"{grandCt:N4} vs {paper.Sum(x => x.Ct):N4}");
+
+    // The sheet prints 27,933 as its average rate. A weighted average -- value over weight --
+    // not the mean of the column, which on this sheet differs by thousands a carat.
+    Check("TOTALS · the rate is the sheet's own 27,933 /ct",
+          grandCt > 0m && Math.Round(grandValue / grandCt, 0) == 27933m,
+          $"{(grandCt > 0m ? grandValue / grandCt : 0m):N0}");
+
+    // Footer and grid read the same helper now. They used to be computed by different routes,
+    // which is two chances to disagree on the one figure the window exists to confirm.
+    Check("TOTALS · the footer agrees with the TOTAL row",
+          grandCt == k.TotalCarats, $"grid {grandCt:N4}, plan {k.TotalCarats:N4}");
+}
+
+// ── a column that prints rates while holding no stock ──────────────────────
+// 1/4 on the reference sheet is 0.00 ct the whole way down and still states a rate of 34,921.
+// That cannot be value over weight -- there is no weight -- so the weighted rule divided by
+// zero and rendered nothing, leaving a cell blank that the paper fills in. It is the plain
+// mean of the 19 rates printed in the column, 34,921.05, and every other sheet held hid this
+// because none of them prints rates against an empty size.
+if (Have("kalpesh.pdf"))
+{
+    var k = ReadAll("kalpesh.pdf");
+
+    Check("RATE · a column holding nothing still states its rate",
+          PdfStockPreview.SubtotalRate(k, "0.25") is not null,
+          "0.25 is 1/4, 0.00 ct down the whole column");
+
+    Check("RATE · and it is the 34,921 the sheet prints",
+          PdfStockPreview.SubtotalRate(k, "0.25") is { } r && Math.Round(r, 0) == 34921m,
+          $"{PdfStockPreview.SubtotalRate(k, "0.25") ?? 0m:N2}");
+
+    // The columns that DO hold carats keep the weighted rule, which is what matches their
+    // printed figures. A plain mean would be wrong there by thousands a carat, because
+    // 53.97 ct at 30,000 and 0.16 ct at 19,000 do not count equally toward what a parcel
+    // is worth.
+    var weighted = new (string Size, decimal Rate)[]
+    {
+        ("-6.5", 26219m), ("+6.5", 28104m), ("+11", 29638m), ("1/6", 25933m), ("0.2", 26934m),
+    };
+    foreach (var (size, rate) in weighted)
+        Check($"RATE · {size} states the sheet's {rate:N0} /ct",
+              PdfStockPreview.SubtotalRate(k, size) is { } v && Math.Round(v, 0) == rate,
+              $"{PdfStockPreview.SubtotalRate(k, size) ?? 0m:N0}");
+
+    // Every size column now states a rate -- no blanks anywhere on the subtotal line.
+    Check("RATE · every size column on the subtotal line states one",
+          PdfStockPreview.ColumnsFor(k).All(s => PdfStockPreview.SubtotalRate(k, s) is not null),
+          string.Join(",", PdfStockPreview.ColumnsFor(k)
+              .Select(s => $"{s}={PdfStockPreview.SubtotalRate(k, s) ?? 0m:N0}")));
+}
+
 Console.WriteLine(fail == 0 ? "\nAll checks passed." : $"\n{fail} check(s) failed.");
 Environment.Exit(fail == 0 ? 0 : 1);

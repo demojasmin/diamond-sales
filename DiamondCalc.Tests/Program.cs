@@ -137,6 +137,66 @@ Check("CALC-10 fifty-one paise is still a debt",
 Check("CALC-10 fifty paise exactly is settled, not owed",
     !Calc.IsOverdue(new DateOnly(2025, 12, 1), 0.50m, new DateOnly(2026, 7, 25)));
 
+// ── a database refusal has to be readable ──────────────────────────────────
+// PostgREST reports a failure as a JSON object, not a sentence, so the status bar was
+// printing the envelope -- {"code":"23514","details":null,... -- and cutting the actual
+// explanation off part-way. Below is the real message 0038 raises, in the real envelope.
+{
+    const string envelope =
+        "{\"code\":\"23514\",\"details\":null,\"hint\":null,\"message\":" +
+        "\"This sheet cannot replace the current stock: 3 bucket(s) would be left below zero.\\n\\n" +
+        "  - NO II x -6.5: the sheet brings 5.5 ct but 114.18 ct has gone out against it, leaving -108.68 ct\\n" +
+        "  - COL x +6.5: the sheet brings 0.86 ct but 31.2 ct has gone out against it, leaving -30.34 ct\\n\\n" +
+        "Nothing has been imported.\"}";
+
+    string shown = DiamondDesktop.Friendly.Message(envelope);
+
+    Check("REFUSAL · the JSON envelope is opened",
+        !shown.StartsWith("{") && !shown.Contains("\"code\""),
+        shown[..Math.Min(58, shown.Length)]);
+
+    Check("REFUSAL · the sentence survives",
+        shown.StartsWith("This sheet cannot replace the current stock"),
+        shown[..Math.Min(58, shown.Length)]);
+
+    // The half that matters most. Showing one bucket and silently dropping two is worse than
+    // showing none, because a partial list reads as a complete one.
+    Check("REFUSAL · every named bucket survives",
+        shown.Contains("NO II x -6.5") && shown.Contains("COL x +6.5"), $"{shown.Length} chars");
+
+    Check("REFUSAL · and the carats behind each one",
+        shown.Contains("114.18") && shown.Contains("-108.68")
+        && shown.Contains("31.2") && shown.Contains("-30.34"));
+
+    Check("REFUSAL · the closing explanation survives",
+        shown.Contains("Nothing has been imported"));
+
+    // The bar is one line and does not wrap, so it flattens -- but flattening may not DROP
+    // anything, which is exactly what showing the first line only would have done.
+    string oneLine = System.Text.RegularExpressions.Regex
+        .Replace(shown, "[\r\n]+", "  ·  ").Trim();
+    Check("REFUSAL · flattened for the status bar, nothing dropped",
+        oneLine.Contains("NO II x -6.5") && oneLine.Contains("COL x +6.5")
+        && !oneLine.Contains('\n'), oneLine[..Math.Min(66, oneLine.Length)]);
+
+    // The dialog splits that same text into headline / bullets / note, by the rule the window
+    // uses: a line starting "- " is a bucket, anything else is prose.
+    var refusalLines = shown.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+    var refusalBullets = refusalLines.Where(l => l.StartsWith("- ", StringComparison.Ordinal)).ToList();
+    var refusalProse = refusalLines.Where(l => !l.StartsWith("- ", StringComparison.Ordinal)).ToList();
+
+    Check("REFUSAL · the dialog finds one bullet per bucket",
+        refusalBullets.Count == 2, string.Join(" | ", refusalBullets));
+    Check("REFUSAL · and a headline plus a closing note",
+        refusalProse.Count == 2, string.Join(" | ", refusalProse));
+
+    // Everything the app writes itself must pass through untouched.
+    Check("REFUSAL · a plain message is left alone",
+        DiamondDesktop.Friendly.Message("Pick a buyer from the list") == "Pick a buyer from the list");
+    Check("REFUSAL · and so is text that merely starts with a brace",
+        DiamondDesktop.Friendly.Message("{not json") == "{not json");
+}
+
 // ── CALC-11 · broker payable ────────────────────────────────────────────────
 // Pre-broker subtotal of Sale!Q3 is 141277.50; 1 % of it is 1412.775 → 1412.78
 Eq("CALC-11 broker payable uses the PRE-broker subtotal",

@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -43,6 +43,22 @@ public partial class AppDialog : Window
                             string? listTitle, IEnumerable<string>? bullets, string? note)
     {
         var dialog = Build(owner, Tone.Info, title, headline, subhead, facts, null, listTitle,
+                           bullets, "Done", null, note);
+        dialog.ShowDialog();
+    }
+
+    /// <summary>
+    /// Info's shape -- one list, one Done button -- with Warning's face.
+    ///
+    /// A refusal is not information. Shown through Info it arrived wearing the green tick that
+    /// every confirmation in this app wears, which reads as "that worked" above a paragraph
+    /// explaining that it did not. The distinction is the tone, so only the tone changes.
+    /// </summary>
+    public static void Refused(Window owner, string title, string headline, string? subhead,
+                               IEnumerable<(string Label, string Value)> facts,
+                               string? listTitle, IEnumerable<string>? bullets, string? note)
+    {
+        var dialog = Build(owner, Tone.Warning, title, headline, subhead, facts, null, listTitle,
                            bullets, "Done", null, note);
         dialog.ShowDialog();
     }
