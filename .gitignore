@@ -504,3 +504,6 @@ priya-backup/
 
 # Duplicates new-project-setup/, and two copies of the same thing drift.
 new-project-setup.zip
+
+# Per-developer Claude Code permissions. The filename says local; treat it as local.
+.claude/settings.local.json
