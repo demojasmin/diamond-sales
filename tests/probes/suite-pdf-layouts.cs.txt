@@ -24,6 +24,10 @@ var grades = new (string Code, string? Aliases)[]
     ("GH","GHOST;GH-VVS;GHVVS"), ("LB 1","LB1;L B 1;LB-1"), ("LB 2","LB2;L B 2;LB-2"),
     ("+14","14;PLUS14;P14"), ("EXTRA","EXTRA ASSORT;XTRA;ASSORT"), ("FL","F L;FL1"),
     ("1MB","1 MB;NO1MB;NO 1 MB"), ("-2 MB",",-2 MB;-2MB;,-2MB"), ("MIX", null),
+    // Seeded by 0039. A row the sheet prints no grade name against imports under this rather
+    // than refusing the file -- kalpesh.pdf's two unnamed rows carry 0.00, so nothing lands
+    // here, but the catalogue the suite builds has to match the one the app reads.
+    (PdfStockFile.UnknownGrade, null),
 }.Select((g, i) => new Grade { GradeId = i + 1, Code = g.Code, Aliases = g.Aliases, DisplayName = g.Code })
  .ToList();
 
@@ -261,13 +265,13 @@ if (Have("kalpesh.pdf"))
           $"{k.GradeOrder.Count} rows");
 
     Check("SHEET · the two unnamed rows are shown, not swallowed",
-          k.GradeOrder.Count(g => g.StartsWith(PdfStockFile.NoGradeName, StringComparison.Ordinal)) == 2,
+          k.GradeOrder.Count(g => g.StartsWith(PdfStockFile.UnknownGrade, StringComparison.Ordinal)) == 2,
           string.Join(" | ", k.GradeOrder.Take(3)));
 
     // Order matters: the preview is read against the paper line by line.
     Check("SHEET · in the sheet's own order, unnamed rows first",
-          k.GradeOrder[0].StartsWith(PdfStockFile.NoGradeName, StringComparison.Ordinal)
-          && k.GradeOrder[1].StartsWith(PdfStockFile.NoGradeName, StringComparison.Ordinal)
+          k.GradeOrder[0].StartsWith(PdfStockFile.UnknownGrade, StringComparison.Ordinal)
+          && k.GradeOrder[1].StartsWith(PdfStockFile.UnknownGrade, StringComparison.Ordinal)
           && k.GradeOrder[2] == "1 MB" && k.GradeOrder[3] == "1 BB"
           && k.GradeOrder[^1] == "LB 2",
           string.Join(" | ", k.GradeOrder.Take(4)) + " ... " + k.GradeOrder[^1]);
@@ -352,7 +356,7 @@ if (Have("kalpesh.pdf"))
     // again, which is exactly how the column filter survived: rows were fixed, columns were not.
     Check("PREVIEW · and every printed row, named or not",
           k.GradeOrder.Count == 22
-          && k.GradeOrder.Count(g => g.StartsWith(PdfStockFile.NoGradeName, StringComparison.Ordinal)) == 2,
+          && k.GradeOrder.Count(g => g.StartsWith(PdfStockFile.UnknownGrade, StringComparison.Ordinal)) == 2,
           $"{k.GradeOrder.Count} rows");
 }
 

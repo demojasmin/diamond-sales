@@ -1,0 +1,475 @@
+﻿<title>Stock Sheet v1</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ink:        #16130E;
+    --ink-soft:   #565046;
+    --paper:      #FFFFFF;
+    --surface:    #F6F3EC;
+    --surface-2:  #EDE8DE;
+    --rule:       #1A1712;
+    --hair:       #CFC8BA;
+    --amber:      #E7A33C;
+    --amber-deep: #B87413;
+    --stop:       #A32E1C;
+    --go:         #2C6349;
+    --shadow:     0 1px 0 rgba(22,19,14,.06);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:        #EFEBE2;
+      --ink-soft:   #A69F92;
+      --paper:      #14120E;
+      --surface:    #1D1A15;
+      --surface-2:  #26221B;
+      --rule:       #6C6558;
+      --hair:       #3A352C;
+      --amber:      #E7A33C;
+      --amber-deep: #F0BE72;
+      --stop:       #E8785F;
+      --go:         #6FBF97;
+      --shadow:     none;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ink:        #EFEBE2;
+    --ink-soft:   #A69F92;
+    --paper:      #14120E;
+    --surface:    #1D1A15;
+    --surface-2:  #26221B;
+    --rule:       #6C6558;
+    --hair:       #3A352C;
+    --amber:      #E7A33C;
+    --amber-deep: #F0BE72;
+    --stop:       #E8785F;
+    --go:         #6FBF97;
+    --shadow:     none;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", -apple-system, Segoe UI, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 24px 96px;
+  }
+
+  .wrap { max-width: 940px; margin: 0 auto; }
+  .prose { max-width: 66ch; }
+
+  h1, h2, h3 { font-family: Archivo, Segoe UI, sans-serif; text-wrap: balance; margin: 0; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--amber-deep);
+    margin: 0;
+  }
+
+  /* ── masthead ─────────────────────────────────────────────── */
+  header.masthead {
+    border-bottom: 3px solid var(--rule);
+    padding: 56px 0 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  header.masthead h1 {
+    font-size: clamp(34px, 6vw, 56px);
+    font-weight: 700;
+    letter-spacing: -.02em;
+    line-height: 1.02;
+  }
+  .lede { font-size: 19px; color: var(--ink-soft); max-width: 60ch; margin: 0; }
+  .stamp {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    align-self: flex-start;
+    background: var(--amber);
+    color: #16130E;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: 7px 14px;
+    border: 1.5px solid var(--rule);
+  }
+
+  section { padding-top: 56px; }
+  section > h2 {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -.01em;
+    padding-bottom: 10px;
+    border-bottom: 1.5px solid var(--hair);
+    margin-bottom: 24px;
+  }
+  section > h2 .num {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 15px;
+    color: var(--amber-deep);
+    margin-right: 12px;
+    vertical-align: 2px;
+  }
+  p { margin: 0 0 16px; }
+  p:last-child { margin-bottom: 0; }
+
+  /* ── the sample sheet ─────────────────────────────────────── */
+  .sheet-frame {
+    overflow-x: auto;
+    background: var(--surface);
+    border: 1px solid var(--hair);
+    padding: 22px;
+  }
+  table.sheet {
+    border-collapse: collapse;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    background: var(--paper);
+    margin: 0 auto;
+    white-space: nowrap;
+  }
+  table.sheet th, table.sheet td {
+    border: 1px solid var(--rule);
+    padding: 5px 11px;
+    text-align: center;
+  }
+  table.sheet th { background: var(--amber); color: #16130E; font-weight: 600; }
+  table.sheet th.rate { font-size: 10px; letter-spacing: .1em; }
+  table.sheet th.grade, table.sheet td.grade { text-align: left; background: var(--surface-2); }
+  table.sheet th.grade { background: var(--amber); }
+  table.sheet tr.sub td { border-top: 2.5px solid var(--rule); font-weight: 600; }
+  table.sheet tr.sub td.grade { background: var(--paper); }
+  table.sheet tr.total td { border: none; padding-top: 14px; font-weight: 600; }
+  table.sheet tr.total td.grade { text-align: left; background: none; }
+  .sheet-title {
+    font-family: "IBM Plex Mono", monospace;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    margin: 0 0 2px;
+  }
+  .sheet-date {
+    font-family: "IBM Plex Mono", monospace;
+    text-align: center;
+    font-size: 12px;
+    color: var(--ink-soft);
+    margin: 0 0 16px;
+  }
+  .caption {
+    font-size: 13.5px;
+    color: var(--ink-soft);
+    margin: 12px 0 0;
+    max-width: 70ch;
+  }
+
+  /* ── rules ────────────────────────────────────────────────── */
+  .rules { display: grid; gap: 0; border-top: 1px solid var(--hair); }
+  .rule-group { border-bottom: 1px solid var(--hair); padding: 22px 0; display: grid; grid-template-columns: 190px 1fr; gap: 28px; }
+  .rule-group > h3 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    padding-top: 3px;
+  }
+  ol.rule-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
+  ol.rule-list li { display: grid; grid-template-columns: 42px 1fr; gap: 14px; align-items: start; }
+  .rid {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--amber-deep);
+    border: 1px solid var(--hair);
+    padding: 1px 0;
+    text-align: center;
+    margin-top: 3px;
+  }
+  .rule-body { font-size: 15.5px; }
+  .rule-body b { font-weight: 600; }
+  code, .k {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .88em;
+    background: var(--surface-2);
+    padding: 1px 6px;
+    white-space: nowrap;
+  }
+
+  /* ── value tables ─────────────────────────────────────────── */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; align-items: start; }
+  .data-wrap { overflow-x: auto; }
+  table.data { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  table.data th, table.data td { text-align: left; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--hair); vertical-align: top; }
+  table.data th {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    font-weight: 500;
+    border-bottom: 1.5px solid var(--rule);
+  }
+  table.data td.mono { font-family: "IBM Plex Mono", monospace; font-size: 13.5px; }
+
+  /* ── refusals ─────────────────────────────────────────────── */
+  .stops { display: grid; gap: 14px; }
+  .stop-row {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 16px;
+    background: var(--surface);
+    border-left: 3px solid var(--stop);
+    padding: 16px 18px;
+  }
+  .stop-row .mark { font-family: "IBM Plex Mono", monospace; color: var(--stop); font-weight: 600; }
+  .stop-row h4 { margin: 0 0 4px; font-size: 15.5px; font-family: Archivo, sans-serif; font-weight: 600; }
+  .stop-row p { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
+
+  /* ── checklist ────────────────────────────────────────────── */
+  ul.check { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+  ul.check li { display: grid; grid-template-columns: 26px 1fr; gap: 12px; font-size: 15.5px; align-items: baseline; }
+  ul.check .box { width: 15px; height: 15px; border: 1.5px solid var(--rule); display: inline-block; }
+
+  .note {
+    border: 1.5px solid var(--rule);
+    background: var(--surface);
+    padding: 20px 22px;
+    font-size: 15px;
+  }
+  .note strong { font-weight: 600; }
+
+  footer {
+    margin-top: 72px;
+    padding-top: 20px;
+    border-top: 1.5px solid var(--hair);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    color: var(--ink-soft);
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  @media (max-width: 720px) {
+    .rule-group { grid-template-columns: 1fr; gap: 12px; }
+    .two-col { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Diamond Inventory · Stock import</p>
+    <h1>Stock Sheet v1</h1>
+    <p class="lede">The one PDF layout the system reads. Every stock sheet is built exactly this
+      way — same columns, same order, same number formats — so that an import either goes through
+      cleanly or says precisely what is wrong.</p>
+    <span class="stamp">One format · no variations</span>
+  </header>
+
+  <section>
+    <h2><span class="num">01</span>The template</h2>
+    <p class="prose">A4 landscape, one page, one table. Built in Excel and saved straight to PDF.
+      Below is the sheet exactly as it must print — this example carries five grades and five
+      sieve sizes; a real sheet carries as many rows and size pairs as the office needs, in this
+      same shape.</p>
+
+    <div class="sheet-frame">
+      <p class="sheet-title">STOCK SHEET</p>
+      <p class="sheet-date">DATE: 09-08-2026</p>
+      <table class="sheet">
+        <thead>
+          <tr>
+            <th class="grade">GRADE</th>
+            <th>6.5-</th><th class="rate">RATE</th>
+            <th>6.5+</th><th class="rate">RATE</th>
+            <th>11+</th><th class="rate">RATE</th>
+            <th>1/5</th><th class="rate">RATE</th>
+            <th>1/4</th><th class="rate">RATE</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="grade">1 BB</td><td>4.87</td><td>33,500</td><td>6.91</td><td>36,000</td><td>0.66</td><td>45,000</td><td>0.00</td><td>63,000</td><td>0.00</td><td>68,000</td></tr>
+          <tr><td class="grade">FL</td><td>1.03</td><td>30,500</td><td>1.99</td><td>33,500</td><td>0.41</td><td>41,500</td><td>0.00</td><td>51,000</td><td>0.00</td><td>53,000</td></tr>
+          <tr><td class="grade">#</td><td>5.50</td><td>30,500</td><td>16.36</td><td>33,500</td><td>2.83</td><td>41,500</td><td>0.00</td><td>51,000</td><td>0.00</td><td>53,000</td></tr>
+          <tr><td class="grade">2</td><td>2.38</td><td>21,000</td><td>6.08</td><td>27,500</td><td>2.09</td><td>34,000</td><td>0.00</td><td>40,500</td><td>0.00</td><td>43,000</td></tr>
+          <tr><td class="grade">LB 2</td><td>0.08</td><td>11,000</td><td>0.64</td><td>13,000</td><td>0.50</td><td>15,000</td><td>0.00</td><td>19,000</td><td>0.00</td><td>19,000</td></tr>
+          <tr class="sub">
+            <td class="grade"></td>
+            <td>13.86</td><td>29,810</td><td>31.98</td><td>32,489</td><td>6.49</td><td>37,399</td><td>0.00</td><td>44,900</td><td>0.00</td><td>47,200</td>
+          </tr>
+          <tr class="total">
+            <td class="grade">TOTAL</td><td>52.33</td><td>32,387</td>
+            <td colspan="8"></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="caption">Three parts, in this order and no other: the grade rows, one unnamed
+        subtotal row, one TOTAL row. The subtotal row's grade cell is left empty — that is how the
+        system tells a subtotal from a holding. Any <em>other</em> row left without a name still
+        imports, under a grade called <code>Unknown Grade</code>, so no carats are lost while the
+        sheet is corrected.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">02</span>The rules</h2>
+
+    <div class="rules">
+
+      <div class="rule-group">
+        <h3>Page &amp; export</h3>
+        <ol class="rule-list">
+          <li><span class="rid">R1</span><span class="rule-body"><b>Save to PDF from Excel</b> — File → Save as → PDF. Never scan or photograph a printout: a scan holds a picture, not text, and no import can read it.</span></li>
+          <li><span class="rid">R2</span><span class="rule-body"><b>A4 landscape, one page, one table.</b> If the rows do not fit, reduce the font — never continue onto a second page and never place a second table below the first.</span></li>
+          <li><span class="rid">R3</span><span class="rule-body"><b>Calibri or Arial, 8pt or larger.</b> No merged cells inside the grid, no wrapped text, no rotated headings.</span></li>
+        </ol>
+      </div>
+
+      <div class="rule-group">
+        <h3>Columns</h3>
+        <ol class="rule-list">
+          <li><span class="rid">R4</span><span class="rule-body"><b>Column A is the grade name</b>, at least 25 mm wide, left-aligned. Nothing else goes in it and no grade name may spill into the column beside it.</span></li>
+          <li><span class="rid">R5</span><span class="rule-body"><b>Then one pair of columns per sieve size: carats, then rate.</b> In that order, every time. No serial-number column, no remarks column, no row-total column at the right.</span></li>
+          <li><span class="rid">R6</span><span class="rule-body"><b>Every number is centre-aligned</b> in its cell. Right-aligned figures shift as digits are added and can be read into the wrong column.</span></li>
+        </ol>
+      </div>
+
+      <div class="rule-group">
+        <h3>Heading &amp; date</h3>
+        <ol class="rule-list">
+          <li><span class="rid">R7</span><span class="rule-body">Two lines above the table, centred: <code>STOCK SHEET</code>, then <code>DATE: DD-MM-YYYY</code> — <span class="k">DATE: 09-08-2026</span>. The date is for the person checking the sheet; the operator keys it in at import.</span></li>
+          <li><span class="rid">R8</span><span class="rule-body">The heading row reads <code>GRADE</code>, then each size label centred over its carat column, with <code>RATE</code> over each rate column. <b>It must carry no number other than the size labels</b> — no year, no column count, no page number.</span></li>
+        </ol>
+      </div>
+
+      <div class="rule-group">
+        <h3>Grade rows</h3>
+        <ol class="rule-list">
+          <li><span class="rid">R9</span><span class="rule-body"><b>Every row carries a grade name.</b> No blank grade cells, no spacer rows, no sub-headings inside the table. A row left blank still imports — its carats and rate land under a grade called <code>Unknown Grade</code> — but then somebody has to work out afterwards where they belong.</span></li>
+          <li><span class="rid">R10</span><span class="rule-body">Use the approved names in §3, spelled exactly. Ten characters or fewer, and never the word <code>TOTAL</code> inside a grade name.</span></li>
+          <li><span class="rid">R11</span><span class="rule-body"><b>Carats: two decimals, always filled.</b> <span class="k">4.87</span>, <span class="k">16.36</span>, <span class="k">0.00</span> for an empty bucket. No blanks, no negatives, no <span class="k">ct</span>, no dashes.</span></li>
+          <li><span class="rid">R12</span><span class="rule-body"><b>Rate: whole rupees per carat.</b> <span class="k">58000</span> or <span class="k">58,000</span>. No <span class="k">₹</span>, no <span class="k">/ct</span>, no decimals. Put <span class="k">0</span> where a bucket is not priced.</span></li>
+        </ol>
+      </div>
+
+      <div class="rule-group">
+        <h3>Subtotal &amp; total</h3>
+        <ol class="rule-list">
+          <li><span class="rid">R13</span><span class="rule-body"><b>One subtotal row, directly under the last grade row, with its grade cell empty.</b> Do not write the word <code>SUBTOTAL</code>. Fill every column: each size's carat subtotal and each size's rate.</span></li>
+          <li><span class="rid">R14</span><span class="rule-body"><b>One TOTAL row, directly under the subtotal.</b> <code>TOTAL</code> in column A, total carats next, average rate after that. Exactly one TOTAL on the sheet.</span></li>
+          <li><span class="rid">R15</span><span class="rule-body"><b>The arithmetic must be right.</b> Each subtotal is the exact sum of its column; total carats is the sum of the subtotals. These figures are the system's proof it read the sheet correctly — it refuses on a difference of 0.005 ct.</span></li>
+        </ol>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">03</span>Approved names</h2>
+    <p class="prose">Only these. A size or grade the system has not seen stops the import until
+      somebody adds it in Master data — so a new one is a phone call before the sheet is sent,
+      not a surprise at import.</p>
+
+    <div class="two-col">
+      <div>
+        <div class="data-wrap">
+          <table class="data">
+            <thead><tr><th>Sieve size</th><th>Print as</th></tr></thead>
+            <tbody>
+              <tr><td>Minus 6.5</td><td class="mono">6.5-</td></tr>
+              <tr><td>Plus 6.5</td><td class="mono">6.5+</td></tr>
+              <tr><td>Plus 11</td><td class="mono">11+</td></tr>
+              <tr><td>One fifth carat</td><td class="mono">1/5</td></tr>
+              <tr><td>Quarter carat</td><td class="mono">1/4</td></tr>
+              <tr><td>Minus 2 — <em>only</em> under 1 BB and NO 1</td><td class="mono">-2</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="caption">Never invent a label. <span class="k">1/6</span> is not a sieve this
+          system holds; a column headed that way is dropped whole and the import refuses.</p>
+      </div>
+
+      <div>
+        <div class="data-wrap">
+          <table class="data">
+            <thead><tr><th>Grade</th><th>Print as</th></tr></thead>
+            <tbody>
+              <tr><td>NO 1 BB</td><td class="mono">1 BB</td></tr>
+              <tr><td>NO II Spotted</td><td class="mono">#</td></tr>
+              <tr><td>EX 1</td><td class="mono">EX1</td></tr>
+              <tr><td>NO 2 · NO DX</td><td class="mono">2 &nbsp; DX1</td></tr>
+              <tr><td>NO 3 – NO 7</td><td class="mono">3 4 5 6 7</td></tr>
+              <tr><td>TOP-COL · COL</td><td class="mono">TOP co &nbsp; color</td></tr>
+              <tr><td>OW · GH · EXTRA · FL</td><td class="mono">OW GH EXTRA FL</td></tr>
+              <tr><td>LC 1 · LC 2 · LC 3</td><td class="mono">LC 1 &nbsp; LC 2 &nbsp; LC 3</td></tr>
+              <tr><td>LB 1 · LB 2</td><td class="mono">LB 1 &nbsp; LB 2</td></tr>
+              <tr><td>1 MB · -2 MB · +14</td><td class="mono">1 MB &nbsp; -2 MB &nbsp; +14</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="caption">Spacing inside a name does not matter — <span class="k">1 BB</span> and
+          <span class="k">1BB</span> are the same grade. Spelling does.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">04</span>What stops an import</h2>
+    <p class="prose">A stock import replaces the position, so a sheet that reads 95% correctly
+      would quietly become the official figure. Each of these refuses the whole file and nothing
+      is written — the message names the figure the sheet states and the figure the system found.</p>
+
+    <div class="stops">
+      <div class="stop-row"><span class="mark">01</span><div>
+        <h4>The file is a scan</h4>
+        <p>A photograph or scan of a printout holds no text. Export from Excel instead.</p></div></div>
+      <div class="stop-row"><span class="mark">02</span><div>
+        <h4>The totals do not agree</h4>
+        <p>A subtotal or the grand total differs from what the rows add up to. Fix the sheet's own arithmetic and export again.</p></div></div>
+      <div class="stop-row"><span class="mark">03</span><div>
+        <h4>No heading row naming the sizes</h4>
+        <p>Usually the wrong file: an invoice, a receipt or a sales report rather than the stock sheet.</p></div></div>
+      <div class="stop-row"><span class="mark">04</span><div>
+        <h4>A size or grade the system does not hold</h4>
+        <p>Not fatal — the app offers to add it, named exactly as the sheet prints it, then reads the sheet again.</p></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">05</span>Before sending a sheet</h2>
+    <ul class="check">
+      <li><span class="box"></span>Saved as PDF from Excel, not scanned</li>
+      <li><span class="box"></span>One page, one table, A4 landscape</li>
+      <li><span class="box"></span>Every row has a grade name; every carat cell has a figure</li>
+      <li><span class="box"></span>All numbers centred; carats to two decimals; rates whole</li>
+      <li><span class="box"></span>Subtotal row present, its grade cell empty, every column filled</li>
+      <li><span class="box"></span>TOTAL row present and the arithmetic checked</li>
+    </ul>
+    <p class="caption">If a sheet is refused, the message names both figures — the one the sheet
+      prints and the one the system read. That difference is almost always the fastest way to the
+      answer.</p>
+  </section>
+
+  <footer>
+    <span>Stock Sheet v1 · Diamond Inventory</span>
+    <span>docs/14-pdf-stock-sheet-format.md</span>
+  </footer>
+
+</div>

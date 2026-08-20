@@ -340,11 +340,20 @@
        cannot size or move its thumb, which is how the first version came out dead. -->
   <Style x:Key="SlimScrollBar" TargetType="ScrollBar">
     <Setter Property="Background" Value="Transparent"/>
-    <Setter Property="Width" Value="11"/>
+    <!-- Width belongs to a VERTICAL bar only, and it used to be set unconditionally. A
+         horizontal ScrollBar inherited it too, which pinned the whole bar to eleven pixels
+         WIDE: it was laid out, it worked, and it was a stub nobody could see or grab. Every
+         page that opts into this style and scrolls sideways had the same invisible bar,
+         which is why the Stock report looked as though HorizontalScrollBarVisibility="Auto"
+         was doing nothing. It was doing exactly what it says. -->
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="ScrollBar">
           <Border Background="Transparent" Padding="3,3">
+            <!-- Sized by the trigger below, not here: the thumb's minimum runs along the
+                 bar, so it is a MinHeight on a vertical bar and a MinWidth on a horizontal
+                 one. Left as MinHeight for both, a horizontal thumb is 28px tall inside an
+                 11px bar. -->
             <Track x:Name="PART_Track" IsDirectionReversed="True"
                    Orientation="{TemplateBinding Orientation}"
                    Minimum="{TemplateBinding Minimum}"
@@ -356,7 +365,7 @@
                               Opacity="0" Background="Transparent"/>
               </Track.DecreaseRepeatButton>
               <Track.Thumb>
-                <Thumb MinHeight="28" Focusable="False">
+                <Thumb x:Name="SlimThumb" MinHeight="28" Focusable="False">
                   <Thumb.Template>
                     <ControlTemplate TargetType="Thumb">
                       <Border x:Name="Bar" CornerRadius="2.5" Margin="1,0"
@@ -382,8 +391,13 @@
             </Track>
           </Border>
           <ControlTemplate.Triggers>
+            <Trigger Property="Orientation" Value="Vertical">
+              <Setter Property="Width" Value="11"/>
+            </Trigger>
             <Trigger Property="Orientation" Value="Horizontal">
               <Setter Property="Height" Value="11"/>
+              <Setter TargetName="SlimThumb" Property="MinHeight" Value="0"/>
+              <Setter TargetName="SlimThumb" Property="MinWidth" Value="28"/>
               <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False"/>
             </Trigger>
           </ControlTemplate.Triggers>

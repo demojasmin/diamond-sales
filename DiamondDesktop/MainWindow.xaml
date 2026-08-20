@@ -137,8 +137,10 @@
 
     <!-- Shared so the closed combo and its dropdown can never disagree. See the Size column for
          why DisplayMemberPath is not used with this design's combo template. -->
+    <!-- ShortName, not Code. The catalogue stores a fifth of a carat as the number 0.2; the
+         office has only ever called it 1/5, and so does the sheet the stock is counted on. -->
     <DataTemplate x:Key="SizeCodeTemplate">
-      <TextBlock Text="{Binding Code}"/>
+      <TextBlock Text="{Binding ShortName}" ToolTip="{Binding Code}"/>
     </DataTemplate>
     <!-- The grade's name on its own — "No. 1 Clean". Used by every grade combo in the app: Sales
          entry, Intake, the ledger, the dashboard filter and the price editor. The Stock filter
@@ -149,8 +151,11 @@
          measuring — with trimming on, the whole name was ellipsised away and the cell came out
          blank. The column is sized to fit the longest grade name instead; the tooltip covers a
          longer one arriving later. -->
+    <!-- ShortName, not DisplayName: every picker, filter and report names a grade the way the
+         office's printed sheet names it ("1BB", "#", "TOP co"). The full name is still one hover
+         away, and Master data lists all three. -->
     <DataTemplate x:Key="GradeNameTemplate">
-      <TextBlock Text="{Binding DisplayName}" ToolTip="{Binding DisplayName}"/>
+      <TextBlock Text="{Binding ShortName}" ToolTip="{Binding DisplayName}"/>
     </DataTemplate>
     <DataTemplate x:Key="NameTemplate">
       <TextBlock Text="{Binding Name}"/>
@@ -163,10 +168,10 @@
          Putting the name on the TextBlock inside the template does NOT fix it; the peer never
          looks there. Measured, not assumed. -->
     <Style x:Key="GradeItemContainer" TargetType="ComboBoxItem" BasedOn="{StaticResource FieldComboBoxItem}">
-      <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}"/>
+      <Setter Property="AutomationProperties.Name" Value="{Binding ShortName}"/>
     </Style>
     <Style x:Key="SizeItemContainer" TargetType="ComboBoxItem" BasedOn="{StaticResource FieldComboBoxItem}">
-      <Setter Property="AutomationProperties.Name" Value="{Binding Code}"/>
+      <Setter Property="AutomationProperties.Name" Value="{Binding ShortName}"/>
     </Style>
     <Style x:Key="PartyItemContainer" TargetType="ComboBoxItem" BasedOn="{StaticResource FieldComboBoxItem}">
       <Setter Property="AutomationProperties.Name" Value="{Binding Name}"/>
@@ -478,8 +483,12 @@
               </StackPanel>
               <StackPanel Style="{StaticResource FieldPair}">
                 <TextBlock Text="Type" Style="{StaticResource Lbl}"/>
+                <!-- Wide enough for WITHOUT BILL, not for BILL. 80px was set when BILL was the
+                     only type and the closed box showed "WITH(" once there were four. A fixed
+                     width rather than auto, so the field does not jump as the selection changes.
+                     DialogProbe measures the longest entry against this. -->
                 <ComboBox x:Name="DocTypePicker" ItemsSource="{Binding DocTypes}" SelectedItem="{Binding DocType}"
-                          AutomationProperties.Name="Document type" Width="80"/>
+                          AutomationProperties.Name="Document type" Width="150"/>
               </StackPanel>
               <StackPanel Style="{StaticResource FieldPair}">
                 <TextBlock Text="Due" Style="{StaticResource Lbl}"/>
@@ -679,18 +688,31 @@
                    walks the cells and the DataGrid scrolls the focused one into view. -->
               <!-- Free text that already trims to an ellipsis and carries its full value in a
                    tooltip, so it is the one column that can give room to Less 1 and Less 2. -->
-              <DataGridTextColumn Header="Remark" Width="162*" MinWidth="50"
-                                  Binding="{Binding Remark, UpdateSourceTrigger=LostFocus}">
-                <DataGridTextColumn.ElementStyle>
-                  <Style TargetType="TextBlock">
-                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
-                    <Setter Property="VerticalAlignment" Value="Center"/>
-                    <!-- Free text has no ceiling, so however wide the column is something can
-                         outrun it. Hovering shows the whole remark rather than a sliced one. -->
-                    <Setter Property="ToolTip" Value="{Binding Remark}"/>
-                  </Style>
-                </DataGridTextColumn.ElementStyle>
-              </DataGridTextColumn>
+              <!-- A TEMPLATE column, exactly as the disposition NOTE on Intake & movements is,
+                   and built from the same two styles: CellTextBox for the box, CellPlaceholder for
+                   the ghost text.
+
+                   A DataGridTextColumn was not enough and EditingElementStyle did not close it.
+                   That column has two states: a TextBlock at rest and a TextBox while editing. So
+                   styling the editor fixed the white box that appeared once you clicked, and left
+                   the resting state a bare line of text with no box at all, which is not what
+                   Intake shows and was the difference being reported. A template column has one
+                   state: the box is always there, the way every other cell in this grid and the
+                   NOTE cell on Intake behave. -->
+              <DataGridTemplateColumn Header="Remark" Width="162*" MinWidth="50">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <Grid>
+                      <TextBox Text="{Binding Remark, UpdateSourceTrigger=PropertyChanged}"
+                               Style="{StaticResource CellTextBox}"
+                               AutomationProperties.Name="Remark"
+                               ToolTip="{Binding Remark}"/>
+                      <TextBlock Text="remark" Style="{StaticResource CellPlaceholder}"
+                                 Visibility="{Binding Remark, Converter={StaticResource Empty}}"/>
+                    </Grid>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
             </DataGrid.Columns>
             </DataGrid>
 
@@ -761,8 +783,6 @@
               <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                 <Button x:Name="ExportInvoices" Content="Export CSV" Click="ExportInvoices_Click"
                         Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
-                <Button x:Name="InvoiceRefresh" Content="Refresh" Click="LoadInvoices_Click" TabIndex="1"
-                        Style="{StaticResource DashGoldButton}"/>
               </StackPanel>
             </Grid>
           </Border>
@@ -1024,8 +1044,6 @@
               <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                 <Button x:Name="ReceivablesExport" Content="Export CSV" Click="ExportReceivables_Click"
                         Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
-                <Button x:Name="ReceivablesRefresh" Content="Refresh" Click="LoadReceivables_Click"
-                        Style="{StaticResource DashGoldButton}"/>
               </StackPanel>
             </Grid>
           </Border>
@@ -1307,8 +1325,6 @@
                         AutomationProperties.HelpText="Checks that stock moved out matches stock invoiced"/>
                 <Button x:Name="StockExport" Content="Export CSV" Click="ExportStock_Click"
                         Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
-                <Button x:Name="StockRefresh" Content="Refresh" Click="LoadStock_Click"
-                        Style="{StaticResource DashGoldButton}"/>
               </StackPanel>
             </Grid>
           </Border>
@@ -1572,8 +1588,24 @@
                            column that wide reads as an empty table. Sharing the slack keeps the columns
                            spread across the card the way the Invoice list is, and the MinWidths below
                            still force a scrollbar rather than a squeeze when the room runs out. -->
-                      <DataGridTextColumn Header="GRADE" Binding="{Binding GradeCode}" Width="0.9*" MinWidth="66"/>
-                      <DataGridTextColumn Header="SIZE" Binding="{Binding SizeCode}" Width="0.7*" MinWidth="54"/>
+                      <!-- The mark, matching the filter above and every other picker in the app.
+                           The code and the full name are on the tooltip, so nothing is lost. -->
+                      <DataGridTextColumn Header="GRADE" Binding="{Binding GradeShort}" Width="0.9*" MinWidth="66">
+                        <DataGridTextColumn.ElementStyle>
+                          <Style TargetType="TextBlock">
+                            <Setter Property="ToolTip" Value="{Binding GradeName}"/>
+                          </Style>
+                        </DataGridTextColumn.ElementStyle>
+                      </DataGridTextColumn>
+                      <!-- The sieve as the sheet writes it, matching the filter above it. The
+                           stored code is on the tooltip. -->
+                      <DataGridTextColumn Header="SIZE" Binding="{Binding SizeShort}" Width="0.7*" MinWidth="54">
+                        <DataGridTextColumn.ElementStyle>
+                          <Style TargetType="TextBlock">
+                            <Setter Property="ToolTip" Value="{Binding SizeCode}"/>
+                          </Style>
+                        </DataGridTextColumn.ElementStyle>
+                      </DataGridTextColumn>
                       <DataGridTemplateColumn Header="STATUS" Width="0.9*" MinWidth="90" SortMemberPath="BalanceCt"
                                               ClipboardContentBinding="{Binding BalanceCt, Converter={StaticResource StockState}}"
                                               CellTemplate="{StaticResource StockStatusBadge}"/>
@@ -1726,8 +1758,6 @@
               </StackPanel>
 
               <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                <Button x:Name="ReportRefresh" Content="Refresh" Click="LoadStockReport_Click"
-                        Style="{StaticResource PrimaryButton}"/>
               </StackPanel>
             </Grid>
           </Border>
@@ -1752,7 +1782,10 @@
                 </ItemsControl>
               </StackPanel>
 
-              <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom">
+              <!-- Centre, not Bottom. The block beside this is a caption over a WrapPanel, so its
+                   height changes with the number of sieves and a bottom-aligned toolbar drifted
+                   down the moment the sizes wrapped to a second line. -->
+              <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                 <!-- Read only is the default and the safe state. Edit mode is hidden entirely from
                      anyone who could not save the change anyway: offering a switch that ends in a
                      refusal is worse than not offering it. -->
@@ -1766,15 +1799,26 @@
                           ToolTip="Type a corrected weight into a cell. The difference is recorded as an adjustment on the stock ledger, with a reason — the calculated balance is never overwritten."/>
                 <CheckBox x:Name="ReportHideEmpty" Content="Hide grades with no stock"
                           Click="LoadStockReport_Click" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                <!-- ON by default, which is a reversal. The argument for off was that 297 cells of
+                     0.00 bury the figures that mean something — true of a screen read on its own,
+                     and wrong for the job this screen actually does. It exists to be held against
+                     the client's printed sheet, and that sheet prints 0.00 in every empty cell.
+                     A blank where the paper says 0.00 reads as a figure that failed to import,
+                     which is exactly the report we got. Untick it for the sparse view. -->
+                <CheckBox x:Name="ReportShowZeros" Content="Show zero values" IsChecked="True"
+                          Click="LoadStockReport_Click" Margin="0,0,12,0" VerticalAlignment="Center"
+                          ToolTip="Print 0.00 in buckets holding nothing, the way the stock sheet does. Untick to leave an untraded bucket blank."/>
                 <Button Content="Reset" Click="ResetStockReport_Click"
                         Style="{StaticResource DashButton}"/>
               </StackPanel>
             </Grid>
           </Border>
 
-          <!-- ── The sheet ────────────────────────────────────────────────── -->
-          <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-            <StackPanel HorizontalAlignment="Center" Margin="0,4,0,24">
+          <!-- ── The sheet ────────────────────────────────────────── -->
+          <!-- Vertical only. The sheet does its own horizontal scrolling, one level in. -->
+          <ScrollViewer x:Name="ReportScroll" VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Margin="0,4,0,24">
 
               <!-- The boxed title the printed sheet carries at the top. -->
               <Border x:Name="ReportTitleBox" BorderThickness="2" Padding="40,6"
@@ -1787,10 +1831,30 @@
 
               <!-- Rows and columns are built in code: the number of size pairs is not
                    known until the catalogue loads. -->
-              <Grid x:Name="ReportTable" HorizontalAlignment="Center"/>
+              <!-- The totals rows are drawn into THIS grid, not a second one beside it. Two grids
+                   meant two sets of Auto columns sized to two different contents, and the totals
+                   line came out offset from the columns it was totalling. -->
+              <!-- The sheet gets its OWN horizontal scroller, and this is the whole point of it
+                   being here rather than on the page outside: with vertical scrolling disabled it
+                   is exactly as tall as the table, so its scrollbar sits immediately under the
+                   last row instead of at the foot of a viewport that runs to the bottom of the
+                   window. A scrollbar three hundred pixels below the thing it scrolls is a
+                   scrollbar nobody finds.
 
-              <!-- Totals sit OUTSIDE the ruled box on the client's sheet, so they do here. -->
-              <Grid x:Name="ReportTotals" HorizontalAlignment="Center" Margin="0,18,0,0"/>
+                   Centred when it fits, by way of the outer Grid: content inside a horizontally
+                   scrolling ScrollViewer is arranged at its own desired width, so a bare
+                   HorizontalAlignment on the sheet does nothing and it sits against the left
+                   margin. The wrapper's MinWidth is pinned to the viewport, so it is never
+                   narrower than the window and never narrower than the sheet, so a sheet that fits
+                   is centred inside it, and one that does not sets the extent and scrolls. -->
+              <ScrollViewer x:Name="ReportSheetScroll"
+                            HorizontalScrollBarVisibility="Auto"
+                            VerticalScrollBarVisibility="Disabled"
+                            PreviewMouseWheel="ReportSheet_PreviewMouseWheel">
+                <Grid MinWidth="{Binding ViewportWidth, ElementName=ReportSheetScroll}">
+                  <Grid x:Name="ReportTable" HorizontalAlignment="Center"/>
+                </Grid>
+              </ScrollViewer>
 
               <TextBlock x:Name="ReportEmpty" Style="{StaticResource EmptyHint}"
                          Visibility="Collapsed" Margin="0,24,0,0"
@@ -1844,9 +1908,6 @@
               <!-- Reloads the catalogue behind the pickers and re-reads the bucket ledger on the
                    right. The session counters are deliberately left alone: they report what THIS
                    session recorded, and a refresh that zeroed them would erase the only trace. -->
-              <Button Grid.Column="2" Content="Refresh" Click="RefreshMovements_Click"
-                      Style="{StaticResource DashButton}" VerticalAlignment="Center"
-                      AutomationProperties.HelpText="Reloads the catalogue and the bucket ledger"/>
             </Grid>
           </Border>
 
@@ -2115,9 +2176,19 @@
                             <DataGridTemplateColumn Header="NOTE" Width="*" MinWidth="120">
                               <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                  <TextBox Text="{Binding Note, UpdateSourceTrigger=PropertyChanged}"
-                                           Style="{StaticResource CellTextBox}"
-                                           AutomationProperties.Name="Disposition note"/>
+                                  <!-- Placeholder over the box, the same idiom the Sales entry Size
+                                       and Grade cells use: the border says a value can be typed,
+                                       and this says what. Both, because an empty bordered box in a
+                                       column headed NOTE still leaves the reader guessing whether
+                                       it wants a code or a sentence. -->
+                                  <Grid>
+                                    <TextBox x:Name="DispositionNote"
+                                             Text="{Binding Note, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource CellTextBox}"
+                                             AutomationProperties.Name="Disposition note"/>
+                                    <TextBlock Text="why, in a few words" Style="{StaticResource CellPlaceholder}"
+                                               Visibility="{Binding Note, Converter={StaticResource Empty}}"/>
+                                  </Grid>
                                 </DataTemplate>
                               </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
@@ -2296,9 +2367,6 @@
 
               <!-- The catalogue changes from other screens too — an import creates buyers and
                    brokers — so this page needs the same way back to the database as the rest. -->
-              <Button Grid.Column="2" Content="Refresh" Click="RefreshMaster_Click"
-                      Style="{StaticResource DashButton}" VerticalAlignment="Center"
-                      AutomationProperties.HelpText="Reloads grades, sizes, buyers and brokers"/>
             </Grid>
           </Border>
 
@@ -2381,6 +2449,11 @@
                             AutomationProperties.Name="Grades">
                     <DataGrid.Columns>
                       <DataGridTextColumn Header="CODE" Binding="{Binding Code}" Width="110" IsReadOnly="True"/>
+                      <!-- The mark the printed sheet uses, which is what every picker in the app now
+                           shows. Listed beside the other two names rather than replacing either:
+                           this grid is the catalogue itself, and it is the one place all three
+                           spellings of a grade should be visible at once. -->
+                      <DataGridTextColumn Header="ON THE SHEET" Binding="{Binding ShortName}" Width="110" IsReadOnly="True"/>
                       <DataGridTextColumn Header="GRADE NAME" Binding="{Binding DisplayName}" Width="150" IsReadOnly="True"/>
                       <DataGridTextColumn Header="ALIASES" Binding="{Binding Aliases}" Width="*"/>
                       <DataGridTextColumn Header="ORDER" Binding="{Binding SortOrder}" Width="70" IsReadOnly="True"
@@ -2512,6 +2585,9 @@
                             AutomationProperties.Name="Sieve sizes">
                     <DataGrid.Columns>
                       <DataGridTextColumn Header="CODE" Binding="{Binding Code}" Width="*"/>
+                      <!-- What the printed sheet calls it, which is what every picker in the app
+                           now shows. Beside the code, never instead of it. -->
+                      <DataGridTextColumn Header="ON THE SHEET" Binding="{Binding ShortName}" Width="*"/>
                       <DataGridTextColumn Header="ORDER" Binding="{Binding SortOrder}" Width="*"
                                           ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
                       <!-- 0.2 and 0.25 are corrupt cells from the sales workbook (docs/04 §4.1),
@@ -2660,9 +2736,6 @@
                 <!-- Filters now re-scope the page from cached rows, so nothing on screen refetches
                      by itself. This is the way to pull the position again after posting or an
                      intake — every other page already had one. -->
-                <Button Content="Refresh" Click="LoadDashboard_Click"
-                        Style="{StaticResource DashButton}"
-                        AutomationProperties.HelpText="Reloads invoices and the stock position"/>
               </StackPanel>
             </Grid>
           </Border>
@@ -3205,8 +3278,6 @@
                            Text="Every change, who and when"/>
               </StackPanel>
 
-              <Button Grid.Column="2" x:Name="AuditRefresh" Content="Refresh" Click="LoadAudit_Click"
-                      Style="{StaticResource DashGoldButton}" VerticalAlignment="Center"/>
             </Grid>
           </Border>
 
@@ -3569,8 +3640,6 @@
                            Text="Accounts and roles · managed in Supabase"/>
               </StackPanel>
 
-              <Button Grid.Column="2" Content="Refresh" Click="LoadUsers_Click"
-                      Style="{StaticResource DashGoldButton}" VerticalAlignment="Center"/>
             </Grid>
           </Border>
 
@@ -3813,8 +3882,6 @@
                      rendering fault. -->
                 <TextBlock x:Name="SettingDirty" Style="{StaticResource DashSubheading}"
                            VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <Button Content="Refresh" Click="LoadSettings_Click"
-                        Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
                 <!-- Label kept from the original button: the database refuses this for anyone but
                      an owner, and saying so before the attempt is kinder than after. -->
                 <Button Content="Discard changes" Click="DiscardSettings_Click"

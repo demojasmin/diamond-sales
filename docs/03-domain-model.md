@@ -569,7 +569,7 @@ Step 5 is the entire project. It is the line the two spreadsheets never had.
 | A3 | A **populated** master file — the one supplied is the blank template | Migration, opening balances |
 | Q4 | Broker treatment | Whether CALC-11 exists at all |
 | Q6 | Sieve mm definitions | `size_bucket.lower_mm` / `upper_mm` are nullable until answered |
-| Q9 | `doc_type` values beyond BILL | The CHECK constraint is currently open |
+| ~~Q9~~ | ✅ Answered — BILL, WITHOUT BILL, EXPORT, DOLLAR BILL. Offered on Sales entry; the column stays `varchar(20)` with no CHECK, so a fifth needs no migration | — |
 | Q12 | Sub-grades (GH-VVS, NO 1 MB) | Whether they are `grade` rows or `price_list` rows |
 | D3 | Purchases in scope | Whether `supplier` / `payable` join the model |
 | F-4 | Historical invoices with per-line broker % | Migration rule |

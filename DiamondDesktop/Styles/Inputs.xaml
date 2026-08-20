@@ -55,10 +55,16 @@
         <Setter Property="Height" Value="28"/>
         <Setter Property="Padding" Value="7,0"/>
         <Setter Property="Background" Value="Transparent"/>
-        <Setter Property="BorderBrush" Value="Transparent"/>
+        <!-- A border at rest, not only under the pointer. Transparent-until-hover is fine for a
+             cell that already shows a figure (0.0000 says "there is something here to change")
+             and invisible for one that is empty. The disposition NOTE cell was exactly that: a
+             blank column with no box, no caret and nothing to say it could be typed in, and it
+             read as a control that had failed to render. The pointer is not a discovery mechanism.
+             Hover still darkens it, so the cell under the pointer is still the obvious one. -->
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
         <Style.Triggers>
             <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource TextMutedBrush}"/>
             </Trigger>
         </Style.Triggers>
     </Style>

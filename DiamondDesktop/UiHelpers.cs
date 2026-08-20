@@ -1010,3 +1010,73 @@ public static class VisualTree
         return null;
     }
 }
+
+/// <summary>
+/// Who owns a button's caption and its enabled state while several operations overlap on it.
+///
+/// THE FAULT THIS EXISTS FOR
+///
+/// The header Refresh reloads the catalogue and then the current page. The page reload is an
+/// async void handler, so it is started and NOT awaited -- meaning the refresh's own scope ends
+/// FIRST and the page's scope ends second. Each scope captured the caption it found on entry and
+/// put it back on exit, so the order was:
+///
+///     refresh  claims "Refresh",     shows "Refreshing..."
+///     page     claims "Refreshing...", shows "Loading..."
+///     refresh  exits, restores "Refresh"
+///     page     exits, restores "Refreshing..."     <- and there it stayed
+///
+/// The button sat saying it was working when nothing was, and no amount of resetting at the end
+/// of the refresh could fix it: the value being put back was written by the scope that had not
+/// finished yet. Only the FIRST claim is the real caption, and only the LAST release may put it
+/// back. That is all this class does, and it is counted rather than flagged because the nesting
+/// can be any depth.
+///
+/// Keyed by object rather than by Button so it can be tested without a window.
+/// </summary>
+public sealed class BusyLatch
+{
+    private readonly Dictionary<object, (object? Original, int Depth)> _held = [];
+    private readonly Dictionary<object, int> _disabled = [];
+
+    /// <summary>Take the caption. The first claim records what to put back; later ones only count.</summary>
+    public void Claim(object key, object? showing) =>
+        _held[key] = _held.TryGetValue(key, out var h) ? (h.Original, h.Depth + 1) : (showing, 1);
+
+    /// <summary>
+    /// Give it up. True when this was the last holder, and <paramref name="original"/> is then the
+    /// caption the first claim found. False while anyone else still holds it, and the caption must
+    /// be left exactly as it is -- somebody is still using it to say what they are doing.
+    /// </summary>
+    public bool Release(object key, out object? original)
+    {
+        original = null;
+        if (!_held.TryGetValue(key, out var h)) return false;
+
+        if (h.Depth <= 1)
+        {
+            original = h.Original;
+            _held.Remove(key);
+            return true;
+        }
+
+        _held[key] = (h.Original, h.Depth - 1);
+        return false;
+    }
+
+    /// <summary>Counted the same way, and for the same reason: an inner scope finishing must not
+    /// re-enable a button the outer one is still working behind.</summary>
+    public void Disable(object key) => _disabled[key] = _disabled.GetValueOrDefault(key) + 1;
+
+    /// <summary>True when the last hold has gone and the button may be enabled again.</summary>
+    public bool Enable(object key)
+    {
+        int left = _disabled.GetValueOrDefault(key) - 1;
+        if (left > 0) { _disabled[key] = left; return false; }
+        _disabled.Remove(key);
+        return true;
+    }
+
+    /// <summary>Nothing held. Every operation that started has finished, in whatever order.</summary>
+    public bool Idle => _held.Count == 0 && _disabled.Count == 0;
+}

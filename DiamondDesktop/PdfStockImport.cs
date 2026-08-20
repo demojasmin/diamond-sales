@@ -32,13 +32,18 @@ public static class PdfStockFile
 {
     /// Same placeholder rule as the workbook: anything under this is not a real holding.
     /// <summary>
-    /// What the preview calls a row the sheet printed without a grade name.
+    /// The grade a row the sheet printed no name against is imported under.
     ///
-    /// Shown rather than skipped, so the screen matches the paper line for line. It is never a
-    /// grade the catalogue could match, which is deliberate: a row carrying carats under this
-    /// name stops the import instead of being guessed at.
+    /// It used to be "(no grade name)" -- a display label no catalogue could match, so a row
+    /// carrying carats REFUSED the whole file. That was defensible while the alternative was
+    /// guessing a neighbour's grade, but it is not the only alternative: a named bucket keeps the
+    /// carats, keeps the sheet's own totals reconciling, and puts the row on the Stock page where
+    /// somebody can move it to the right grade. Losing it was the worse answer.
+    ///
+    /// A real catalogue grade, seeded by 0039. When a database has not had that applied the row
+    /// falls through the ordinary unknown-grade path, and the app offers to add it by this name.
     /// </summary>
-    public const string NoGradeName = "(no grade name)";
+    public const string UnknownGrade = "Unknown Grade";
 
     public const decimal Sentinel = 0.001m;
 
@@ -182,10 +187,16 @@ public static class PdfStockFile
 
                 // Named for the screen so the preview matches the paper row for row. Numbered
                 // when there is more than one, because two rows sharing a label would collide
-                // in Printed and the second would overwrite the first.
+                // in Printed and the second would overwrite the first. The NUMBER is display
+                // only -- every one of them imports under the same catalogue grade below.
                 unnamed++;
-                label = unnamed == 1 ? NoGradeName : $"{NoGradeName} ({unnamed})";
+                label = unnamed == 1 ? UnknownGrade : $"{UnknownGrade} ({unnamed})";
             }
+
+            // Which grade the catalogue is asked for. Same as the printed label everywhere except
+            // an unnamed row, where the display label may carry a number the catalogue must not
+            // see -- "Unknown Grade (2)" is one row on the paper, not a second grade.
+            string catalogueName = nameless ? UnknownGrade : label;
 
             // Every cell as printed, before any judgement about what is a holding. This is what the
             // preview renders, and it is the only place a printed 0.00 survives — below, a zero
@@ -194,33 +205,17 @@ public static class PdfStockFile
                 plan.Printed[(label, size.Code)] =
                     (At(row, size.WeightX), size.PriceX is { } rx ? At(row, rx) : null);
 
-            // Carats on a line the sheet printed no grade against. There is no honest way to place
-            // these: the row above is a guess, the row below is a guess, and a guess here puts
-            // somebody's stock under the wrong grade with nothing on screen to say so.
+            // Carats on a line the sheet printed no grade against used to stop the import outright,
+            // on the reasoning that the row above is a guess and so is the row below. True -- but
+            // the consequence was that a whole stock count could not be imported over one blank
+            // cell, and an import that refuses everything loses just as many carats as one that
+            // drops a line. UnknownGrade is the third answer: no guess, nothing lost, and the row
+            // visible on the Stock page under a name that says exactly what it is.
             //
-            // A row like this printing 0.00 is fine and common -- it is a spacer or a bucket the
-            // office keeps on the form. Only weight makes it a problem, and then it stops the
-            // import outright rather than being reported as a skipped line, because an import
-            // REPLACES and a line silently dropped is stock that quietly ceases to exist.
-            if (nameless)
-            {
-                // Listed either way. The preview exists to be checked against the paper, and a row
-                // the paper prints must appear on it -- that is the whole point of GradeOrder.
-                if (!plan.GradeOrder.Contains(label)) plan.GradeOrder.Add(label);
-
-                decimal onNamelessRow = sizes.Sum(s => Math.Abs(At(row, s.WeightX) ?? 0m));
-                if (onNamelessRow >= Sentinel)
-                {
-                    plan.Problems.Add(new ImportProblem(
-                        $"Line {lineNo} carries {onNamelessRow:N4} ct but the sheet prints no grade "
-                        + "name against it, so there is no way to tell which grade the carats belong "
-                        + "to. Nothing has been imported. Add the grade name to the sheet and export "
-                        + "it again."));
-                }
-                continue;
-            }
-
-            if (GradeCode(label, gradeLabelToCode) is not { } gradeCode)
+            // From here a nameless row is an ordinary row. It reaches Printed above, GradeOrder
+            // below, plan.Rows with its weight and its rate, and the sheet's own subtotals now
+            // reconcile with it counted in -- which they never did while it was being dropped.
+            if (GradeCode(catalogueName, gradeLabelToCode) is not { } gradeCode)
             {
                 // Only a complaint if the line actually carries carats. The sheet's title block and
                 // its footer sit in the same left column and name no grade, and refusing a file over
@@ -235,8 +230,8 @@ public static class PdfStockFile
                 }
 
                 plan.Exceptions.Add(new ImportProblem(
-                    $"Line {lineNo}: grade \"{label}\" is not in the catalogue and has no alias, so "
-                    + $"{stranded:N4} ct could not be placed."));
+                    $"Line {lineNo}: grade \"{catalogueName}\" is not in the catalogue and has no "
+                    + $"alias, so {stranded:N4} ct could not be placed."));
                 plan.SkippedRows++;
                 // Holdings, not sheet rows — which is what UnplacedRows is documented to count and
                 // what the message compares against. Incrementing by one counted a single unit per
@@ -244,7 +239,10 @@ public static class PdfStockFile
                 // "58 of 59" over a sheet that prints 60 holdings.
                 plan.UnplacedRows += sizes.Count(s => Math.Abs(At(row, s.WeightX) ?? 0m) >= Sentinel);
                 plan.UnplacedCarats += Math.Abs(stranded);
-                if (!plan.UnplacedLabels.Contains(label)) plan.UnplacedLabels.Add(label);
+                // The CATALOGUE name, because this list is what the app offers to create. Adding
+                // "Unknown Grade (2)" would seed a second grade for the second blank row on the
+                // sheet, and a third for the next one.
+                if (!plan.UnplacedLabels.Contains(catalogueName)) plan.UnplacedLabels.Add(catalogueName);
                 if (!plan.GradeOrder.Contains(label)) plan.GradeOrder.Add(label);
                 continue;
             }
@@ -256,14 +254,26 @@ public static class PdfStockFile
             foreach (var size in sizes)
             {
                 decimal? weight = At(row, size.WeightX);
-                if (weight is not { } w || Math.Abs(w) < Sentinel) continue;
 
-                // A rate with no weight is just this month's price for a bucket the client is out
-                // of — printed on every sheet, and not a holding. Zero when the sheet prints no
-                // rates at all: replace_imported_stock takes the parcel either way, and a fabricated
-                // price would be indistinguishable from a real one on the Stock page afterwards.
+                // Read BEFORE the weight test, and that ordering is the whole fix. A rate with no
+                // weight is not a holding -- it is what the office prices a bucket at while they
+                // are out of it -- but it IS printed, in every cell of the 1/4 column on the
+                // client's sheet. Reading it after the test discarded all eighteen of them.
+                //
+                // It has no home in the stock ledger, where cost is value over weight and both are
+                // zero. So it is kept here, against the catalogue's own codes, and the Stock report
+                // prints what the sheet printed instead of a blank.
                 decimal price = size.PriceX is { } px ? At(row, px) ?? 0m : 0m;
                 if (price < 0) price = 0;
+
+                // TryAdd, so the FIRST rate printed for a bucket is the one kept. Two printed rows
+                // can land on one bucket -- every unnamed row shares Unknown Grade -- and plain
+                // assignment let the last of them silently replace the rest, so a column read
+                // 15,000 off the bottom row where the top row said 51,000. First wins, because the
+                // sheet is read downwards.
+                if (price > 0) plan.PrintedRates.TryAdd((gradeCode, size.Code), price);
+
+                if (weight is not { } w || Math.Abs(w) < Sentinel) continue;
 
                 plan.Rows.Add(new StockRow(gradeCode, size.Code, w, price,
                                            lineNo, label, size.Label));
@@ -272,7 +282,7 @@ public static class PdfStockFile
 
         // This table's own subtotals, against what was read from this table's columns.
         firstRead ??= (rows, columns, sizes, headingRow);
-        var sectionMismatches = PrintedTotalMismatches(plan, rows, sizes, labelLimit);
+        var sectionMismatches = PrintedTotalMismatches(plan, rows, sizes, labelLimit, subtotalRow);
         if (sectionMismatches.Count > 0) faulted ??= (rows, columns, sizes, headingRow);
         mismatches.AddRange(sectionMismatches);
         }
@@ -450,12 +460,13 @@ public static class PdfStockFile
     }
 
     private static List<Mismatch> PrintedTotalMismatches(StockImportPlan plan, List<List<Word>> rows,
-                                                         List<SizeColumn> sizes, double labelLimit)
+                                                         List<SizeColumn> sizes, double labelLimit,
+                                                         int subtotalRow)
     {
         var found = new List<Mismatch>();
         // What each size lost to a grade the catalogue does not have, so a shortfall can be
         // attributed rather than merely noticed.
-        var unplacedBySize = UnplacedBySize(plan, rows, sizes, labelLimit);
+        var unplacedBySize = UnplacedBySize(plan, rows, sizes, labelLimit, subtotalRow);
 
         // The subtotal line is the last one carrying numbers in the weight columns but naming no
         // grade, and the TOTAL line names itself.
@@ -504,17 +515,30 @@ public static class PdfStockFile
     /// per rejected LINE and the subtotals are per COLUMN — and "the sums are short by exactly what
     /// we could not place" is only worth saying if it is true column by column.
     /// </summary>
+    /// <param name="subtotalRow">
+    /// The sheet's own subtotal line, which names no grade either. It has to be skipped now that a
+    /// blank name resolves to <see cref="UnknownGrade"/>: without this it reads as one more
+    /// unnamed holding and restates the whole column as carats that could not be placed.
+    /// </param>
     private static Dictionary<string, decimal> UnplacedBySize(StockImportPlan plan,
                                                               List<List<Word>> rows,
                                                               List<SizeColumn> sizes,
-                                                              double labelLimit)
+                                                              double labelLimit,
+                                                              int subtotalRow)
     {
         var lost = new Dictionary<string, decimal>(StringComparer.Ordinal);
         if (plan.UnplacedRows == 0) return lost;
 
-        foreach (var row in rows)
+        for (int r = 0; r < rows.Count; r++)
         {
+            if (r == subtotalRow) continue;
+            var row = rows[r];
+            if (row.Any(w => w.Text.Equals("TOTAL", StringComparison.OrdinalIgnoreCase))) continue;
+
             string label = Normalise(string.Join(" ", row.Where(w => w.X < labelLimit).Select(w => w.Text)));
+            // Matched under the name the row was PLACED under, which for a blank grade cell is the
+            // one bucket they all share.
+            if (label.Length == 0) label = UnknownGrade;
             if (!plan.UnplacedLabels.Contains(label)) continue;
 
             foreach (var size in sizes)
