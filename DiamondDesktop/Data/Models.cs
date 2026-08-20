@@ -29,6 +29,77 @@ public class Grade : BaseModel
     [Column("display_name")] public string? DisplayName { get; set; }
     [Column("sort_order")] public int SortOrder { get; set; }
     [Column("active")] public bool Active { get; set; } = true;
+
+    /// <summary>
+    /// What every picker, filter and report calls this grade: the mark the office's own printed
+    /// sheet uses.
+    ///
+    /// The catalogue holds three names for one grade -- the code "NO II", the display name
+    /// "No. II Spotted" and the mark "#" -- and the app used to show a different one on each
+    /// screen. Somebody holding the paper against the Stock page had to translate, and the PDF
+    /// importer had already been taught the marks anyway, because that is what a sheet prints.
+    /// One vocabulary, and it is the paper's.
+    ///
+    /// Falls back to the code, which is itself what the sheet prints for most grades -- OW, GH,
+    /// LC 1, FL. Never to the empty string: a picker entry with no text is a row nobody can pick.
+    /// </summary>
+    public string ShortName => GradeNames.Short(Code);
+}
+
+/// <summary>
+/// Grade codes as the client's printed stock sheet writes them.
+///
+/// Only the grades whose mark is NOT their code need an entry. It lives here rather than on the
+/// Stock report, which is where it started: the report drew them, the PDF reader matched on them,
+/// and then every OTHER screen showed the display name instead. A vocabulary used in three places
+/// and owned by one of them drifts.
+/// </summary>
+public static class GradeNames
+{
+    public static readonly Dictionary<string, string> Marks = new(StringComparer.Ordinal)
+    {
+        ["NO II"] = "#",
+        ["NO 1 BB"] = "1BB",
+        ["EX 1"] = "EX1",
+        ["NO 2"] = "2",
+        ["NO DX"] = "DX1",
+        ["NO 3"] = "3",
+        ["NO 4"] = "4",
+        ["NO 5"] = "5",
+        ["NO 6"] = "6",
+        ["NO 7"] = "7",
+        ["TOP-COL"] = "TOP co",
+        ["COL"] = "color",
+    };
+
+    public static string Short(string? code) =>
+        code is null or "" ? ""
+        : Marks.TryGetValue(code, out string? mark) ? mark : code;
+}
+
+/// <summary>
+/// Sieve sizes as the client's printed stock sheet writes them.
+///
+/// The catalogue stores a fifth of a carat as the NUMBER 0.2 and a quarter as 0.25, because that
+/// is what the sales workbook wrote and what sieve_key resolves to. The office has never called
+/// them that: the sheet prints "1/5" and "1/4", and so does every conversation about them.
+///
+/// This lived on the Stock report alone, which is how "the PDF has 1/4 and 1/5 but the app does
+/// not" came to be true and not true at once -- the report drew them, and the Stock page, the
+/// pickers and the size filter all showed 0.2 and 0.25 beside them. Same fix as
+/// <see cref="GradeNames"/>, same reason: one vocabulary, and it is the paper's.
+/// </summary>
+public static class SizeNames
+{
+    public static readonly Dictionary<string, string> Marks = new(StringComparer.Ordinal)
+    {
+        ["0.2"] = "1/5",
+        ["0.25"] = "1/4",
+    };
+
+    public static string Short(string? code) =>
+        code is null or "" ? ""
+        : Marks.TryGetValue(code, out string? mark) ? mark : code;
 }
 
 [Table("size_bucket")]
@@ -46,6 +117,9 @@ public class SizeBucket : BaseModel
     /// Retired sizes keep resolving everywhere history is read, and reach no picker or import.
     /// </summary>
     [Column("active")] public bool Active { get; set; } = true;
+
+    /// What the printed sheet calls this sieve -- "1/5" for the 0.2 the catalogue stores.
+    public string ShortName => SizeNames.Short(Code);
 }
 
 /// Which sieve sizes a grade actually trades in. +14 uses +14/+18/+23, nobody else does.
@@ -307,6 +381,13 @@ public class VStockPosition : BaseModel
     [Column("stock_value")] public decimal StockValue { get; set; }
     [Column("oldest_intake")] public DateOnly? OldestIntake { get; set; }
     [Column("age_days")] public int? AgeDays { get; set; }
+
+    /// The grade as the printed sheet writes it, so the list, the filter above it and the paper on
+    /// the desk all say the same word. The code is still what the row IS, and it is on the tooltip.
+    public string GradeShort => GradeNames.Short(GradeCode);
+
+    /// Likewise the sieve: "1/5", not the 0.2 the catalogue stores it under.
+    public string SizeShort => SizeNames.Short(SizeCode);
 }
 
 /// <summary>

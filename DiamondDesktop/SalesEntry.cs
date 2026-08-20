@@ -46,7 +46,28 @@ public static class Catalogue
         };
     }
 
-    public static readonly IReadOnlyList<string> DocTypes = ["BILL"];
+    /// <summary>
+    /// What the desk is writing: a bill, a sale off the books, an export, or one priced in
+    /// dollars. sales_invoice.doc_type is varchar(20) with no CHECK constraint -- docs/03 Q9
+    /// records that as deliberately open -- so these need no migration.
+    ///
+    /// UPPERCASE because that is what the sale workbook importer stores: ExcelImport upper-cases
+    /// column P, and a picker offering "Export" beside imported rows reading "EXPORT" would be
+    /// two spellings of one thing in one column.
+    ///
+    /// BILL stays first: it is the default on a new invoice and the overwhelming majority of them.
+    ///
+    /// Nothing filters on doc_type -- not the reconciliation, the ageing bands or the margin
+    /// views -- so an invoice written under any of these is counted everywhere a BILL is. That is
+    /// the intended behaviour and it is why this is a one-line change; if a report should ever
+    /// EXCLUDE a type, that is a decision to make there and not by leaving the type unavailable.
+    ///
+    /// A DOLLAR BILL is priced per carat in dollars and converted by the line's own Ex Rate, which
+    /// the entry grid already carries. There is still no currency picker: the invoice totals in
+    /// INR either way, which is what sales_invoice stores.
+    /// </summary>
+    public static readonly IReadOnlyList<string> DocTypes =
+        ["BILL", "WITHOUT BILL", "EXPORT", "DOLLAR BILL"];
 
     /// Every invoice is billed in INR — there is no currency picker on the entry screen, but
     /// sales_invoice still needs the id. Zero means the catalogue has not loaded, or INR is not
@@ -325,7 +346,7 @@ public sealed class SaleLine : Notifier
         if (GrossWeightCt <= 0) return ("Weight must be greater than 0", true);
 
         // Not "not yet" — these two are values that cannot both be right.
-        if (!AllowedSizes.Contains(Size)) return ($"{Grade.DisplayName ?? Grade.Code} does not use size {Size.Code}", false);
+        if (!AllowedSizes.Contains(Size)) return ($"{Grade.ShortName} does not use size {Size.Code}", false);
         if (PricePerCt < 0) return ("Price cannot be negative", false);
         return (null, false);
     }

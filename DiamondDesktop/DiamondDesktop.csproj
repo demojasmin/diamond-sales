@@ -16,9 +16,9 @@
     <Company>Solitaire</Company>
     <Description>Diamond Sales &amp; Inventory</Description>
     <Copyright>Copyright © Solitaire</Copyright>
-    <Version>1.2.4</Version>
-    <FileVersion>1.2.4.0</FileVersion>
-    <AssemblyVersion>1.2.4.0</AssemblyVersion>
+    <Version>1.3.0</Version>
+    <FileVersion>1.3.0.0</FileVersion>
+    <AssemblyVersion>1.3.0.0</AssemblyVersion>
 
     <!-- Trimming is off deliberately: Supabase's Postgrest layer resolves models by reflection, so
          a trimmer that cannot see those types strips them and every read fails at runtime rather

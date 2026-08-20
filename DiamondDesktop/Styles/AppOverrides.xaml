@@ -358,9 +358,22 @@
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="bd" Property="Background" Value="{DynamicResource Surface2Brush}"/>
                         </Trigger>
-                        <!-- Today: an outline, so it reads even when another day is selected. -->
+                        <!-- Today: filled with the SOFT accent, ringed in the solid one.
+                             Three goes at this, and each failure said what the mark has to do:
+                               green outline  wrong colour, and green is this app's "that worked"
+                               blue outline   right colour, wrong mark - an outline beside a fill
+                                              still read as two different calendars
+                               blue fill      right mark, but identical to a selected day, so
+                                              picking the 21st lit the 20th just as brightly and
+                                              the calendar showed two selections
+                             AccentSoftBrush is the same blue at a tenth of the weight, so today
+                             is plainly filled and plainly not the selection. The ring keeps it
+                             legible when a pale theme makes the tint nearly invisible.
+                             No Foreground here: the number stays TextBrush, which is what reads on
+                             a tint. OnAccent is white, and white on #E7F0FF is not a number. -->
                         <Trigger Property="IsToday" Value="True">
-                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource SuccessBrush}"/>
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
                             <Setter Property="FontWeight" Value="SemiBold"/>
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
@@ -368,6 +381,33 @@
                             <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
                             <Setter Property="Foreground" Value="{DynamicResource OnAccentBrush}"/>
                             <Setter Property="FontWeight" Value="SemiBold"/>
+                        </Trigger>
+
+                        <!-- Blacked out: a day the range will not accept.
+                             The Dashboard bounds its own pair: picking a From of 27 Aug blacks
+                             out 1..26 on the To calendar, which is right, and SetBlackout's own
+                             comment says it "strikes through the days that would invert the range".
+                             Nothing struck through: this template replaced the stock one, and the
+                             stock one is where that mark lived. So a blacked-out day rendered
+                             identically to a selectable one, right down to the hand cursor, and
+                             clicking it did nothing with nothing on screen to say why. "I cannot
+                             select any dates", because the dates on offer were the five at the
+                             end of the month and the other twenty-six looked exactly the same.
+
+                             AFTER IsToday and IsSelected so it wins over both: today is blacked
+                             out on the To calendar whenever From is later than today, and it must
+                             not sit there looking available.
+
+                             Opacity carries the weight of this, not Foreground. Style triggers
+                             outrank template triggers, so the weekend colour below beats any
+                             Foreground set here: a blacked-out Saturday would stay bright blue.
+                             Opacity is set nowhere else, so it always applies. -->
+                        <Trigger Property="IsBlackedOut" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="Transparent"/>
+                            <Setter TargetName="bd" Property="BorderBrush" Value="Transparent"/>
+                            <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+                            <Setter Property="Opacity" Value="0.35"/>
+                            <Setter Property="FontWeight" Value="Normal"/>
                         </Trigger>
 
                         <!-- LAST, so it wins over IsSelected above. 27 July is also a trailing cell
@@ -400,6 +440,13 @@
                  does. -->
             <Trigger Property="IsSelected" Value="True">
                 <Setter Property="Foreground" Value="{DynamicResource OnAccentBrush}"/>
+            </Trigger>
+
+            <!-- The hand cursor is set on the style, so only the style can take it back. A
+                 pointer that says "click me" over a day that refuses is the whole complaint in one
+                 gesture. -->
+            <Trigger Property="IsBlackedOut" Value="True">
+                <Setter Property="Cursor" Value="Arrow"/>
             </Trigger>
 
             <!-- A neighbouring month's day must not be clickable when it is not drawn. Its VISUAL

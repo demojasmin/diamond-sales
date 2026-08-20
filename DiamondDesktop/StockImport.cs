@@ -48,6 +48,19 @@ public sealed class StockImportPlan
     public List<string> SizeOrder { get; } = [];
 
     /// <summary>
+    /// Every rate the sheet printed, against the catalogue codes it belongs to.
+    ///
+    /// Not the same thing as the price on a StockRow. That one rides a holding and becomes its
+    /// cost; this is every rate on the page, including the ones beside a 0.00 -- which is most of
+    /// them on a real sheet, and all of a column the client is currently out of.
+    ///
+    /// A rate with no carats cannot be stored as cost: v_stock_position derives avg_cost as value
+    /// over weight, and both are zero. It is a PRICE, and the Stock report shows it as one so the
+    /// screen reads like the paper it is checked against.
+    /// </summary>
+    public Dictionary<(string GradeCode, string SizeCode), decimal> PrintedRates { get; } = [];
+
+    /// <summary>
     /// Every grade line the source PRINTS, in order, including the ones holding nothing.
     ///
     /// Rows only carry holdings, and a bucket at 0.00 is not one — importing it would create a

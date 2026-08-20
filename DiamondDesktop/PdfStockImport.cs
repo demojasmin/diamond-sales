@@ -31,6 +31,20 @@ namespace DiamondDesktop;
 public static class PdfStockFile
 {
     /// Same placeholder rule as the workbook: anything under this is not a real holding.
+    /// <summary>
+    /// The grade a row the sheet printed no name against is imported under.
+    ///
+    /// It used to be "(no grade name)" -- a display label no catalogue could match, so a row
+    /// carrying carats REFUSED the whole file. That was defensible while the alternative was
+    /// guessing a neighbour's grade, but it is not the only alternative: a named bucket keeps the
+    /// carats, keeps the sheet's own totals reconciling, and puts the row on the Stock page where
+    /// somebody can move it to the right grade. Losing it was the worse answer.
+    ///
+    /// A real catalogue grade, seeded by 0039. When a database has not had that applied the row
+    /// falls through the ordinary unknown-grade path, and the app offers to add it by this name.
+    /// </summary>
+    public const string UnknownGrade = "Unknown Grade";
+
     public const decimal Sentinel = 0.001m;
 
     /// Two words belong to the same printed row when their baselines are within this many points.
@@ -79,8 +93,41 @@ public static class PdfStockFile
             return plan;
         }
 
-        var rows = GroupIntoRows(words);
+        var allRows = GroupIntoRows(words);
 
+        // ── one table, or several stacked on the page ───────────────────────────
+        // A sheet may print more than one table down the page: three sieve sizes, its own totals,
+        // then three more sizes below with a second set. The columns land at IDENTICAL x-positions
+        // in both, so reading the page as a single table silently adds the lower table's carats to
+        // the upper table's sizes -- which is exactly what happened: a sheet whose three columns
+        // print 21.35, 64.36 and 18.53 read as 23.88, 65.35 and 18.53, each inflated by the figure
+        // sitting under it in the second table.
+        //
+        // So each heading row starts a new table, and every table gets its own columns, its own
+        // sizes and its own arithmetic. A page with one table yields one section and behaves
+        // exactly as before.
+        var sections = Sections(allRows, sizeLabelToCode);
+        if (sections.Count == 0)
+        {
+            FindSizeColumns(allRows, DataColumns(allRows), sizeLabelToCode, plan, out _);
+            return plan;
+        }
+
+        var mismatches = new List<Mismatch>();
+        int lineNo = 0;
+
+        // The table the orphan-column explanation should look at.
+        //
+        // `faulted` is the one whose own subtotals disagreed. `firstRead` is the fallback, and it
+        // earns its place: when a sieve is missing from the catalogue its column is never claimed
+        // at all, so every column that WAS read still sums correctly and only the grand total is
+        // short. There is no faulted section then -- but there is very much an orphan column, and
+        // naming it is the difference between "add that size" and "this file is unreadable".
+        (List<List<Word>> Rows, List<double> Columns, List<SizeColumn> Sizes, int HeadingRow)? faulted = null;
+        (List<List<Word>> Rows, List<double> Columns, List<SizeColumn> Sizes, int HeadingRow)? firstRead = null;
+
+        foreach (var rows in sections)
+        {
         // ── the columns ─────────────────────────────────────────────────────────
         // Taken from the sheet's own SUBTOTAL line, not from every number on the page. The subtotal
         // sits under each data column by definition, so it names them exactly — while "cluster all
@@ -88,16 +135,36 @@ public static class PdfStockFile
         // "2", "3", "4" and "1 BB" whose digits cluster into columns of their own.
         var columns = DataColumns(rows);
         var sizes = FindSizeColumns(rows, columns, sizeLabelToCode, plan, out int headingRow);
-        if (sizes.Count == 0) return plan;
+        if (sizes.Count == 0) continue;
 
-        plan.SizeOrder.AddRange(sizes.Select(s => s.Code));
+        foreach (var s in sizes)
+            if (!plan.SizeOrder.Contains(s.Code)) plan.SizeOrder.Add(s.Code);
 
         // ── every row that names a grade ────────────────────────────────────────
         // Left of the FIRST data column is the grade. A sheet printed as two side-by-side panels
         // repeats the label at each panel edge and again at the right margin; those copies are
         // ignored, because reading one would double the holding it sits beside.
         double labelLimit = columns[0] - ColumnTolerance * 2;
-        int lineNo = 0;
+
+        // The sheet's OWN subtotal line carries no grade either, and telling it apart from a
+        // holding row whose grade cell was left blank is the whole difficulty here.
+        //
+        // Position settles it: the subtotal sits directly under the data, so it is the LAST
+        // unlabelled line carrying numbers. Everything unlabelled above it is a printed row of
+        // the table -- this sheet has two, above "1 MB" -- and those were being swallowed by a
+        // rule written when the only unlabelled line was the subtotal.
+        int subtotalRow = -1;
+        for (int r = 0; r < rows.Count; r++)
+        {
+            if (r == headingRow) continue;
+            var candidate = rows[r];
+            if (candidate.Any(w => w.Text.Equals("TOTAL", StringComparison.OrdinalIgnoreCase))) continue;
+            if (candidate.Any(w => w.X < labelLimit)) continue;   // it names something
+            if (!candidate.Any(w => w.IsNumber)) continue;        // a blank spacer, not a line
+            subtotalRow = r;
+        }
+
+        int unnamed = 0;
 
         for (int r = 0; r < rows.Count; r++)
         {
@@ -105,8 +172,31 @@ public static class PdfStockFile
             var row = rows[r];
             lineNo++;
             string label = Normalise(string.Join(" ", row.Where(w => w.X < labelLimit).Select(w => w.Text)));
-            if (label.Length == 0) continue;                          // a subtotal line, no grade
-            if (label.Equals("TOTAL", StringComparison.OrdinalIgnoreCase)) continue;
+
+            // Looked for across the WHOLE row, not in the label margin. The foot of these sheets
+            // prints "TOTAL" inside the first weight column rather than out at the left, so the
+            // label read above comes back EMPTY on that line -- and testing the label alone let the
+            // grand total through as an unnamed data row carrying 27,933 ct, which is the rate.
+            if (row.Any(w => w.Text.Equals("TOTAL", StringComparison.OrdinalIgnoreCase))) continue;
+
+            bool nameless = label.Length == 0;
+            if (nameless)
+            {
+                if (r == subtotalRow) continue;            // the sheet's own subtotal
+                if (!row.Any(w => w.IsNumber)) continue;   // a blank spacer between blocks
+
+                // Named for the screen so the preview matches the paper row for row. Numbered
+                // when there is more than one, because two rows sharing a label would collide
+                // in Printed and the second would overwrite the first. The NUMBER is display
+                // only -- every one of them imports under the same catalogue grade below.
+                unnamed++;
+                label = unnamed == 1 ? UnknownGrade : $"{UnknownGrade} ({unnamed})";
+            }
+
+            // Which grade the catalogue is asked for. Same as the printed label everywhere except
+            // an unnamed row, where the display label may carry a number the catalogue must not
+            // see -- "Unknown Grade (2)" is one row on the paper, not a second grade.
+            string catalogueName = nameless ? UnknownGrade : label;
 
             // Every cell as printed, before any judgement about what is a holding. This is what the
             // preview renders, and it is the only place a printed 0.00 survives — below, a zero
@@ -115,7 +205,17 @@ public static class PdfStockFile
                 plan.Printed[(label, size.Code)] =
                     (At(row, size.WeightX), size.PriceX is { } rx ? At(row, rx) : null);
 
-            if (GradeCode(label, gradeLabelToCode) is not { } gradeCode)
+            // Carats on a line the sheet printed no grade against used to stop the import outright,
+            // on the reasoning that the row above is a guess and so is the row below. True -- but
+            // the consequence was that a whole stock count could not be imported over one blank
+            // cell, and an import that refuses everything loses just as many carats as one that
+            // drops a line. UnknownGrade is the third answer: no guess, nothing lost, and the row
+            // visible on the Stock page under a name that says exactly what it is.
+            //
+            // From here a nameless row is an ordinary row. It reaches Printed above, GradeOrder
+            // below, plan.Rows with its weight and its rate, and the sheet's own subtotals now
+            // reconcile with it counted in -- which they never did while it was being dropped.
+            if (GradeCode(catalogueName, gradeLabelToCode) is not { } gradeCode)
             {
                 // Only a complaint if the line actually carries carats. The sheet's title block and
                 // its footer sit in the same left column and name no grade, and refusing a file over
@@ -130,8 +230,8 @@ public static class PdfStockFile
                 }
 
                 plan.Exceptions.Add(new ImportProblem(
-                    $"Line {lineNo}: grade \"{label}\" is not in the catalogue and has no alias, so "
-                    + $"{stranded:N4} ct could not be placed."));
+                    $"Line {lineNo}: grade \"{catalogueName}\" is not in the catalogue and has no "
+                    + $"alias, so {stranded:N4} ct could not be placed."));
                 plan.SkippedRows++;
                 // Holdings, not sheet rows — which is what UnplacedRows is documented to count and
                 // what the message compares against. Incrementing by one counted a single unit per
@@ -139,7 +239,10 @@ public static class PdfStockFile
                 // "58 of 59" over a sheet that prints 60 holdings.
                 plan.UnplacedRows += sizes.Count(s => Math.Abs(At(row, s.WeightX) ?? 0m) >= Sentinel);
                 plan.UnplacedCarats += Math.Abs(stranded);
-                if (!plan.UnplacedLabels.Contains(label)) plan.UnplacedLabels.Add(label);
+                // The CATALOGUE name, because this list is what the app offers to create. Adding
+                // "Unknown Grade (2)" would seed a second grade for the second blank row on the
+                // sheet, and a third for the next one.
+                if (!plan.UnplacedLabels.Contains(catalogueName)) plan.UnplacedLabels.Add(catalogueName);
                 if (!plan.GradeOrder.Contains(label)) plan.GradeOrder.Add(label);
                 continue;
             }
@@ -151,18 +254,37 @@ public static class PdfStockFile
             foreach (var size in sizes)
             {
                 decimal? weight = At(row, size.WeightX);
-                if (weight is not { } w || Math.Abs(w) < Sentinel) continue;
 
-                // A rate with no weight is just this month's price for a bucket the client is out
-                // of — printed on every sheet, and not a holding. Zero when the sheet prints no
-                // rates at all: replace_imported_stock takes the parcel either way, and a fabricated
-                // price would be indistinguishable from a real one on the Stock page afterwards.
+                // Read BEFORE the weight test, and that ordering is the whole fix. A rate with no
+                // weight is not a holding -- it is what the office prices a bucket at while they
+                // are out of it -- but it IS printed, in every cell of the 1/4 column on the
+                // client's sheet. Reading it after the test discarded all eighteen of them.
+                //
+                // It has no home in the stock ledger, where cost is value over weight and both are
+                // zero. So it is kept here, against the catalogue's own codes, and the Stock report
+                // prints what the sheet printed instead of a blank.
                 decimal price = size.PriceX is { } px ? At(row, px) ?? 0m : 0m;
                 if (price < 0) price = 0;
+
+                // TryAdd, so the FIRST rate printed for a bucket is the one kept. Two printed rows
+                // can land on one bucket -- every unnamed row shares Unknown Grade -- and plain
+                // assignment let the last of them silently replace the rest, so a column read
+                // 15,000 off the bottom row where the top row said 51,000. First wins, because the
+                // sheet is read downwards.
+                if (price > 0) plan.PrintedRates.TryAdd((gradeCode, size.Code), price);
+
+                if (weight is not { } w || Math.Abs(w) < Sentinel) continue;
 
                 plan.Rows.Add(new StockRow(gradeCode, size.Code, w, price,
                                            lineNo, label, size.Label));
             }
+        }
+
+        // This table's own subtotals, against what was read from this table's columns.
+        firstRead ??= (rows, columns, sizes, headingRow);
+        var sectionMismatches = PrintedTotalMismatches(plan, rows, sizes, labelLimit, subtotalRow);
+        if (sectionMismatches.Count > 0) faulted ??= (rows, columns, sizes, headingRow);
+        mismatches.AddRange(sectionMismatches);
         }
 
         if (plan.Rows.Count == 0)
@@ -179,7 +301,13 @@ public static class PdfStockFile
         // Run before the unplaced-grade message so that message can say whether the rest of the
         // sheet was read correctly, which is the difference between "add three grades" and "this
         // file is unreadable".
-        var mismatches = PrintedTotalMismatches(plan, rows, sizes, labelLimit);
+        // The foot of the sheet totals every table on it, so this one is checked against the whole
+        // plan rather than against any single section.
+        if (GrandTotal(allRows) is { } stated && Math.Abs(plan.TotalCarats - stated) >= 0.005m)
+            mismatches.Add(new Mismatch(stated - plan.TotalCarats, plan.UnplacedCarats,
+                $"This sheet states a total of {stated:N2} ct but the lines read add up to "
+                + $"{plan.TotalCarats:N2} ct. The sheet could not be read reliably, so nothing is "
+                + "imported."));
 
         // A shortfall the unplaced grades fully account for is NOT a failed reading. The lines that
         // could not be placed are exactly the lines missing from the sums, so the parse is sound
@@ -226,7 +354,9 @@ public static class PdfStockFile
             // check it refused a sheet over a stray 1.00 ct column while that same sheet reconciled
             // to its own printed total exactly. A column carrying figures is not necessarily a
             // column carrying stock.
-            var orphan = OrphanColumn(rows, columns, sizes, headingRow);
+            var orphan = (faulted ?? firstRead) is { } f
+                ? OrphanColumn(f.Rows, f.Columns, f.Sizes, f.HeadingRow)
+                : null;
             decimal short_ = mismatches.Max(m => m.Shortfall);
 
             // Recorded as data too. The message below tells the user what happened; this lets the
@@ -267,32 +397,89 @@ public static class PdfStockFile
     /// </param>
     private sealed record Mismatch(decimal Shortfall, decimal Unplaced, string Message);
 
+
+    /// <summary>
+    /// The page split into tables: each heading row starts one, and it runs to the next heading.
+    ///
+    /// A heading row is one naming two or more sieve sizes -- the same test FindSizeColumns uses to
+    /// recognise the one it settles on. Two is the threshold because a single size word can appear
+    /// in a title or a note, while two side by side is a header.
+    /// </summary>
+    private static List<List<List<Word>>> Sections(
+        List<List<Word>> rows, IReadOnlyDictionary<string, string> sizeLabelToCode)
+    {
+        var starts = new List<int>();
+        for (int r = 0; r < rows.Count; r++)
+        {
+            var row = rows[r];
+            if (row.Count(w => SizeCode(w.Text, sizeLabelToCode) is not null) < 2) continue;
+
+            // AND nothing numeric that is not itself a size. Two size-looking words is not enough
+            // on these sheets: the grades are called "2", "3", "7" and "-2 MB", so a row of
+            // HOLDINGS matches that test and would start a table of its own -- which is what broke
+            // the six-size sheet, splitting it at a grade line and reading nothing at all.
+            //
+            // A heading carries sizes and words like WEIGHT and RATE. A holding carries carats and
+            // a rate, and those are numbers no size ever spells.
+            if (row.Any(w => w.IsNumber && SizeCode(w.Text, sizeLabelToCode) is null)) continue;
+
+            starts.Add(r);
+        }
+
+        var sections = new List<List<List<Word>>>();
+        for (int i = 0; i < starts.Count; i++)
+        {
+            int from = starts[i];
+            int to = i + 1 < starts.Count ? starts[i + 1] : rows.Count;
+            sections.Add(rows.GetRange(from, to - from));
+        }
+        return sections;
+    }
+
+    /// <summary>
+    /// The last TOTAL the sheet prints, which is its grand total across every table on the page.
+    ///
+    /// Read as the first number to the RIGHT of the word, never at a column x: on a sheet that
+    /// prints the label inside the first weight column every number is displaced one place, and
+    /// the column rule then returns the neighbouring RATE. That is how a sheet totalling 107.76 ct
+    /// came to be compared against 27,933 and refused.
+    /// </summary>
+    private static decimal? GrandTotal(List<List<Word>> rows)
+    {
+        decimal? last = null;
+        foreach (var row in rows)
+        {
+            var label = row.FirstOrDefault(w => w.Text.Equals("TOTAL", StringComparison.OrdinalIgnoreCase));
+            if (label is null) continue;
+
+            if (row.Where(w => w.IsNumber && w.X > label.X).OrderBy(w => w.X)
+                   .Select(w => (decimal?)w.Number).FirstOrDefault() is { } v)
+                last = v;
+        }
+        return last;
+    }
+
     private static List<Mismatch> PrintedTotalMismatches(StockImportPlan plan, List<List<Word>> rows,
-                                                         List<SizeColumn> sizes, double labelLimit)
+                                                         List<SizeColumn> sizes, double labelLimit,
+                                                         int subtotalRow)
     {
         var found = new List<Mismatch>();
         // What each size lost to a grade the catalogue does not have, so a shortfall can be
         // attributed rather than merely noticed.
-        var unplacedBySize = UnplacedBySize(plan, rows, sizes, labelLimit);
+        var unplacedBySize = UnplacedBySize(plan, rows, sizes, labelLimit, subtotalRow);
 
         // The subtotal line is the last one carrying numbers in the weight columns but naming no
         // grade, and the TOTAL line names itself.
         var stated = new Dictionary<string, decimal>(StringComparer.Ordinal);
-        decimal? statedTotal = null;
 
         foreach (var row in rows)
         {
             // The foot of the sheet does not print "TOTAL" in the label margin — it prints it in
             // the first size's own column, which is why this looks across the whole row. Reading it
             // as an unlabelled line instead made the grand total masquerade as a size subtotal.
-            if (row.Any(w => w.Text.Equals("TOTAL", StringComparison.OrdinalIgnoreCase)))
-            {
-                // The TOTAL line prints carats and an average rate side by side. Taking the larger
-                // would take the rate, so it is read out of a WEIGHT column — the same columns
-                // every holding above it was read from.
-                statedTotal = sizes.Select(s => At(row, s.WeightX)).FirstOrDefault(v => v is not null);
-                continue;
-            }
+            // A TOTAL line ends this table. Its own figure is the section's, and the sheet's
+            // grand total is checked separately against the whole plan -- see GrandTotal.
+            if (row.Any(w => w.Text.Equals("TOTAL", StringComparison.OrdinalIgnoreCase))) continue;
 
             // A subtotal names no grade. Tested the same way the reader tests it — anything in the
             // label margin — because on this sheet six of the grades ARE numbers ("2", "3", "4"…),
@@ -317,11 +504,6 @@ public static class PdfStockFile
                 + $"could not be read reliably, so nothing is imported."));
         }
 
-        if (statedTotal is { } total && Math.Abs(plan.TotalCarats - total) >= 0.005m)
-            found.Add(new Mismatch(total - plan.TotalCarats, plan.UnplacedCarats,
-                $"This sheet states a total of {total:N2} ct but the lines read add up to "
-                + $"{plan.TotalCarats:N2} ct. The sheet could not be read reliably, so nothing is "
-                + $"imported."));
 
         return found;
     }
@@ -333,17 +515,30 @@ public static class PdfStockFile
     /// per rejected LINE and the subtotals are per COLUMN — and "the sums are short by exactly what
     /// we could not place" is only worth saying if it is true column by column.
     /// </summary>
+    /// <param name="subtotalRow">
+    /// The sheet's own subtotal line, which names no grade either. It has to be skipped now that a
+    /// blank name resolves to <see cref="UnknownGrade"/>: without this it reads as one more
+    /// unnamed holding and restates the whole column as carats that could not be placed.
+    /// </param>
     private static Dictionary<string, decimal> UnplacedBySize(StockImportPlan plan,
                                                               List<List<Word>> rows,
                                                               List<SizeColumn> sizes,
-                                                              double labelLimit)
+                                                              double labelLimit,
+                                                              int subtotalRow)
     {
         var lost = new Dictionary<string, decimal>(StringComparer.Ordinal);
         if (plan.UnplacedRows == 0) return lost;
 
-        foreach (var row in rows)
+        for (int r = 0; r < rows.Count; r++)
         {
+            if (r == subtotalRow) continue;
+            var row = rows[r];
+            if (row.Any(w => w.Text.Equals("TOTAL", StringComparison.OrdinalIgnoreCase))) continue;
+
             string label = Normalise(string.Join(" ", row.Where(w => w.X < labelLimit).Select(w => w.Text)));
+            // Matched under the name the row was PLACED under, which for a blank grade cell is the
+            // one bucket they all share.
+            if (label.Length == 0) label = UnknownGrade;
             if (!plan.UnplacedLabels.Contains(label)) continue;
 
             foreach (var size in sizes)

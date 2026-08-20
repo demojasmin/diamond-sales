@@ -6,6 +6,59 @@ using Microsoft.EntityFrameworkCore;
 // No test framework on purpose: `dotnet run --project DiamondCalc.Tests` is the whole harness.
 // Figures marked [file] are cached values read out of the real workbooks (docs/04).
 
+// `dotnet run --project DiamondCalc.Tests -- sample-pdf <path>` writes the one stock sheet no
+// client has sent us: unnamed rows carrying real carats. Before Unknown Grade existed the whole
+// file was refused over them, and there was no way to try that by hand.
+if (args is ["sample-pdf", var samplePath, ..])
+{
+    // An optional second argument renames the sheet's LB 2 row. Pass a name the catalogue does
+    // not have and the import offers to add it, which is the only way to exercise that dialog
+    // without editing the catalogue by hand first.
+    string swap = args.Length > 2 ? args[2] : "LB 2";
+    var sheet = DiamondCalc.Tests.MiniPdf.UnnamedRowSheet
+        .Select(c => c.Text == "LB 2" ? (swap, c.CentreX, c.Y) : c);
+
+    DiamondCalc.Tests.MiniPdf.Write(samplePath, sheet);
+    Console.WriteLine($"Wrote {samplePath} - 8 holdings, 11.00 ct, two rows with no grade name"
+                      + (swap == "LB 2" ? "." : $", and a grade called \"{swap}\"."));
+    return 0;
+}
+
+// `dotnet run --project DiamondCalc.Tests -- read-pdf <path>` runs one sheet through the real
+// reader and prints what it made of it. For checking a sheet before it is sent, without the
+// round trip of installing, signing in and importing.
+if (args is ["read-pdf", var readPath])
+{
+    var cat = new[]
+    {
+        ("NO 1 BB", "1BB;1 BB"), ("NO II", "II;#"), ("EX 1", "EX1;Ex1"), ("NO 2", "2;NO2"),
+        ("NO DX", "DX;Dx;DX1"), ("NO 3", "3"), ("NO 4", "4"), ("NO 5", "5"), ("NO 6", "6"),
+        ("NO 7", "7"), ("TOP-COL", "TOP co"), ("COL", "color"), ("OW", null), ("GH", "GH VS"),
+        ("LC 1", null), ("LC 2", null), ("LB 1", null), ("LB 2", null), ("FL", null),
+        ("1MB", "1 MB"), ("-2 MB", null), ("EXTRA", null),
+        (DiamondDesktop.PdfStockFile.UnknownGrade, null),
+    }
+    .Select((g, i) => new DiamondDesktop.Data.Grade
+    {
+        GradeId = i + 1, Code = g.Item1, Aliases = g.Item2, DisplayName = g.Item1,
+    })
+    .ToList();
+
+    var read = DiamondDesktop.PdfStockFile.Plan(
+        readPath,
+        DiamondDesktop.MainWindow.PdfGradeLabelMap(cat),
+        DiamondDesktop.MainWindow.PdfSizeLabelMap(["-6.5", "+6.5", "+11", "0.2", "0.25", "1/6"]));
+
+    Console.WriteLine($"{Path.GetFileName(readPath)}: {(read.IsValid ? "READS" : "REFUSED")}");
+    Console.WriteLine($"  {read.Rows.Count} holding(s), {read.TotalCarats:N2} ct");
+    Console.WriteLine($"  sizes: {string.Join(", ", read.SizeOrder)}");
+    Console.WriteLine($"  grades: {string.Join(", ", read.GradeOrder)}");
+    foreach (string size in read.SizeOrder)
+        Console.WriteLine($"    {size,-6} {read.Rows.Where(r => r.SizeCode == size).Sum(r => r.WeightCt),8:N2} ct");
+    if (!read.IsValid) Console.WriteLine(DiamondDesktop.PdfStockFile.ProblemText(read));
+    return read.IsValid ? 0 : 1;
+}
+
 int failed = 0;
 
 void Check(string name, bool ok, string? detail = null)
@@ -136,6 +189,103 @@ Check("CALC-10 fifty-one paise is still a debt",
 // v_invoice.is_overdue and v_receivables_ageing, `<= 0.50` in Calc.isSettled.
 Check("CALC-10 fifty paise exactly is settled, not owed",
     !Calc.IsOverdue(new DateOnly(2025, 12, 1), 0.50m, new DateOnly(2026, 7, 25)));
+
+// ── a database refusal has to be readable ──────────────────────────────────
+// PostgREST reports a failure as a JSON object, not a sentence, so the status bar was
+// printing the envelope -- {"code":"23514","details":null,... -- and cutting the actual
+// explanation off part-way. Below is the real message 0038 raises, in the real envelope.
+{
+    const string envelope =
+        "{\"code\":\"23514\",\"details\":null,\"hint\":null,\"message\":" +
+        "\"This sheet cannot replace the current stock: 3 bucket(s) would be left below zero.\\n\\n" +
+        "  - NO II x -6.5: the sheet brings 5.5 ct but 114.18 ct has gone out against it, leaving -108.68 ct\\n" +
+        "  - COL x +6.5: the sheet brings 0.86 ct but 31.2 ct has gone out against it, leaving -30.34 ct\\n\\n" +
+        "Nothing has been imported.\"}";
+
+    string shown = DiamondDesktop.Friendly.Message(envelope);
+
+    Check("REFUSAL · the JSON envelope is opened",
+        !shown.StartsWith("{") && !shown.Contains("\"code\""),
+        shown[..Math.Min(58, shown.Length)]);
+
+    Check("REFUSAL · the sentence survives",
+        shown.StartsWith("This sheet cannot replace the current stock"),
+        shown[..Math.Min(58, shown.Length)]);
+
+    // The half that matters most. Showing one bucket and silently dropping two is worse than
+    // showing none, because a partial list reads as a complete one.
+    Check("REFUSAL · every named bucket survives",
+        shown.Contains("NO II x -6.5") && shown.Contains("COL x +6.5"), $"{shown.Length} chars");
+
+    Check("REFUSAL · and the carats behind each one",
+        shown.Contains("114.18") && shown.Contains("-108.68")
+        && shown.Contains("31.2") && shown.Contains("-30.34"));
+
+    Check("REFUSAL · the closing explanation survives",
+        shown.Contains("Nothing has been imported"));
+
+    // The bar is one line and does not wrap, so it flattens -- but flattening may not DROP
+    // anything, which is exactly what showing the first line only would have done.
+    string oneLine = System.Text.RegularExpressions.Regex
+        .Replace(shown, "[\r\n]+", "  ·  ").Trim();
+    Check("REFUSAL · flattened for the status bar, nothing dropped",
+        oneLine.Contains("NO II x -6.5") && oneLine.Contains("COL x +6.5")
+        && !oneLine.Contains('\n'), oneLine[..Math.Min(66, oneLine.Length)]);
+
+    // The dialog splits that same text into headline / bullets / note, by the rule the window
+    // uses: a line starting "- " is a bucket, anything else is prose.
+    var refusalLines = shown.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+    var refusalBullets = refusalLines.Where(l => l.StartsWith("- ", StringComparison.Ordinal)).ToList();
+    var refusalProse = refusalLines.Where(l => !l.StartsWith("- ", StringComparison.Ordinal)).ToList();
+
+    Check("REFUSAL · the dialog finds one bullet per bucket",
+        refusalBullets.Count == 2, string.Join(" | ", refusalBullets));
+    Check("REFUSAL · and a headline plus a closing note",
+        refusalProse.Count == 2, string.Join(" | ", refusalProse));
+
+    // Everything the app writes itself must pass through untouched.
+    Check("REFUSAL · a plain message is left alone",
+        DiamondDesktop.Friendly.Message("Pick a buyer from the list") == "Pick a buyer from the list");
+    Check("REFUSAL · and so is text that merely starts with a brace",
+        DiamondDesktop.Friendly.Message("{not json") == "{not json");
+}
+
+// ── "Show zero values" on the stock report ─────────────────────────────────
+// A bucket nobody has traded is left blank by default: a zero reads as "measured and found to
+// be nothing" rather than "nothing here", and 27 grades by 11 sizes is 297 cells to bury 67
+// real figures in. Some clients' sheets print 0.00 in every cell all the same, and holding the
+// screen against one of those is easier when the two agree -- so it is a toggle, not a rule.
+{
+    Check("ZEROS · off · an untraded bucket is left blank",
+        DiamondDesktop.MainWindow.ReportFigure(0m, false) == "",
+        $"\"{DiamondDesktop.MainWindow.ReportFigure(0m, false)}\"");
+
+    Check("ZEROS · on · the same bucket prints 0.00",
+        DiamondDesktop.MainWindow.ReportFigure(0m, true) == "0.00",
+        DiamondDesktop.MainWindow.ReportFigure(0m, true));
+
+    // A figure that is not zero must read the same either way -- the toggle governs empties
+    // only, and a balance changing format with a checkbox would be its own bug.
+    foreach (decimal v in new[] { 4.87m, 0.14m, 1478.38m, 0.005m })
+    {
+        Check($"ZEROS · {v:N2} reads the same in both states",
+            DiamondDesktop.MainWindow.ReportFigure(v, false)
+            == DiamondDesktop.MainWindow.ReportFigure(v, true),
+            DiamondDesktop.MainWindow.ReportFigure(v, false));
+    }
+
+    Check("ZEROS · and to two places, as the sheet prints it",
+        DiamondDesktop.MainWindow.ReportFigure(4.87m, false) == "4.87"
+        && DiamondDesktop.MainWindow.ReportFigure(1478.38m, true) == "1,478.38",
+        DiamondDesktop.MainWindow.ReportFigure(1478.38m, true));
+
+    // A negative balance is stock left that never arrived -- it must show in BOTH states,
+    // because hiding it is how -94.34 ct went unnoticed for a day.
+    Check("ZEROS · a negative balance is never hidden by either state",
+        DiamondDesktop.MainWindow.ReportFigure(-18.30m, false) == "-18.30"
+        && DiamondDesktop.MainWindow.ReportFigure(-18.30m, true) == "-18.30",
+        DiamondDesktop.MainWindow.ReportFigure(-18.30m, false));
+}
 
 // ── CALC-11 · broker payable ────────────────────────────────────────────────
 // Pre-broker subtotal of Sale!Q3 is 141277.50; 1 % of it is 1412.775 → 1412.78
@@ -1353,6 +1503,506 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
     Check("COUNT · a collection is counted, not printed", L(new List<int> { 1, 2, 3 }) == "3 lines",
         L(new List<int> { 1, 2, 3 }));
     Check("COUNT · thousands are grouped", L(1500) == "1,500 lines", L(1500));
+}
+
+// ── PDF stock sheet · a row the sheet printed no grade against ───────────────────────
+//
+// It used to REFUSE the whole file. Now it imports under "Unknown Grade", and the point of
+// these checks is the one word in that sentence that matters: nothing is LOST. Every printed
+// holding reaches plan.Rows with its own size, weight and rate, and the sheet's own subtotals
+// reconcile with the unnamed rows counted in.
+//
+// The real client sheets are not in the repository and every one of them prints 0.00 on its
+// unnamed rows, so the case was untestable until MiniPdf. This sheet is built to carry weight
+// there — twice, in two different columns, on two separate rows.
+{
+    var grades = new (string Code, string? Aliases)[]
+    {
+        ("NO 1 BB", "1BB;1 BB"), ("LB 2", "LB2"), (DiamondDesktop.PdfStockFile.UnknownGrade, null),
+    }
+    .Select((g, i) => new DiamondDesktop.Data.Grade
+    {
+        GradeId = i + 1, Code = g.Code, Aliases = g.Aliases, DisplayName = g.Code,
+    })
+    .ToList();
+
+    var sizeMap = DiamondDesktop.MainWindow.PdfSizeLabelMap(["-6.5", "+6.5"]);
+
+    // The sheet itself lives in MiniPdf, so `sample-pdf` hands the desk the same one these
+    // checks read.
+    var sheet = DiamondCalc.Tests.MiniPdf.UnnamedRowSheet;
+
+    string pdf = Path.Combine(Path.GetTempPath(), "unnamed-row-stock-sheet.pdf");
+    DiamondCalc.Tests.MiniPdf.Write(pdf, sheet);
+
+    try
+    {
+        var plan = DiamondDesktop.PdfStockFile.Plan(
+            pdf, DiamondDesktop.MainWindow.PdfGradeLabelMap(grades), sizeMap);
+
+        string why = DiamondDesktop.PdfStockFile.ProblemText(plan);
+        Check("PDF-UNNAMED · the sheet reads instead of being refused", plan.IsValid, why);
+
+        // The whole claim, in one line: eight printed holdings, eight imported.
+        Check("PDF-UNNAMED · every printed holding is imported, none dropped",
+            plan.Rows.Count == 8, $"{plan.Rows.Count} of 8");
+
+        Eq("PDF-UNNAMED · and they total what the sheet's TOTAL line prints", plan.TotalCarats, 11.00m);
+        Eq("PDF-UNNAMED · nothing is left unplaced", plan.UnplacedCarats, 0m);
+
+        var unknown = plan.Rows
+            .Where(r => r.GradeCode == DiamondDesktop.PdfStockFile.UnknownGrade)
+            .ToList();
+
+        Check("PDF-UNNAMED · both blank-name rows land under Unknown Grade",
+            unknown.Count == 4, $"{unknown.Count} of 4 cells");
+
+        // Size, carats AND rate — a row imported under the right grade with the wrong figures is
+        // still a lost row, and the rate is the one the old code never got as far as reading.
+        var small = unknown.FirstOrDefault(r => r.SizeCode == "-6.5" && r.WeightCt == 1.50m);
+        var big = unknown.FirstOrDefault(r => r.SizeCode == "+6.5" && r.WeightCt == 0.75m);
+
+        Check("PDF-UNNAMED · with the size and carats the sheet printed", small is not null && big is not null,
+            string.Join(" ", unknown.Select(r => $"{r.SizeCode}={r.WeightCt:N2}")));
+        Check("PDF-UNNAMED · and the rate beside them, not a zero",
+            small?.PricePerCt == 25000m && big?.PricePerCt == 22000m,
+            $"{small?.PricePerCt} / {big?.PricePerCt}");
+
+        // Both subtotals, because a row placed under the wrong column reconciles to neither.
+        Eq("PDF-UNNAMED · the -6.5 column totals the 6.75 ct the sheet states",
+            plan.Rows.Where(r => r.SizeCode == "-6.5").Sum(r => r.WeightCt), 6.75m);
+        Eq("PDF-UNNAMED · the +6.5 column totals the 4.25 ct the sheet states",
+            plan.Rows.Where(r => r.SizeCode == "+6.5").Sum(r => r.WeightCt), 4.25m);
+
+        // What the preview draws. Two unnamed rows must stay two rows on screen — sharing one
+        // label would collide in Printed and the second would overwrite the first.
+        Check("PDF-UNNAMED · the preview lists all four printed rows",
+            plan.GradeOrder.Count == 4, string.Join(" | ", plan.GradeOrder));
+        Check("PDF-UNNAMED · the unnamed ones shown as Unknown Grade, told apart by a number",
+            plan.GradeOrder.Contains("Unknown Grade")
+            && plan.GradeOrder.Contains("Unknown Grade (2)"),
+            string.Join(" | ", plan.GradeOrder));
+        Check("PDF-UNNAMED · each with its own printed cell, neither overwriting the other",
+            plan.Printed[("Unknown Grade", "-6.5")] == (1.50m, 25000m)
+            && plan.Printed[("Unknown Grade (2)", "-6.5")] == (0.25m, 12000m),
+            $"{plan.Printed[("Unknown Grade", "-6.5")]} / {plan.Printed[("Unknown Grade (2)", "-6.5")]}");
+
+        // A database that has not had 0039 applied. The file is still refused rather than
+        // imported short -- but the refusal names the ONE grade to add, not one per blank row,
+        // which is what the app's "add it and carry on" dialog offers.
+        var without = grades.Where(g => g.Code != DiamondDesktop.PdfStockFile.UnknownGrade).ToList();
+        var stale = DiamondDesktop.PdfStockFile.Plan(
+            pdf, DiamondDesktop.MainWindow.PdfGradeLabelMap(without), sizeMap);
+
+        Check("PDF-UNNAMED · without the grade in the catalogue the file is refused, not imported short",
+            !stale.IsValid);
+        Check("PDF-UNNAMED · and one grade is offered, not one per blank row",
+            stale.UnplacedLabels.Count == 1
+            && stale.UnplacedLabels[0] == DiamondDesktop.PdfStockFile.UnknownGrade,
+            string.Join(", ", stale.UnplacedLabels));
+        Eq("PDF-UNNAMED · the carats it names are the blank rows' own", stale.UnplacedCarats, 3.00m);
+        Check("PDF-UNNAMED · reported as a catalogue to fill in, not a sheet that cannot be read",
+            !DiamondDesktop.PdfStockFile.ProblemText(stale).Contains("could not be read reliably"),
+            DiamondDesktop.PdfStockFile.ProblemText(stale));
+    }
+    finally
+    {
+        try { File.Delete(pdf); } catch (IOException) { }
+    }
+}
+
+// ---- Grade marks - one vocabulary, and it is the printed sheet's ---------------------
+//
+// The app used to show three different names for one grade: the code on the Stock table, the
+// display name in every picker, and the mark on the Stock report. Somebody holding the paper
+// against the screen had to translate. These pin the one that won.
+{
+    string Short(string code) => DiamondDesktop.Data.GradeNames.Short(code);
+
+    Check("MARK - a grade whose mark differs from its code uses the mark",
+        Short("NO II") == "#" && Short("NO 1 BB") == "1BB" && Short("TOP-COL") == "TOP co"
+        && Short("COL") == "color" && Short("NO DX") == "DX1",
+        $"{Short("NO II")} {Short("NO 1 BB")} {Short("TOP-COL")}");
+
+    Check("MARK - a grade the sheet prints as its own code is left alone",
+        Short("OW") == "OW" && Short("GH") == "GH" && Short("LC 1") == "LC 1"
+        && Short("FL") == "FL" && Short("Unknown Grade") == "Unknown Grade",
+        Short("Unknown Grade"));
+
+    // A picker entry with no text is a row nobody can pick, and the model binds straight to this.
+    Check("MARK - never blank, whatever the catalogue holds",
+        Short("") == "" && Short(null) == ""
+        && new DiamondDesktop.Data.Grade { Code = "NO 5" }.ShortName == "5",
+        new DiamondDesktop.Data.Grade { Code = "NO 5" }.ShortName);
+
+    // The PDF reader matches sheets on these same marks. Moving the map out of MainWindow must
+    // not have cost it one of them.
+    var map = DiamondDesktop.MainWindow.PdfGradeLabelMap(
+        new[] { "NO II", "NO 1 BB", "TOP-COL", "COL", "NO DX", "OW" }
+            .Select(c => new DiamondDesktop.Data.Grade { Code = c, DisplayName = c }));
+
+    Check("MARK - and the PDF reader still resolves every one of them",
+        new[] { ("#", "NO II"), ("1BB", "NO 1 BB"), ("TOP co", "TOP-COL"), ("color", "COL"),
+                ("DX1", "NO DX"), ("OW", "OW") }
+            .All(t => map.TryGetValue(t.Item1, out string? code) && code == t.Item2));
+}
+
+// ---- Zero figures - the sheet prints 0.00 and so must the screen ---------------------
+{
+    // The rate cell had its own rule and blanked a zero unconditionally, so a bucket showing
+    // 0.00 ct sat beside an empty rate and the pair contradicted each other on the same row.
+    Check("ZERO - a rate honours the same switch as the carats beside it",
+        DiamondDesktop.MainWindow.ReportFigure(0m, true, "N0") == "0"
+        && DiamondDesktop.MainWindow.ReportFigure(0m, false, "N0") == "",
+        DiamondDesktop.MainWindow.ReportFigure(0m, true, "N0"));
+
+    Check("ZERO - a rate is whole rupees, never 2dp",
+        DiamondDesktop.MainWindow.ReportFigure(27933m, true, "N0") == "27,933",
+        DiamondDesktop.MainWindow.ReportFigure(27933m, true, "N0"));
+
+    Check("ZERO - carats keep their two decimals with no format asked for",
+        DiamondDesktop.MainWindow.ReportFigure(0m, true) == "0.00");
+}
+
+// ---- Sieve marks - "1/5", not the 0.2 the catalogue stores -------------------------
+//
+// The report knew these two and nothing else in the app did, which is how "the PDF has 1/4 and
+// 1/5 but they are missing from the app" was both true and not true at once.
+{
+    string Short(string code) => DiamondDesktop.Data.SizeNames.Short(code);
+
+    Check("SIEVE - a fifth and a quarter of a carat read as the sheet writes them",
+        Short("0.2") == "1/5" && Short("0.25") == "1/4", $"{Short("0.2")} {Short("0.25")}");
+
+    Check("SIEVE - a sieve the sheet prints as its own code is left alone",
+        Short("-6.5") == "-6.5" && Short("+11") == "+11" && Short("14+") == "14+"
+        && Short("1/6") == "1/6", Short("1/6"));
+
+    Check("SIEVE - never blank, and the models agree with the map",
+        Short("") == "" && Short(null) == ""
+        && new DiamondDesktop.Data.SizeBucket { Code = "0.25" }.ShortName == "1/4"
+        && new DiamondDesktop.Data.VStockPosition { SizeCode = "0.2" }.SizeShort == "1/5");
+
+    // The PDF reader resolves a sheet's "1/5" to the catalogue's 0.2 through this same map, and
+    // through sieve notation as a second route. Moving it must not have cost either.
+    var map = DiamondDesktop.MainWindow.PdfSizeLabelMap(["-6.5", "+6.5", "+11", "0.2", "0.25"]);
+
+    Check("SIEVE - and the PDF reader still resolves 1/5 and 1/4 to the stored codes",
+        map.TryGetValue("1/5", out string? fifth) && fifth == "0.2"
+        && map.TryGetValue("1/4", out string? quarter) && quarter == "0.25",
+        string.Join(",", map.Keys));
+
+    // The number itself has to keep working: one sheet prints 1/5 and another prints 0.2.
+    Check("SIEVE - the number the catalogue stores still resolves too",
+        map.ContainsKey("0.2") && map.ContainsKey("0.25"));
+}
+
+// ---- Which sieve columns the Stock report opens on ----------------------------------
+//
+// Wrong three times, each time in a different direction, so the rule is pinned here rather
+// than left in a method nothing could reach.
+{
+    string[] sheet = ["-6.5", "+6.5", "+11", "1/6", "0.2", "0.25"];   // the client's own sheet
+    string[] held  = ["-6.5", "+6.5", "+11", "1/6", "0.2"];            // 1/4 prints 0.00 throughout
+
+    bool On(string code) => DiamondDesktop.MainWindow.ReportSizeTicked(code, sheet, held);
+
+    Check("COLUMNS - every column the sheet carries is ticked",
+        sheet.All(On), string.Join(",", sheet.Where(z => !On(z))));
+
+    // The one this exists for. A column of 0.00 is a column: the office counts it and the paper
+    // shows it, and absence of stock is not absence of a column.
+    Check("COLUMNS - including one printed at 0.00 down its whole length", On("0.25"));
+
+    Check("COLUMNS - a sieve the sheet does not carry stays off",
+        !On("14+") && !On("1/3") && !On("-2"));
+
+    // The floor under the rule: whatever the sheet said, stock is never hidden.
+    Check("COLUMNS - a sieve holding carats is ticked even when the sheet never had it",
+        DiamondDesktop.MainWindow.ReportSizeTicked("14+", sheet, ["14+"]));
+
+    // Before any sheet has been imported.
+    Check("COLUMNS - with no sheet recorded, what holds stock decides",
+        DiamondDesktop.MainWindow.ReportSizeTicked("-6.5", [], held)
+        && !DiamondDesktop.MainWindow.ReportSizeTicked("0.25", [], held));
+
+    // A report opening on no columns at all reads as broken, not as "there is nothing here".
+    Check("COLUMNS - an empty position ticks everything rather than nothing",
+        DiamondDesktop.MainWindow.ReportSizeTicked("+23", [], []));
+}
+
+// ---- Every rate the sheet prints, all the way to the screen -------------------------
+//
+// The client's sheet runs 1/5 and 1/4 at 0.00 down their whole length and prints 63,000 and
+// 68,000 beside them. Those are prices, not costs -- there is no weight for a cost to be an
+// average OF -- so the ledger has nowhere to put them and the report showed two empty columns
+// where the paper showed a figure in every cell. The parser now keeps them.
+{
+    var grades = new[] { ("NO 1 BB", "1BB;1 BB"), ("LB 2", "LB2"),
+                         (DiamondDesktop.PdfStockFile.UnknownGrade, (string?)null) }
+        .Select((g, i) => new DiamondDesktop.Data.Grade
+        {
+            GradeId = i + 1, Code = g.Item1, Aliases = g.Item2, DisplayName = g.Item1,
+        })
+        .ToList();
+
+    // 1/5 and 1/4 added to the sample sheet, both 0.00 the whole way down, both priced -- the
+    // exact shape of the columns that were coming through blank.
+    var sheet = new List<(string Text, double CentreX, double Y)>(
+        DiamondCalc.Tests.MiniPdf.UnnamedRowSheet)
+    {
+        ("1/5", 440, 530), ("RATE", 510, 530),
+        ("1/4", 580, 530), ("RATE", 650, 530),
+        ("0.00", 440, 510), ("63000", 510, 510), ("0.00", 580, 510), ("68000", 650, 510),
+        ("0.00", 440, 490), ("51000", 510, 490), ("0.00", 580, 490), ("53000", 650, 490),
+        ("0.00", 440, 470), ("19000", 510, 470), ("0.00", 580, 470), ("19000", 650, 470),
+        ("0.00", 440, 450), ("15000", 510, 450), ("0.00", 580, 450), ("15000", 650, 450),
+        ("0.00", 440, 420), ("37000", 510, 420), ("0.00", 580, 420), ("38750", 650, 420),
+    };
+
+    string pdf = Path.Combine(Path.GetTempPath(), "priced-empty-columns.pdf");
+    DiamondCalc.Tests.MiniPdf.Write(pdf, sheet);
+
+    try
+    {
+        var plan = DiamondDesktop.PdfStockFile.Plan(
+            pdf,
+            DiamondDesktop.MainWindow.PdfGradeLabelMap(grades),
+            DiamondDesktop.MainWindow.PdfSizeLabelMap(["-6.5", "+6.5", "0.2", "0.25"]));
+
+        Check("RATES - the sheet still reads with two empty priced columns on it",
+            plan.IsValid, DiamondDesktop.PdfStockFile.ProblemText(plan));
+
+        Eq("RATES - and still totals what it prints", plan.TotalCarats, 11.00m);
+
+        // All four columns are found, including the two that hold nothing at all. A column of
+        // 0.00 that is dropped takes its prices with it.
+        Check("RATES - all four size columns are read, not just the two holding stock",
+            plan.SizeOrder.Count == 4, string.Join(",", plan.SizeOrder));
+
+        // The point of the whole exercise.
+        Check("RATES - a rate beside 0.00 carats is kept, not discarded with the weight",
+            plan.PrintedRates.GetValueOrDefault(("NO 1 BB", "0.2")) == 63000m
+            && plan.PrintedRates.GetValueOrDefault(("NO 1 BB", "0.25")) == 68000m,
+            $"{plan.PrintedRates.GetValueOrDefault(("NO 1 BB", "0.2"))} / "
+            + $"{plan.PrintedRates.GetValueOrDefault(("NO 1 BB", "0.25"))}");
+
+        Check("RATES - including on a row the sheet printed no grade name against",
+            plan.PrintedRates.GetValueOrDefault((DiamondDesktop.PdfStockFile.UnknownGrade, "0.2"))
+                == 51000m,
+            $"{plan.PrintedRates.GetValueOrDefault((DiamondDesktop.PdfStockFile.UnknownGrade, "0.2"))}");
+
+        // The rates that DO ride a holding are unchanged: those become cost, and this must not
+        // have quietly replaced one with the other.
+        Check("RATES - a rate on a real holding still rides the holding",
+            plan.Rows.Any(r => r.GradeCode == "NO 1 BB" && r.SizeCode == "-6.5"
+                               && r.WeightCt == 4.00m && r.PricePerCt == 30000m),
+            string.Join(" ", plan.Rows.Select(r => $"{r.SizeCode}:{r.WeightCt}@{r.PricePerCt}")));
+
+        Check("RATES - and is recorded as a printed rate as well",
+            plan.PrintedRates.GetValueOrDefault(("NO 1 BB", "-6.5")) == 30000m);
+
+        // A zero rate is not a rate. Storing it would print 0 where the sheet prints nothing.
+        Check("RATES - nothing is invented where the sheet priced nothing",
+            !plan.PrintedRates.ContainsKey(("LB 2", "1/3")));
+
+        // ---- and the round trip that carries them to the next session --------------
+        string packed = DiamondDesktop.MainWindow.FormatSheetRates(plan.PrintedRates);
+        var back = DiamondDesktop.MainWindow.ParseSheetRates(packed);
+
+        Check("RATES - every rate survives the round trip through app_config",
+            back.Count == plan.PrintedRates.Count
+            && plan.PrintedRates.All(r => back.GetValueOrDefault((r.Key.GradeCode, r.Key.SizeCode))
+                                          == r.Value),
+            $"{back.Count} of {plan.PrintedRates.Count}");
+
+        Check("RATES - 63,000 against 1/4 is still 63,000 after the round trip",
+            back.GetValueOrDefault(("NO 1 BB", "0.2")) == 63000m,
+            $"{back.GetValueOrDefault(("NO 1 BB", "0.2"))}");
+
+        // A hand-edited config value must not be able to stop the report drawing.
+        Check("RATES - a malformed entry is dropped, never thrown",
+            DiamondDesktop.MainWindow.ParseSheetRates("NO 1,-6.5;;x,y,z;NO 2,+11,900")
+                is { Count: 1 } salvaged
+            && salvaged.GetValueOrDefault(("NO 2", "+11")) == 900m);
+
+        Check("RATES - and an empty or absent value is simply no rates",
+            DiamondDesktop.MainWindow.ParseSheetRates("").Count == 0
+            && DiamondDesktop.MainWindow.ParseSheetRates(null).Count == 0);
+    }
+    finally
+    {
+        try { File.Delete(pdf); } catch (IOException) { }
+    }
+}
+
+// ---- The subtotal rate under a column holding nothing -------------------------------
+//
+// Pinned to the client's own 1/4 column, which prints 0.00 carats down its whole length and
+// still states 34,921 at the foot. The app divided by the zero weight and printed 0.
+{
+    // The nineteen rates the sheet prints down 1/4, in its own order.
+    decimal[] quarterCarat =
+    [
+        68000, 53000, 53000, 47000, 43000, 40000, 37500, 34000, 30000, 27000,
+        23000, 38500, 34500, 27500, 19500, 15000, 28000, 26000, 19000,
+    ];
+
+    Check("SUBTOTAL - an unweighted column averages its printed rates, as the sheet does",
+        DiamondDesktop.MainWindow.SubtotalRate(0m, 0m, quarterCarat, true) == "34,921",
+        DiamondDesktop.MainWindow.SubtotalRate(0m, 0m, quarterCarat, true));
+
+    // A grade the office does not price is not a zero in the average -- counting it would drag
+    // the figure down by however many grades happen not to trade that sieve.
+    Check("SUBTOTAL - a bucket the sheet never priced is left out of the average",
+        DiamondDesktop.MainWindow.SubtotalRate(0m, 0m, [.. quarterCarat, 0m, 0m, 0m], true)
+            == "34,921");
+
+    // The weighted half must be untouched: 1/5 states 26,934 against 0.99 ct on the same sheet.
+    Check("SUBTOTAL - a column WITH weight is still value over weight, not an average",
+        DiamondDesktop.MainWindow.SubtotalRate(0.99m, 26664.66m, [19500, 32500, 25000], true)
+            == "26,934",
+        DiamondDesktop.MainWindow.SubtotalRate(0.99m, 26664.66m, [19500, 32500, 25000], true));
+
+    // Weighting is the whole point of the first rule, so prove the two rules disagree: these
+    // same rates plain-averaged would be 25,667.
+    Check("SUBTOTAL - and the two rules genuinely differ",
+        DiamondDesktop.MainWindow.SubtotalRate(0m, 0m, [19500, 32500, 25000], true) == "25,667");
+
+    // No weight and no prices at all is the one case with nothing to say.
+    Check("SUBTOTAL - a column with neither weight nor a printed rate follows the zero switch",
+        DiamondDesktop.MainWindow.SubtotalRate(0m, 0m, [], true) == "0"
+        && DiamondDesktop.MainWindow.SubtotalRate(0m, 0m, [], false) == "",
+        DiamondDesktop.MainWindow.SubtotalRate(0m, 0m, [], true));
+
+    // Half a rupee rounds up, matching the sheet's own arithmetic.
+    Check("SUBTOTAL - rounded to the rupee, away from zero",
+        DiamondDesktop.MainWindow.SubtotalRate(0m, 0m, [1000m, 1001m], true) == "1,001");
+}
+
+// ---- Document types on Sales entry --------------------------------------------------
+{
+    var types = DiamondDesktop.Catalogue.DocTypes;
+
+    Check("DOCTYPE - the desk can write all four kinds of invoice",
+        types.SequenceEqual(new[] { "BILL", "WITHOUT BILL", "EXPORT", "DOLLAR BILL" }),
+        string.Join(" | ", types));
+
+    // BILL is what a new invoice opens on and what the importer falls back to, so it must be the
+    // one the picker lands on.
+    Check("DOCTYPE - BILL stays the default", types[0] == "BILL", types[0]);
+
+    // sales_invoice.doc_type is varchar(20). A value longer than that is refused by the database
+    // at save, which is the worst moment to find out.
+    Check("DOCTYPE - every one fits the column",
+        types.All(t => t.Length <= 20), string.Join(",", types.Where(t => t.Length > 20)));
+
+    // The sale workbook importer upper-cases column P. A picker offering "Export" beside imported
+    // rows reading "EXPORT" would be two spellings of one thing in one column.
+    Check("DOCTYPE - stored as the importer stores them, in upper case",
+        types.All(t => t == t.ToUpperInvariant()), string.Join(",", types));
+
+    Check("DOCTYPE - and none is a duplicate of another",
+        types.Distinct().Count() == types.Count);
+}
+
+// ---- The busy latch - "Refreshing..." must go back to "Refresh" ---------------------
+//
+// The exact sequence the header Refresh produces. ReloadCurrentTab starts an async void page
+// load and does not await it, so the refresh's scope ends FIRST and the page's ends second.
+{
+    object button = new();
+
+    // 1 - the plain case: one operation, start to finish.
+    {
+        var latch = new DiamondDesktop.BusyLatch();
+        latch.Claim(button, "Refresh");
+        Check("BUSY - one operation puts the caption back",
+            latch.Release(button, out object? back) && (string?)back == "Refresh", $"{back}");
+        Check("BUSY - and nothing is left holding it", latch.Idle);
+    }
+
+    // 2 - THE BUG. Refresh claims, the page load claims, refresh releases first.
+    {
+        var latch = new DiamondDesktop.BusyLatch();
+        string showing = "Refresh";
+
+        latch.Claim(button, showing); showing = "Refreshing...";     // refresh starts
+        latch.Claim(button, showing); showing = "Loading...";        // page load starts
+
+        // The refresh finishes first and must NOT put anything back: the page is still loading
+        // and the button is still telling the truth.
+        bool refreshRestores = latch.Release(button, out object? afterRefresh);
+        if (refreshRestores) showing = (string?)afterRefresh ?? showing;
+
+        Check("BUSY - the first to finish leaves the caption alone", !refreshRestores, showing);
+        Check("BUSY - so the button still says what is still happening",
+            showing == "Loading...", showing);
+
+        // The page load finishes last and puts back what the FIRST claim found - not what it
+        // found itself, which was "Refreshing..." and is how the button used to stick.
+        bool pageRestores = latch.Release(button, out object? afterPage);
+        if (pageRestores) showing = (string?)afterPage ?? showing;
+
+        Check("BUSY - the last to finish restores the original", pageRestores);
+        Check("BUSY - which is Refresh, never Refreshing...", showing == "Refresh", showing);
+        Check("BUSY - and the latch is idle again", latch.Idle);
+    }
+
+    // 3 - the other order, in case a page load ever finishes first.
+    {
+        var latch = new DiamondDesktop.BusyLatch();
+        latch.Claim(button, "Refresh");
+        latch.Claim(button, "Refreshing...");
+
+        bool firstHeld = latch.Release(button, out _);
+        bool lastRestores = latch.Release(button, out object? last);
+        Check("BUSY - order does not matter, only depth",
+            !firstHeld && lastRestores && (string?)last == "Refresh" && latch.Idle, $"{last}");
+    }
+
+    // 4 - three deep, because nothing bounds the nesting.
+    {
+        var latch = new DiamondDesktop.BusyLatch();
+        latch.Claim(button, "Refresh");
+        latch.Claim(button, "Refreshing...");
+        latch.Claim(button, "Loading...");
+
+        bool a = latch.Release(button, out _);
+        bool b = latch.Release(button, out _);
+        bool c = latch.Release(button, out object? deep);
+        Check("BUSY - any depth unwinds to the same caption",
+            !a && !b && c && (string?)deep == "Refresh", $"{deep}");
+    }
+
+    // 5 - an error is just an early release. The using block runs it either way, so the only
+    // thing that matters is that a release with nothing held cannot throw or invent a caption.
+    {
+        var latch = new DiamondDesktop.BusyLatch();
+        Check("BUSY - releasing something nobody holds is harmless",
+            !latch.Release(button, out object? none) && none is null && latch.Idle);
+
+        latch.Claim(button, "Refresh");
+        latch.Release(button, out _);
+        Check("BUSY - and a second release after a failure changes nothing",
+            !latch.Release(button, out _) && latch.Idle);
+    }
+
+    // 6 - enabling is counted too: an inner scope finishing must not re-enable a button the
+    // outer one is still working behind.
+    {
+        var latch = new DiamondDesktop.BusyLatch();
+        object signOut = new();
+
+        latch.Disable(button); latch.Disable(signOut);   // refresh disables both
+        latch.Disable(button);                           // the page load disables the button again
+
+        Check("BUSY - the inner scope does not re-enable a button still in use",
+            !latch.Enable(button), "button must stay disabled");
+        Check("BUSY - a button only that scope held is released",
+            latch.Enable(signOut));
+        Check("BUSY - and the last release enables it", latch.Enable(button) && latch.Idle);
+    }
 }
 
 Console.WriteLine();
