@@ -1,4 +1,4 @@
--- ---------------------------------------------------------------------------
+﻿-- ---------------------------------------------------------------------------
 -- Regression test for 0038 · a replacing import may not leave a bucket negative.
 --
 -- Runs against a live database because the rule lives in a plpgsql function, so
@@ -10,7 +10,8 @@
 -- match nor remove a row anybody else wrote. It is still worth running on Demo
 -- first if you have the choice.
 --
--- Every row of the result must read 'ok'.
+-- Every row must read 'ok', except case A, which reports 'skipped' with its reason on a
+-- database that already holds an import. B and C are the regression itself and always run.
 -- ---------------------------------------------------------------------------
 
 -- ── 0 · a bucket to work in, and a clean slate for the marker ──────────────
@@ -31,6 +32,9 @@ delete from public.stock_movement where reason = 'VERIFY-0038';
 
 
 -- ── 1 · 100 ct arrives as an import, 80 ct is rejected out of it ───────────
+-- REJECTION, not REJECT. stock_movement_movement_type_check allows INTAKE, CONVERT_IN,
+-- CONVERT_OUT, REJECTION, SALE and ADJUST -- and nothing else. The short form failed this
+-- script on its first real run against Demo.
 insert into public.stock_movement
     (movement_date, grade_id, size_id, movement_type, weight_ct, price_per_ct,
      ref_type, reason)
@@ -40,7 +44,7 @@ select current_date, grade_id, size_id, 'INTAKE', 100, 1000, 'stock_import', 'VE
 insert into public.stock_movement
     (movement_date, grade_id, size_id, movement_type, weight_ct, price_per_ct,
      ref_type, reason)
-select current_date, grade_id, size_id, 'REJECT', 80, 1000, 'verify', 'VERIFY-0038'
+select current_date, grade_id, size_id, 'REJECTION', 80, 1000, 'verify', 'VERIFY-0038'
   from v0038;
 
 
@@ -51,22 +55,45 @@ do $$
 declare
     v_g bigint; v_s bigint;
     v_ok boolean;
+    v_others integer;
 begin
     select grade_id, size_id into v_g, v_s from v0038;
 
-    -- Case A · 90 ct against 80 ct out = 10 ct left. Must be ALLOWED.
-    begin
-        perform public.import_stock(
-            current_date,
-            jsonb_build_array(jsonb_build_object(
-                'grade_id', v_g, 'size_id', v_s, 'weight_ct', 90, 'price_per_ct', 1000)),
-            true, null, 'pdf');
-        v_ok := true;
-    exception when others then v_ok := false;
-    end;
     create temporary table if not exists v0038_out (n int, check_ text, status text);
-    insert into v0038_out values (1, 'A · a sheet that covers what went out is allowed',
-                                  case when v_ok then 'ok' else 'WRONGLY REFUSED' end);
+
+    -- Case A · 90 ct against 80 ct out = 10 ct left. Must be ALLOWED.
+    --
+    -- Only meaningful on a database holding no OTHER import. p_replace => true replaces the
+    -- whole stock import, not one bucket, so a one-row sheet strands every other bucket's
+    -- sales and rejections and the guard refuses -- correctly, and for a reason that has
+    -- nothing to do with the case being tested. Run against Demo's 197 movements this read
+    -- "WRONGLY REFUSED" while the guard was doing precisely its job.
+    --
+    -- Making it run anyway would mean rebuilding the entire sheet from the current position
+    -- and replacing it, which rewrites every rough_intake id on a database somebody is using.
+    -- A skipped check that says why beats a passing one that costs that.
+    select count(*) into v_others
+      from public.stock_movement m
+     where m.ref_type = 'stock_import'
+       and not (m.grade_id = v_g and m.size_id = v_s);
+
+    if v_others > 0 then
+        insert into v0038_out values (1, 'A · a sheet that covers what went out is allowed',
+            'skipped - ' || v_others || ' other imported bucket(s) here; a one-row replacing '
+            || 'sheet would strand them, so this case needs an empty database');
+    else
+        begin
+            perform public.import_stock(
+                current_date,
+                jsonb_build_array(jsonb_build_object(
+                    'grade_id', v_g, 'size_id', v_s, 'weight_ct', 90, 'price_per_ct', 1000)),
+                true, null, 'pdf');
+            v_ok := true;
+        exception when others then v_ok := false;
+        end;
+        insert into v0038_out values (1, 'A · a sheet that covers what went out is allowed',
+                                      case when v_ok then 'ok' else 'WRONGLY REFUSED' end);
+    end if;
 
     -- Case B · 50 ct against 80 ct out = -30 ct. Must be REFUSED.
     begin

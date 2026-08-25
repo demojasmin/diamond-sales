@@ -1,0 +1,107 @@
+// The admin-users call: which project it reaches, and what it does when it cannot reach one.
+//
+// NO DATABASE. Every check here is about the REQUEST, not the response -- there is no session, so
+// CallAsync stops at "Sign in again" long before a socket is opened. What is under test is the URL
+// it would have used and the fact that a bad one is reported rather than thrown.
+//
+// THE DEFECT THIS PINS DOWN
+//
+// The address came from AppSettings.Current.Url -- the LEGACY single-project field, empty on every
+// install whose config uses the Workspaces array, which is every install that can switch between
+// Demo and Priya. Empty made the request URI relative, HttpClient has no BaseAddress, and the
+// InvalidOperationException went straight past both catches and out of an async void handler:
+// "Solitaire Desk stopped".
+//
+// The quieter half was worse. Had that field been filled in, an owner signed into Demo would have
+// created logins in whichever project it named -- on the other client's database, silently.
+using System.Reflection;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+// -- the address is built from the ACTIVE workspace, not the legacy field ----
+var legacy = typeof(AppSettings).GetProperty("Url")!.GetValue(AppSettings.Current) as string ?? "";
+Check("ADMIN - the legacy single-project Url is empty on a Workspaces config",
+      legacy.Length == 0 || AppSettings.All.Count > 1,
+      legacy.Length == 0 ? "<empty, as expected>" : legacy);
+
+foreach (var w in AppSettings.All)
+{
+    Check($"ADMIN - workspace '{w.Name}' has an absolute address",
+          Uri.TryCreate(w.Url, UriKind.Absolute, out _), w.Url);
+}
+
+// The URL the call actually composes, for whichever workspace is active.
+Check("ADMIN - the active workspace resolves to an absolute address",
+      Uri.TryCreate(Db.Active.Url, UriKind.Absolute, out var root), Db.Active.Url);
+
+if (root is not null)
+{
+    var endpoint = new Uri(root, "/functions/v1/admin-users");
+    Check("ADMIN - and the endpoint hangs off THAT project, not another",
+          endpoint.Host == root.Host && endpoint.AbsolutePath == "/functions/v1/admin-users",
+          endpoint.ToString());
+    Check("ADMIN - the endpoint is absolute, which is what HttpClient requires",
+          endpoint.IsAbsoluteUri, endpoint.Scheme);
+}
+
+// The exact string the old code produced, kept as the thing that must never come back.
+string legacyBuilt = $"{legacy.TrimEnd('/')}/functions/v1/admin-users";
+Check("ADMIN - the OLD construction is relative and would still throw",
+      !Uri.TryCreate(legacyBuilt, UriKind.Absolute, out _),
+      legacyBuilt);
+
+// -- the offline queue answers to the same workspace -------------------------
+// Outbox had the identical defect: the legacy field for the destination, while its queue FILE was
+// already keyed on Db.Active.Ref. Empty made the replay URI relative and took the sync timer's
+// async void tick down with it; filled in, it would have replayed one project's queued stock
+// writes into another.
+var outboxUrl = typeof(Outbox).GetProperty("Url", BindingFlags.Static | BindingFlags.NonPublic)!;
+var outboxKey = typeof(Outbox).GetProperty("AnonKey", BindingFlags.Static | BindingFlags.NonPublic)!;
+
+string oUrl = (string)outboxUrl.GetValue(null)!;
+string oKey = (string)outboxKey.GetValue(null)!;
+
+Check("OUTBOX - the destination is the active workspace, not the legacy field",
+      oUrl == Db.Active.Url && oUrl != legacy, oUrl);
+Check("OUTBOX - and so is the key it sends with",
+      oKey == Db.Active.AnonKey && oKey.Length > 0, $"{oKey.Length} chars");
+Check("OUTBOX - the replay endpoint is absolute and on that project",
+      Uri.TryCreate(oUrl, UriKind.Absolute, out var oRoot)
+      && new Uri(oRoot, "/rest/v1/rpc/replace_imported_stock").Host == oRoot.Host,
+      oRoot is null ? "<not absolute>" : new Uri(oRoot, "/rest/v1/rpc/replace_imported_stock").ToString());
+Check("OUTBOX - the queue file still keys on the same workspace ref",
+      Db.Active.Ref.Length > 0, $"outbox-{Db.Active.Ref}.db");
+
+// -- a bad address is reported, never thrown --------------------------------
+// CallAsync is private and returns before any network work when there is no session, so it is
+// driven through the public surface. Whatever it answers, it must ANSWER.
+var call = typeof(AdminUsers).GetMethod("CallAsync", BindingFlags.Static | BindingFlags.NonPublic)!;
+
+foreach (var (label, task) in new (string, Func<Task<AdminResult>>)[]
+         {
+             ("CreateAsync", () => AdminUsers.CreateAsync("a@b.test", "Someone", "staff", "pw")),
+             ("SetActiveAsync", () => AdminUsers.SetActiveAsync(Guid.NewGuid(), false)),
+         })
+{
+    AdminResult? result = null;
+    Exception? thrown = null;
+    try { result = task().GetAwaiter().GetResult(); }
+    catch (Exception ex) { thrown = ex; }
+
+    Check($"ADMIN - {label} returns a result instead of throwing", thrown is null,
+          thrown?.GetType().Name ?? $"{result?.Code} · {result?.Message}");
+    Check($"ADMIN - {label} says what went wrong", result is { Ok: false, Message.Length: > 5 },
+          result?.Message);
+}
+
+Check("ADMIN - CallAsync is still the single funnel for all of them", call is not null);
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+Environment.Exit(fail);

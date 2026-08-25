@@ -1,0 +1,163 @@
+// Reopening a saved DRAFT must put back exactly what was saved.
+//
+// NO DATABASE. MainWindow.BuildDraft is pure -- the two views in, an InvoiceEntry out -- so the
+// whole mapping can be exercised without a server. What it CANNOT prove is that Post deducts once;
+// that lives in post_invoice and is covered by supabase/VERIFY_SALE_DEDUCTS_STOCK.sql.
+using System.Threading;
+using System.Windows;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+var t = new Thread(() =>
+{
+    Catalogue.Grades.Clear();
+    Catalogue.AllSizes.Clear();
+    var noii = new Grade { GradeId = 5, Code = "NO II" };
+    var no2 = new Grade { GradeId = 6, Code = "NO 2" };
+    var s65 = new SizeBucket { SizeId = 3, Code = "+6.5" };
+    var m65 = new SizeBucket { SizeId = 4, Code = "-6.5" };
+    Catalogue.Grades.Add(noii); Catalogue.Grades.Add(no2);
+    Catalogue.AllSizes.Add(s65); Catalogue.AllSizes.Add(m65);
+
+    // The buyer defaults 45 days, the broker defaults 1% -- both DIFFERENT from what the draft
+    // saved, which is the whole point of the ordering inside BuildDraft.
+    var buyers = new[] { new PartyRef(11, "ABC EXPORTS", 45), new PartyRef(12, "KIRAN EXPORTS", 30) };
+    var brokers = new[] { new PartyRef(21, "R K BROKER", null, 1m) };
+
+    var inv = new VInvoice
+    {
+        InvoiceId = 77, InvoiceNo = null, InvoiceDate = new DateOnly(2026, 8, 21),
+        BuyerId = 11, BuyerName = "ABC EXPORTS", BrokerId = 21, BrokerName = "R K BROKER",
+        BrokerPct = 3m, TermsDays = 60, DocType = "EXPORT", Status = InvoiceStatus.DRAFT,
+    };
+
+    var lines = new List<VSalesLine>
+    {
+        new() { LineId = 1, InvoiceId = 77, GradeId = 5, GradeCode = "NO II", SizeId = 3, SizeCode = "+6.5",
+                GrossWeightCt = 1.25m, SelectionCt = 1.00m, PricePerCt = 1000m, ExRate = 1m,
+                Less1Pct = 2m, Less2Pct = 1m, Remark = "first" },
+        new() { LineId = 2, InvoiceId = 77, GradeId = 6, GradeCode = "NO 2", SizeId = 4, SizeCode = "-6.5",
+                GrossWeightCt = 3.00m, SelectionCt = 2.50m, PricePerCt = 2000m, ExRate = 83m,
+                Less1Pct = 0m, Less2Pct = 0m, Remark = null },
+    };
+
+    var e = MainWindow.BuildDraft(inv, lines, buyers, brokers,
+                                  Catalogue.Grades.ToList(), Catalogue.AllSizes.ToList(), out var missing);
+
+    // ── the header ─────────────────────────────────────────────────────────
+    Check("REOPEN - the invoice id comes back, so the next save UPDATES", e.InvoiceId == 77, e.InvoiceId?.ToString());
+    Check("REOPEN - status is still DRAFT", e.Status == InvoiceStatus.DRAFT, e.Status);
+    Check("REOPEN - the buyer is restored", e.BuyerId == 11 && e.Buyer == "ABC EXPORTS", e.Buyer);
+    Check("REOPEN - the broker is restored", e.BrokerId == 21 && e.Broker == "R K BROKER", e.Broker);
+    Check("REOPEN - the date is restored", e.InvoiceDate.Date == new DateTime(2026, 8, 21), e.InvoiceDate.ToString("dd-MM-yyyy"));
+    Check("REOPEN - the doc type is restored", e.DocType == "EXPORT", e.DocType);
+
+    // The two that a careless ordering would silently overwrite with the party's default.
+    Check("REOPEN - SAVED terms win over the buyer's default 45", e.TermsDays == 60, e.TermsDays.ToString());
+    Check("REOPEN - SAVED broker % wins over the broker's default 1", e.BrokerPct == 3m, e.BrokerPct.ToString());
+
+    // ── the lines ──────────────────────────────────────────────────────────
+    Check("REOPEN - nothing was dropped", missing.Count == 0 && e.RealLines.Count == 2,
+          $"{e.RealLines.Count} line(s), {missing.Count} unresolved");
+
+    var a = e.Lines[0];
+    Check("REOPEN - line 1 grade and size", a.Grade?.Code == "NO II" && a.Size?.Code == "+6.5",
+          $"{a.Grade?.Code} x {a.Size?.Code}");
+    Check("REOPEN - line 1 grade is the CATALOGUE object, not a copy", ReferenceEquals(a.Grade, noii));
+    Check("REOPEN - line 1 weight and selection", a.GrossWeightCt == 1.25m && a.SelectionCt == 1.00m);
+    Check("REOPEN - line 1 rejection recomputes", a.RejectionCt == 0.25m, a.RejectionCt.ToString());
+    Check("REOPEN - line 1 price, discounts and remark",
+          a.PricePerCt == 1000m && a.Less1Pct == 2m && a.Less2Pct == 1m && a.Remark == "first");
+
+    var line2 = e.Lines[1];
+    Check("REOPEN - line 2 grade and size", line2.Grade?.Code == "NO 2" && line2.Size?.Code == "-6.5",
+          $"{line2.Grade?.Code} x {line2.Size?.Code}");
+    Check("REOPEN - line 2 keeps its own ex rate", line2.ExRate == 83m, line2.ExRate.ToString());
+
+    // Amount = selection x price x rate x (1-l1) x (1-l2) x (1-broker), broker 3% from the header.
+    // 1.00 x 1000 x 0.98 x 0.99 x 0.97 = 941.09
+    Check("REOPEN - the amount recomputes from the restored figures", a.Amount == 941.09m, a.Amount.ToString());
+
+    // ── a grade that no longer exists ──────────────────────────────────────
+    var gone = new List<VSalesLine>(lines)
+    {
+        new() { LineId = 3, InvoiceId = 77, GradeId = 999, GradeCode = "LC 9", SizeId = 3, SizeCode = "+6.5",
+                GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 500m, ExRate = 1m },
+    };
+    MainWindow.BuildDraft(inv, gone, buyers, brokers,
+                          Catalogue.Grades.ToList(), Catalogue.AllSizes.ToList(), out var missing2);
+    Check("REOPEN - a line whose grade is gone is NAMED, never dropped silently",
+          missing2.Count == 1 && missing2[0].Contains("LC 9"),
+          missing2.Count > 0 ? missing2[0] : "<nothing reported>");
+
+    // ── an empty draft still gets a row to type into ───────────────────────
+    var empty = MainWindow.BuildDraft(inv, [], buyers, brokers,
+                                      Catalogue.Grades.ToList(), Catalogue.AllSizes.ToList(), out _);
+    Check("REOPEN - a draft with no lines still has one blank row",
+          empty.Lines.Count == 1 && empty.RealLines.Count == 0);
+
+    // ── a zero ex rate would zero the invoice ──────────────────────────────
+    var zero = MainWindow.BuildDraft(inv,
+        [new VSalesLine { GradeId = 5, GradeCode = "NO II", SizeId = 3, SizeCode = "+6.5",
+                          GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m, ExRate = 0m }],
+        buyers, brokers, Catalogue.Grades.ToList(), Catalogue.AllSizes.ToList(), out _);
+    Check("REOPEN - a zero ex rate is read back as 1, not as zero",
+          zero.Lines[0].ExRate == 1m, zero.Lines[0].ExRate.ToString());
+
+    // ── a buyer deactivated since the draft was written ────────────────────
+    // The picker offers only active parties, so this buyer is simply not in the list. The draft
+    // still has to come back showing who it was billed to.
+    var activeOnly = new[] { new PartyRef(12, "KIRAN EXPORTS", 30) };   // 11 is gone
+    var noBroker = Array.Empty<PartyRef>();
+
+    var kept = MainWindow.BuildDraft(inv, lines, activeOnly, noBroker,
+                                     Catalogue.Grades.ToList(), Catalogue.AllSizes.ToList(), out _);
+
+    Check("INACTIVE - a draft keeps the buyer it was billed to",
+          kept.BuyerId == 11 && kept.Buyer == "ABC EXPORTS", kept.Buyer ?? "<null>");
+    Check("INACTIVE - and the broker it was written with",
+          kept.BrokerId == 21 && kept.Broker == "R K BROKER", kept.Broker ?? "<null>");
+    Check("INACTIVE - the buyer is on THIS invoice's picker",
+          kept.Buyers.Any(b => b.Id == 11), $"{kept.Buyers.Count} buyer(s) offered");
+    Check("INACTIVE - and is flagged so a NEW invoice will not inherit it",
+          kept.Buyers.Single(b => b.Id == 11).Active == false);
+    Check("INACTIVE - the active buyer is still offered alongside it",
+          kept.Buyers.Any(b => b.Id == 12 && b.Active));
+
+    // What NewInvoice_Click does with that flag.
+    Check("INACTIVE - filtering on Active leaves only the selectable ones",
+          kept.Buyers.Where(b => b.Active).All(b => b.Id != 11),
+          string.Join(", ", kept.Buyers.Where(b => b.Active).Select(b => b.Name)));
+
+    // An ACTIVE party that is simply present must not be duplicated or re-flagged.
+    Check("INACTIVE - an active buyer is used as-is, not re-added",
+          e.Buyers.Count(b => b.Id == 11) == 1 && e.Buyers.Single(b => b.Id == 11).Active,
+          $"{e.Buyers.Count} buyer(s)");
+
+    // ── and it survives a catalogue reload ─────────────────────────────────
+    kept.RememberCatalogue();
+    kept.Buyers.Clear();                       // what a reload of the ACTIVE list looks like
+    foreach (var b in activeOnly) kept.Buyers.Add(b);
+    kept.Brokers.Clear();
+    kept.CatalogueChanged();
+
+    Check("INACTIVE - the buyer survives a catalogue reload too",
+          kept.BuyerId == 11 && kept.Buyer == "ABC EXPORTS", kept.Buyer ?? "<null>");
+    Check("INACTIVE - put back exactly once, not once per reload",
+          kept.Buyers.Count(b => b.Id == 11) == 1, $"{kept.Buyers.Count(b => b.Id == 11)} copies");
+
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Application.Current?.Shutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+Environment.Exit(fail);

@@ -1,0 +1,278 @@
+// The Stock report toolbar and the sheet's own grid, in both themes.
+//
+// NO DATABASE. The window is constructed offscreen and only its layout is measured. Two defects
+// are pinned down here, both of which look like nothing in the markup:
+//
+//   1. The size checkboxes lived in an Auto column. A WrapPanel measured with unbounded width
+//      never wraps, so eleven sieves laid out on one line, demanded more width than the toolbar
+//      had, and the controls beyond them were clipped -- "Hide grades with no stoc".
+//
+//   2. The sheet ruled its grid in TextBrush. Correct on white, where the report is meant to read
+//      as the printed sheet it replaces; on #0E1116 that is #E6EBF2 lines around #E6EBF2 figures.
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using DiamondDesktop;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+var t = new Thread(() =>
+{
+    // The dictionaries App.xaml merges, in App.xaml's order -- not App.xaml itself, which would
+    // construct a second Application and throw. Theme first so ThemeManager can swap index 0.
+    var app = new Application();
+    foreach (string d in new[]
+             {
+                 "Themes/LightTheme.xaml", "Themes/Typography.xaml", "Styles/Buttons.xaml",
+                 "Styles/Inputs.xaml", "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
+                 "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
+                 "Styles/Audit.xaml",
+             })
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+    ThemeManager.Initialize(app);
+
+    // ThemeManager.Apply builds a RELATIVE uri, which resolves against the entry assembly -- the
+    // app itself, normally, and this probe here. So the swap is done the same way it does it,
+    // replacing dictionary 0, but with a pack uri that names DiamondDesktop explicitly.
+    void Use(ThemeManager.Theme theme)
+    {
+        string file = theme == ThemeManager.Theme.Dark ? "DarkTheme" : "LightTheme";
+        app.Resources.MergedDictionaries[0] = new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/Themes/{file}.xaml") };
+    }
+
+    // -- both themes define what the sheet asks for -----------------------------
+    foreach (var theme in new[] { ThemeManager.Theme.Light, ThemeManager.Theme.Dark })
+    {
+        Use(theme);
+
+        var rule = app.TryFindResource("ReportRuleBrush") as SolidColorBrush;
+        var text = app.TryFindResource("TextBrush") as SolidColorBrush;
+        var weight = app.TryFindResource("ReportFigureWeight");
+
+        Check($"{theme} - the sheet has a rule brush of its own", rule is not null);
+        Check($"{theme} - and a figure weight of its own", weight is FontWeight, weight?.ToString());
+
+        if (rule is null || text is null) continue;
+
+        // Relative luminance, the sRGB formula. A rule the same colour as the text is the defect.
+        static double L(Color c)
+        {
+            static double Ch(double v) { v /= 255.0; return v <= 0.03928 ? v / 12.92 : Math.Pow((v + 0.055) / 1.055, 2.4); }
+            return (0.2126 * Ch(c.R)) + (0.7152 * Ch(c.G)) + (0.0722 * Ch(c.B));
+        }
+        var ground = (app.TryFindResource("BgBrush") as SolidColorBrush)!.Color;
+        double lr = L(rule.Color), lt = L(text.Color), lg = L(ground);
+        double ruleOnGround = (Math.Max(lr, lg) + 0.05) / (Math.Min(lr, lg) + 0.05);
+        double textOnGround = (Math.Max(lt, lg) + 0.05) / (Math.Min(lt, lg) + 0.05);
+
+        Check($"{theme} - the rule is visible against the page",
+              ruleOnGround >= 2.0, $"{ruleOnGround:F2}:1");
+        // Dark only, and deliberately so. On white the rule IS the ink -- the report exists to be
+        // held against the client's printed sheet, which is ruled as dark as it is written. On a
+        // dark ground that same choice puts the grid at the same contrast as the figures, and the
+        // eye reads the cage instead of what is in it.
+        if (theme == ThemeManager.Theme.Dark)
+            Check($"{theme} - the figures out-contrast their own grid",
+                  textOnGround > ruleOnGround, $"text {textOnGround:F2}:1 vs rule {ruleOnGround:F2}:1");
+        Check($"{theme} - text itself clears the 4.5:1 floor",
+              textOnGround >= 4.5, $"{textOnGround:F2}:1");
+    }
+
+    // Light keeps exactly what it always had: the rule IS the ink the sheet is printed in.
+    Use(ThemeManager.Theme.Light);
+    Check("Light - the rule is unchanged from before, the text colour",
+          ((SolidColorBrush)app.TryFindResource("ReportRuleBrush")).Color
+          == ((SolidColorBrush)app.TryFindResource("TextBrush")).Color,
+          ((SolidColorBrush)app.TryFindResource("ReportRuleBrush")).Color.ToString());
+    Check("Light - and the figures stay at Normal weight",
+          (FontWeight)app.TryFindResource("ReportFigureWeight") == FontWeights.Normal);
+
+    Use(ThemeManager.Theme.Dark);
+    Check("Dark - the rule steps back from the text colour",
+          ((SolidColorBrush)app.TryFindResource("ReportRuleBrush")).Color
+          != ((SolidColorBrush)app.TryFindResource("TextBrush")).Color,
+          ((SolidColorBrush)app.TryFindResource("ReportRuleBrush")).Color.ToString());
+    Check("Dark - and the figures pick up a heavier stroke",
+          (FontWeight)app.TryFindResource("ReportFigureWeight") == FontWeights.Medium);
+
+    // -- the toolbar, laid out at the widths a person actually uses -------------
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+                               Left = -4000, Top = -4000, ShowInTaskbar = false };
+    win.Show();
+
+    // A TabControl only builds the selected tab's visual tree, so nothing on the Stock report can
+    // be measured until it is the one on screen.
+    var tabs = (TabControl)win.FindName("Tabs")!;
+    tabs.SelectedItem = tabs.Items.OfType<TabItem>().Single(i => (i.Header as string) == "Stock report");
+    win.UpdateLayout();
+
+    var sizes = (ItemsControl)win.FindName("ReportSizes")!;
+    var edit = (CheckBox)win.FindName("ReportEditMode")!;
+    var hide = (CheckBox)win.FindName("ReportHideEmpty")!;
+    var zeros = (CheckBox)win.FindName("ReportShowZeros")!;
+    var chip = (Border)win.FindName("ReportModeChip")!;
+    var reset = (Button)win.FindName("ReportReset")!;
+    var chipText = (TextBlock)win.FindName("ReportModeText")!;
+
+    // Eleven sieves, which is what the client's own sheet carries -- seeded into the catalogue and
+    // then built by the WINDOW'S OWN builder. Hand-rolling the boxes here would test the probe's
+    // checkboxes rather than the app's, and it is precisely the app's that were coming out black.
+    string[] codes = ["-2", "-6.5", "+6.5", "+11", "14+", "0.2", "0.25", "1/6", "1/3", "+18", "+23"];
+    DiamondDesktop.Catalogue.AllSizes.Clear();
+    for (int i = 0; i < codes.Length; i++)
+        DiamondDesktop.Catalogue.AllSizes.Add(
+            new DiamondDesktop.Data.SizeBucket { SizeId = i + 1, Code = codes[i], SortOrder = i });
+
+    typeof(MainWindow).GetMethod("BuildReportSizeBoxes",
+        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+        .Invoke(win, null);
+    win.UpdateLayout();
+
+    // The long caption, which is what made the row overflow in the first place.
+    chipText.Text = "Edit mode · click a weight to correct it";
+
+    foreach (double width in new[] { 1400d, 1200d, 1120d })
+    {
+        win.Width = width;
+        win.UpdateLayout();
+
+        var toolbar = (Panel)VisualTreeHelper.GetParent(chip)!;
+        toolbar.UpdateLayout();
+
+        bool ok = true;
+        var missing = new List<string>();
+        foreach (var (name, el) in new (string, FrameworkElement)[]
+                 { ("Edit mode", edit), ("Hide grades", hide), ("Show zero values", zeros),
+                   ("mode chip", chip), ("Reset", reset) })
+        {
+            // Fully laid out, and inside the window rather than off its right edge.
+            var origin = el.TransformToAncestor(win).Transform(new Point(0, 0));
+            bool onScreen = el.ActualWidth > 0 && el.ActualHeight > 0
+                            && origin.X >= 0 && origin.X + el.ActualWidth <= win.ActualWidth + 0.5;
+            if (!onScreen) { ok = false; missing.Add($"{name}@{origin.X:F0}+{el.ActualWidth:F0}"); }
+        }
+        var wrap = (WrapPanel)VisualTreeHelper.GetParent(
+            (UIElement)sizes.ItemContainerGenerator.ContainerFromIndex(0)!)!;
+        Check($"TOOLBAR - nothing is clipped at {width:F0}px", ok,
+              ok ? $"window {win.ActualWidth:F0}px, sieves {wrap.ActualWidth:F0}x{wrap.ActualHeight:F0}"
+                 : string.Join(", ", missing));
+
+        // Starving the sieves is the other way to fit everything: no clipping, and a column of
+        // twelve one-per-line checkboxes. The controls are the side that wraps.
+        // The sieves are one logical row and read badly broken across two, so they get the larger
+        // share of the toolbar (1.5 : 1). Wrapping is still correct when the window is genuinely
+        // too narrow -- the alternative is the clipping this file exists to prevent -- but it must
+        // not happen at a width somebody actually works at.
+        Check($"TOOLBAR - the sieves stay on one line at {width:F0}px",
+              wrap.ActualHeight <= 40, $"{wrap.ActualWidth:F0} x {wrap.ActualHeight:F0}");
+        Check($"TOOLBAR - the sieves keep a usable width at {width:F0}px",
+              wrap.ActualWidth >= 400, $"{wrap.ActualWidth:F0}px");
+    }
+
+    // The sizes must actually wrap rather than demand one enormous line.
+    win.Width = 1200;
+    win.UpdateLayout();
+    var panel = (WrapPanel)VisualTreeHelper.GetParent(
+        (UIElement)sizes.ItemContainerGenerator.ContainerFromIndex(0)!)!;
+    // Bounded, not wrapped. The sieves now have a row to themselves and do not NEED to wrap at any
+    // width worth testing -- but the panel must still be measured against a real width rather than
+    // infinity, or it would run off the edge instead of wrapping when one day it does not fit.
+    // That is the defect this whole file started with.
+    Check("TOOLBAR - the sieve panel is measured against a real width, not infinity",
+          panel.ActualWidth > 0 && panel.ActualWidth <= win.ActualWidth,
+          $"{panel.ActualWidth:F0} of {win.ActualWidth:F0}px");
+    Check("TOOLBAR - and it spans the toolbar rather than a column of it",
+          panel.ActualWidth > win.ActualWidth * 0.6,
+          $"{panel.ActualWidth / win.ActualWidth * 100:F0}% of the window");
+
+    // -- Reset lives with what it resets ---------------------------------------
+    win.Width = 1400;
+    win.UpdateLayout();
+    var sizesBlock = (FrameworkElement)VisualTreeHelper.GetParent(sizes)!;
+    var resetAt = reset.TransformToAncestor(win).Transform(new Point(0, 0));
+    var sizesAt = sizes.TransformToAncestor(win).Transform(new Point(0, 0));
+    Check("RESET - sits above the checkboxes it clears, not across the toolbar",
+          resetAt.Y < sizesAt.Y && resetAt.X < sizesAt.X + 260,
+          $"reset at {resetAt.X:F0},{resetAt.Y:F0} · sieves at {sizesAt.X:F0},{sizesAt.Y:F0}");
+    Check("RESET - is reachable by name for a screen reader",
+          !string.IsNullOrWhiteSpace(
+              (string?)reset.GetValue(System.Windows.Automation.AutomationProperties.NameProperty)));
+    Check("RESET - and says what it will undo", reset.ToolTip is string { Length: > 20 });
+
+    // -- every checkbox on this screen is the app's own, in the app's own ink ---
+    // WPF's stock CheckBox template pins its foreground to the SYSTEM control text colour, which
+    // knows nothing about which theme is loaded. That is how the sieve row came out grey.
+    var themed = (ResourceDictionary?)null;
+    foreach (var (name, box) in new (string, CheckBox)[]
+             { ("Edit mode", edit), ("Hide grades", hide), ("Show zero values", zeros) })
+    {
+        Check($"CHECKBOX - {name} uses the app's themed template",
+              ReferenceEquals(box.Style, app.TryFindResource("FieldCheckBox")),
+              box.Style is null ? "<stock WPF style>" : "themed");
+        Check($"CHECKBOX - {name} is drawn in the primary ink",
+              box.Foreground is SolidColorBrush b
+              && b.Color == ((SolidColorBrush)app.TryFindResource("TextBrush")).Color,
+              (box.Foreground as SolidColorBrush)?.Color.ToString() ?? "<inherited>");
+    }
+
+    // The sieve boxes are made in code, which is exactly where the stock template slips back in.
+    var built = sizes.ItemsSource?.OfType<CheckBox>().ToList() ?? [];
+    Check("CHECKBOX - the window built a box per sieve, plus All sizes",
+          built.Count == codes.Length + 1, $"{built.Count} box(es)");
+    if (built.Count > 0)
+    {
+        Check("CHECKBOX - every sieve box is themed too",
+              built.All(b => ReferenceEquals(b.Style, app.TryFindResource("FieldCheckBox"))),
+              $"{built.Count(b => ReferenceEquals(b.Style, app.TryFindResource("FieldCheckBox")))}/{built.Count}");
+        Check("CHECKBOX - and all in one colour, checked or not",
+              built.Select(b => (b.Foreground as SolidColorBrush)?.Color).Distinct().Count() == 1,
+              string.Join(", ", built.Select(b => (b.Foreground as SolidColorBrush)?.Color.ToString() ?? "<inherited>").Distinct()));
+    }
+
+    // -- Reset looks like something you can press ------------------------------
+    Check("RESET - has a visible border, not bare text",
+          reset.BorderThickness.Left > 0 && reset.BorderBrush is not null,
+          $"{reset.BorderThickness.Left} · {(reset.BorderBrush as SolidColorBrush)?.Color.ToString() ?? "<null>"}");
+    Check("RESET - and a background, so it reads as a control",
+          reset.Background is SolidColorBrush bg && bg.Color.A > 0,
+          (reset.Background as SolidColorBrush)?.Color.ToString() ?? "<transparent>");
+
+    // -- the sheet's two tiers of text -----------------------------------------
+    foreach (var theme in new[] { ThemeManager.Theme.Light, ThemeManager.Theme.Dark })
+    {
+        Use(theme);
+        var primary = ((SolidColorBrush)app.TryFindResource("TextBrush")).Color;
+        var second = ((SolidColorBrush)app.TryFindResource("TextMutedBrush")).Color;
+        var ground = ((SolidColorBrush)app.TryFindResource("BgBrush")).Color;
+
+        static double L(Color c)
+        {
+            static double Ch(double v) { v /= 255.0; return v <= 0.03928 ? v / 12.92 : Math.Pow((v + 0.055) / 1.055, 2.4); }
+            return (0.2126 * Ch(c.R)) + (0.7152 * Ch(c.G)) + (0.0722 * Ch(c.B));
+        }
+        double Ratio(Color a, Color b) =>
+            (Math.Max(L(a), L(b)) + 0.05) / (Math.Min(L(a), L(b)) + 0.05);
+
+        Check($"{theme} - the rate tier is genuinely softer than the weight", primary != second,
+              $"{primary} vs {second}");
+        Check($"{theme} - and still clears the 4.5:1 floor for body text",
+              Ratio(second, ground) >= 4.5, $"{Ratio(second, ground):F2}:1");
+    }
+
+    win.Close();
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    app.Shutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+Environment.Exit(fail);

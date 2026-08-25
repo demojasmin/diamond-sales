@@ -214,6 +214,16 @@ public partial class MainWindow : Window
 
     private async Task LoadPartiesAsync()
     {
+        // Before anything is read. Catalogue.LoadAsync and the two party reads below all CLEAR an
+        // ObservableCollection that a picker is bound to, and WPF answers a cleared ItemsSource by
+        // dropping the selection and writing that null back down the two-way binding -- so a
+        // half-typed invoice loses its grade, size, buyer and broker the moment the read starts,
+        // and any repair afterwards has nothing left to work from. See SaleLine.RememberCatalogue.
+        //
+        // Here rather than in each of the eight callers: every one of them has the same problem and
+        // only this method knows when the clearing happens.
+        _invoice.RememberCatalogue();
+
         try
         {
             // Before the catalogue: money_precision and alert_low_stock_ct decide how the first
@@ -251,6 +261,12 @@ public partial class MainWindow : Window
         {
             Pill(false, Db.IsOnline ? "Server refused the request" : "Offline");
             Say(ex.Message);
+        }
+        finally
+        {
+            // In a finally: a read that fails half way through has still cleared whatever it got to,
+            // so the screen needs putting back whether or not the rest of it worked.
+            _invoice.CatalogueChanged();
         }
     }
 
@@ -347,8 +363,12 @@ public partial class MainWindow : Window
                    "Unsaved invoice", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
 
-        var buyers = _invoice.Buyers.ToList();
-        var brokers = _invoice.Brokers.ToList();
+        // Active only. Reopening a draft written to a since-deactivated buyer adds that buyer to
+        // THAT invoice's picker so the name stays on screen -- carrying it into a brand new invoice
+        // would make it selectable for new trade, which is the one thing deactivating it meant to
+        // stop. See PartyRef.Active.
+        var buyers = _invoice.Buyers.Where(b => b.Active).ToList();
+        var brokers = _invoice.Brokers.Where(b => b.Active).ToList();
 
         _invoice = new InvoiceEntry();
         foreach (var b in buyers) _invoice.Buyers.Add(b);
@@ -499,13 +519,24 @@ public partial class MainWindow : Window
         picker.DisplayDate = picker.SelectedDate ?? DateTime.Today;
     }
 
+    /// <summary>
+    /// Catalogue.LoadAsync, with the entry screen's selections carried across it. Same reasoning as
+    /// LoadPartiesAsync above, for the paths that reload the catalogue alone.
+    /// </summary>
+    private async Task ReloadCatalogueAsync()
+    {
+        _invoice.RememberCatalogue();
+        await Catalogue.LoadAsync();
+        _invoice.CatalogueChanged();
+    }
+
     private async void ReloadCatalogue_Click(object sender, RoutedEventArgs e)
     {
         var button = (Button)sender;
         button.IsEnabled = false;
         try
         {
-            await Catalogue.LoadAsync();
+            await ReloadCatalogueAsync();
             Say(Catalogue.Grades.Count > 0
                 ? $"Catalogue loaded · {Catalogue.Grades.Count} grades"
                 : "Still no grades — the database returned an empty list", ok: Catalogue.Grades.Count > 0);
@@ -678,6 +709,17 @@ public partial class MainWindow : Window
         bool open = InvoiceGrid.SelectedItem is VInvoice;
         InvoiceDetailCard.DataContext = InvoiceGrid.SelectedItem;
         InvoiceDetailCard.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+
+        // Editing is a draft-only action, so the button is lit only for a draft. A posted invoice
+        // has already moved stock and reopening it would let the same carats go out twice.
+        if (EditDraftButton is not null)
+        {
+            bool draft = InvoiceGrid.SelectedItem is VInvoice d && d.Status == InvoiceStatus.DRAFT;
+            EditDraftButton.IsEnabled = draft;
+            EditDraftButton.ToolTip = draft
+                ? "Open this draft in Sales entry"
+                : "Only a draft can be edited — a posted invoice has already moved stock.";
+        }
 
         // Hand the layout to the size handler rather than setting the two column widths here.
         // It does the same thing AND re-shares the star column, which opening the drawer needs
@@ -1116,6 +1158,163 @@ public partial class MainWindow : Window
 
     private void ExportStock_Click(object sender, RoutedEventArgs e)
         => Say(Reports.ExportGrid(StockGrid, "stock") ?? "", ok: true);
+
+    /// Adds a party this invoice needs but the picker no longer offers, and hands it straight back.
+    private static PartyRef Retired(ObservableCollection<PartyRef> into, PartyRef party)
+    {
+        into.Add(party);
+        return party;
+    }
+
+    /// <summary>
+    /// Rebuild an entry screen from a saved draft.
+    ///
+    /// Pure and static so it can be tested without a database: the two views in, an InvoiceEntry
+    /// out, and every line the catalogue cannot account for named in <paramref name="unresolved"/>
+    /// rather than quietly dropped. A draft that comes back one line short and posts anyway is a
+    /// parcel sold that nobody billed for.
+    ///
+    /// ORDER IS NOT COSMETIC. SelectedBuyer fills in the party's default terms when TermsDays is
+    /// still 0, and SelectedBroker does the same for BrokerPct — helpful when a person picks a
+    /// party, wrong when a saved invoice is being restored. So the parties go on first and the
+    /// saved figures overwrite them afterwards. Grade before Size for the same kind of reason:
+    /// setting Grade clears a Size that grade does not trade in.
+    /// </summary>
+    public static InvoiceEntry BuildDraft(
+        VInvoice inv, IReadOnlyList<VSalesLine> lines,
+        IEnumerable<PartyRef> buyers, IEnumerable<PartyRef> brokers,
+        IReadOnlyList<Grade> grades, IReadOnlyList<SizeBucket> sizes,
+        out List<string> unresolved)
+    {
+        var entry = new InvoiceEntry { InvoiceId = inv.InvoiceId, Status = inv.Status };
+
+        foreach (var b in buyers) entry.Buyers.Add(b);
+        foreach (var b in brokers) entry.Brokers.Add(b);
+
+        entry.InvoiceDate = inv.InvoiceDate.ToDateTime(TimeOnly.MinValue);
+        entry.DocType = inv.DocType;
+
+        // If the party has been deactivated since the draft was written it is not in the picker's
+        // list -- correctly, nothing NEW may be billed to it. But this invoice already was, and a
+        // buyer that quietly empties itself on reopening is a draft that posts to nobody. Put it
+        // back on this invoice alone, flagged so New does not inherit it.
+        entry.SelectedBuyer = entry.Buyers.FirstOrDefault(p => p.Id == inv.BuyerId)
+                              ?? Retired(entry.Buyers, new PartyRef(inv.BuyerId, inv.BuyerName,
+                                                                    inv.TermsDays, null, Active: false));
+        entry.SelectedBroker = inv.BrokerId is { } brokerId
+            ? entry.Brokers.FirstOrDefault(p => p.Id == brokerId)
+              ?? Retired(entry.Brokers, new PartyRef(brokerId, inv.BrokerName ?? "(inactive broker)",
+                                                     null, inv.BrokerPct, Active: false))
+            : null;
+
+        // After the parties, so what was saved wins over what they default to.
+        entry.TermsDays = inv.TermsDays;
+        entry.BrokerPct = inv.BrokerPct;
+
+        // The constructor seeds one blank line for typing into. A restored invoice brings its own.
+        entry.Lines.Clear();
+
+        unresolved = [];
+        foreach (var l in lines)
+        {
+            var grade = grades.FirstOrDefault(g => g.GradeId == l.GradeId);
+            var size = sizes.FirstOrDefault(s => s.SizeId == l.SizeId);
+
+            // Retired or deleted since the draft was written. Named, never guessed at.
+            if (grade is null || size is null)
+            {
+                unresolved.Add($"{l.GradeCode} × {l.SizeCode}");
+                continue;
+            }
+
+            entry.Lines.Add(new SaleLine
+            {
+                Grade = grade,
+                Size = size,
+                GrossWeightCt = l.GrossWeightCt,
+                SelectionCt = l.SelectionCt,
+                PricePerCt = l.PricePerCt,
+                ExRate = l.ExRate == 0 ? 1m : l.ExRate,
+                Less1Pct = l.Less1Pct,
+                Less2Pct = l.Less2Pct,
+                Remark = l.Remark,
+            });
+        }
+
+        // Never leave the grid with no row at all: the screen has no way to start one.
+        if (entry.Lines.Count == 0) entry.Lines.Add(new SaleLine());
+
+        return entry;
+    }
+
+    /// <summary>
+    /// Open the selected DRAFT back on the entry screen, ready to be posted.
+    ///
+    /// Only a draft. A POSTED invoice has already moved stock, and reopening one to post it again
+    /// would deduct the same carats twice. The database refuses it independently — SaveDraftAsync
+    /// filters its UPDATE on status = DRAFT and treats zero rows as the refusal — so this is the
+    /// second lock rather than the only one.
+    /// </summary>
+    private async void EditDraft_Click(object sender, RoutedEventArgs e)
+    {
+        if (InvoiceGrid.SelectedItem is not VInvoice inv) { Field(InvoiceGrid, "Select an invoice first"); return; }
+
+        if (inv.Status != InvoiceStatus.DRAFT)
+        {
+            AppDialog.Refused(this,
+                title: "Not a draft",
+                headline: $"{inv.InvoiceNo ?? "This invoice"} is {inv.Status}, so it cannot be edited",
+                subhead: inv.BuyerName,
+                facts: [],
+                listTitle: null,
+                bullets: null,
+                note: "A posted invoice has already taken its carats out of stock. Editing and "
+                    + "posting it again would take them out a second time. Nothing was opened.");
+            return;
+        }
+
+        // The same question New asks, for the same reason: typed lines that were never saved are
+        // gone with no way back. A draft already on screen has an InvoiceId and is safe to replace.
+        if (_invoice.InvoiceId is null && _invoice.RealLines.Count > 0
+            && MessageBox.Show(this,
+                   $"The invoice on screen has {_invoice.RealLines.Count} line(s) that have not been saved.\n\n"
+                   + $"Open the draft for {inv.BuyerName} and lose them?",
+                   "Unsaved invoice", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+
+        List<VSalesLine>? lines;
+        using (Busy(EditDraftButton, "Opening…", EditDraftButton, PrintBill, RecordReceipt, CancelInvoiceButton))
+            lines = await Read(() => Repo.LinesAsync(inv.InvoiceId));
+        if (lines is null) return;
+
+        var entry = BuildDraft(inv, lines, _invoice.Buyers, _invoice.Brokers,
+                               Catalogue.Grades, Catalogue.AllSizes, out var unresolved);
+
+        // A draft that cannot be rebuilt in full is not opened at all. Posting what DID resolve
+        // would bill for part of a parcel and leave the rest unexplained on nobody's screen.
+        if (unresolved.Count > 0)
+        {
+            AppDialog.Refused(this,
+                title: "Draft cannot be reopened",
+                headline: $"{unresolved.Count} line(s) name a grade or sieve the catalogue no longer has",
+                subhead: inv.BuyerName,
+                facts: [],
+                listTitle: "Which lines",
+                bullets: unresolved,
+                note: "Restore them on Master data, then open the draft again. Nothing was opened "
+                    + "and the draft is untouched.");
+            Say($"Draft not opened — {unresolved.Count} line(s) reference a missing grade or size");
+            return;
+        }
+
+        _invoice = entry;
+        DataContext = _invoice;
+
+        Tabs.SelectedItem = SalesEntryTab;
+
+        Say($"Draft for {inv.BuyerName} opened · {_invoice.RealLines.Count} line(s) · "
+            + "Post when ready", ok: true);
+    }
 
     private async void PrintInvoice_Click(object sender, RoutedEventArgs e)
     {
@@ -1660,7 +1859,7 @@ public partial class MainWindow : Window
     /// </summary>
     private async void RefreshMovements_Click(object sender, RoutedEventArgs e)
     {
-        await Catalogue.LoadAsync();
+        await ReloadCatalogueAsync();
 
         if (LedgerGrade.SelectedItem is Grade && LedgerSize.SelectedItem is SizeBucket)
             LedgerLoad_Click(sender, e);
@@ -1940,8 +2139,12 @@ public partial class MainWindow : Window
         ApplyGradeFilter();
 
         SizeGrid.ItemsSource = await Read(Repo.SizesAsync);
-        var buyers = await Read(Repo.BuyersAsync) ?? [];
-        var brokers = await Read(Repo.BrokersAsync) ?? [];
+        // Every buyer and broker, not just the active ones. This is the page that deactivates
+        // them, and reading the filtered list meant a row switched off here disappeared from here
+        // -- unviewable and unrestorable, by the only screen that could have restored it. The
+        // status badge on each row already says which is which.
+        var buyers = await Read(() => Repo.BuyersAsync(activeOnly: false)) ?? [];
+        var brokers = await Read(() => Repo.BrokersAsync(activeOnly: false)) ?? [];
         BuyerGrid.ItemsSource = buyers;
         BrokerGrid.ItemsSource = brokers;
         BuyerCount.Text = buyers.Count.ToString();
@@ -2777,6 +2980,8 @@ public partial class MainWindow : Window
     /// Four steps of the real peak, not a rounded invention — each a gridline and its value label.
     private void DrawTrendAxis(decimal peak, double left, double right, Func<decimal, double> Y)
     {
+        var scale = AxisScale(peak);
+
         for (int step = 0; step <= 4; step++)
         {
             decimal value = peak * step / 4;
@@ -2787,7 +2992,7 @@ public partial class MainWindow : Window
 
             var label = new TextBlock
             {
-                Text = Short(value),
+                Text = scale(value),
                 FontSize = 10,
                 Foreground = (Brush)FindResource("TextMutedBrush"),
                 Width = left - 8,
@@ -3009,15 +3214,30 @@ public partial class MainWindow : Window
             SnapsToDevicePixels = true,
         };
 
-    /// A crore/lakh short form for an axis label. 5,99,71,04,003.82 does not fit beside a chart,
-    /// and the exact figure is a hover away on every point.
-    private static string Short(decimal v) => v switch
+    /// <summary>
+    /// One unit for the WHOLE axis, taken from its top tick.
+    ///
+    /// The unit used to be chosen per label, which is right for a figure standing on its own and
+    /// wrong for a column of them: a peak of 12,470,000 printed "1.25 Cr" while the tick below it
+    /// printed "93.56 L", so a reader had to convert between two counting systems to see that one
+    /// was three quarters of the other. Five ticks, three units, on a chart whose whole job is to
+    /// let the eye compare them.
+    ///
+    /// K/M/B rather than crore/lakh, because that is what every other figure in this app already
+    /// uses -- the peak caption above this very chart, its own hover, and the invoice table beside
+    /// it all read "12.47 M". An axis is the wrong place to introduce a second vocabulary.
+    /// </summary>
+    private static Func<decimal, string> AxisScale(decimal peak)
     {
-        >= 10_000_000m => $"{v / 10_000_000m:0.##} Cr",
-        >= 100_000m => $"{v / 100_000m:0.##} L",
-        >= 1_000m => $"{v / 1_000m:0.#} K",
-        _ => v.ToString("0.##"),
-    };
+        (decimal unit, string suffix) =
+            peak >= 1_000_000_000m ? (1_000_000_000m, " B")
+          : peak >= 1_000_000m ? (1_000_000m, " M")
+          : peak >= 1_000m ? (1_000m, " K")
+          : (1m, "");
+
+        return v => v == 0m ? "0"
+                            : (v / unit).ToString("0.##", CultureInfo.InvariantCulture) + suffix;
+    }
 
     private void DrillSearch_Changed(object sender, TextChangedEventArgs e) => _ = ApplyDashboardSearchAsync();
 
@@ -3311,7 +3531,12 @@ public partial class MainWindow : Window
     {
         string which = (BreakdownPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "period";
         string bucket = (PeriodBucket.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "day";
-        PeriodBucket.Visibility = which == "period" ? Visibility.Visible : Visibility.Hidden;
+        // Collapsed, not Hidden. Hidden kept the control's 98px of layout, so every breakdown that
+        // is not "by period" drew a gap in the header where a dropdown had been -- which reads as
+        // something that failed to load rather than as something that does not apply. Day, week and
+        // month describe a time axis; "Sales by buyer" has none, so the control goes away entirely
+        // and takes its caption with it.
+        PeriodBucketGroup.Visibility = which == "period" ? Visibility.Visible : Visibility.Collapsed;
 
         var (bars, money) = await BuildBarsAsync(which, bucket);
 
@@ -4238,32 +4463,51 @@ public partial class MainWindow : Window
             ? sheetSizes.Contains(code) || withStock.Contains(code)
             : withStock.Count == 0 || withStock.Contains(code);
 
+    /// <summary>
+    /// The app's own checkbox, in the app's own ink.
+    ///
+    /// Without this a code-made CheckBox gets WPF's stock template, which pins its foreground to
+    /// the SYSTEM control text colour -- a colour that knows nothing about which theme is loaded.
+    /// The size row came out in a grey that matched neither the light nor the dark palette, and
+    /// looked right only on "All sizes" because that one is SemiBold and read as deliberate.
+    ///
+    /// FieldCheckBox's own default foreground is TextMutedBrush, which measures 2.98:1 on the dark
+    /// surface -- under the floor for a label somebody has to click. So the ink is set over it, the
+    /// same way Hide empty buckets on the Stock tab already does (see MainWindow.xaml).
+    /// </summary>
+    private static CheckBox ReportBox(CheckBox box)
+    {
+        box.SetResourceReference(FrameworkElement.StyleProperty, "FieldCheckBox");
+        box.SetResourceReference(Control.ForegroundProperty, "TextBrush");
+        return box;
+    }
+
     private void BuildReportSizeBoxes()
     {
         var panel = new List<UIElement>();
 
         // Eleven sieves, and the office asking for the whole sheet had eleven clicks and eleven
         // redraws to get there.
-        _reportAllSizes = new CheckBox
+        _reportAllSizes = ReportBox(new CheckBox
         {
             Content = "All sizes",
             Margin = new Thickness(0, 0, 16, 0),
             VerticalAlignment = VerticalAlignment.Center,
             FontWeight = FontWeights.SemiBold,
-        };
+        });
         _reportAllSizes.Click += ReportAllSizes_Click;
         panel.Add(_reportAllSizes);
 
         foreach (var size in Catalogue.AllSizes)
         {
-            var box = new CheckBox
+            var box = ReportBox(new CheckBox
             {
                 Content = SizeLabel(size.Code),
                 Tag = size.Code,
                 IsChecked = ReportSizeOnByDefault(size.Code),
                 Margin = new Thickness(0, 0, 12, 0),
                 VerticalAlignment = VerticalAlignment.Center,
-            };
+            });
             box.Click += LoadStockReport_Click;
             _reportSizeBoxes.Add(box);
             panel.Add(box);
@@ -4298,15 +4542,21 @@ public partial class MainWindow : Window
     /// right. So the same grade came out in two different typefaces on the two ends of its own
     /// row, and the two columns of names did not line up with each other.
     /// </param>
+    /// <param name="secondary">
+    /// True for the rate half of each pair. Every figure on this sheet was drawn at one strength,
+    /// so a screen of 300 cells offered the eye no way in: the carats a person came to read and the
+    /// rate beside them competed exactly. The rate is reference, not the holding -- it steps back a
+    /// tier rather than shrinking, because the sizes on this screen are the printed sheet's and are
+    /// not ours to change.
+    /// </param>
     private Border ReportCell(string text, bool bold, TextAlignment align, Thickness rule,
-                              bool header = false, bool figure = false)
+                              bool header = false, bool figure = false, bool secondary = false)
     {
         var block = new TextBlock
         {
             Text = text,
             TextAlignment = align,
-            FontWeight = bold ? FontWeights.Bold : FontWeights.Normal,
-            FontSize = header ? 14 : 12.5,
+            FontSize = header ? 14 : 13,
             Margin = new Thickness(8, 4, 8, 4),
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -4314,10 +4564,23 @@ public partial class MainWindow : Window
         // do everywhere else money and carats are shown.
         if (figure || header)
             block.SetResourceReference(TextBlock.FontFamilyProperty, "MonoFont");
-        block.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
+
+        // Weight from the theme, not from a constant. Cascadia at 13px is legible on white at
+        // Normal and thin on #0E1116, so the dark dictionary asks for Medium -- and it is a
+        // resource reference rather than a check of ThemeManager.Current so that toggling the
+        // theme re-weights a report already on screen. The cells are built once, at load.
+        if (bold) block.FontWeight = FontWeights.Bold;
+        else block.SetResourceReference(TextBlock.FontWeightProperty, "ReportFigureWeight");
+
+        block.SetResourceReference(TextBlock.ForegroundProperty,
+                                   secondary ? "TextMutedBrush" : "TextBrush");
 
         var cell = new Border { BorderThickness = rule, Child = block, MinWidth = 74 };
-        cell.SetResourceReference(Border.BorderBrushProperty, "TextBrush");
+
+        // NOT TextBrush. Ruling the grid in the text colour is right on white -- the sheet is meant
+        // to read as the printed one it replaces -- and wrong on black, where it puts #E6EBF2 lines
+        // around #E6EBF2 figures and the grid competes with the numbers it is there to separate.
+        cell.SetResourceReference(Border.BorderBrushProperty, "ReportRuleBrush");
         return cell;
     }
 
@@ -4475,7 +4738,7 @@ public partial class MainWindow : Window
                 }
 
                 var rateCell = ReportCell(ReportFigure(r, ReportShowingZeros, "N0"), false,
-                                          TextAlignment.Right, CellRule, figure: true);
+                                          TextAlignment.Right, CellRule, figure: true, secondary: true);
 
                 if (ReportEditing)
                 {
@@ -4589,7 +4852,7 @@ public partial class MainWindow : Window
             ReportTable.Children.Add(Place(
                 ReportCell(SubtotalRate(w, v, grades.Select(g => rate(g, sizes[i])),
                                         ReportShowingZeros),
-                           true, TextAlignment.Right, none, figure: true),
+                           true, TextAlignment.Right, none, figure: true, secondary: true),
                 subtotalRow, 2 + i * 2));
         }
 
@@ -4602,7 +4865,7 @@ public partial class MainWindow : Window
         ReportTable.Children.Add(Place(
             ReportCell(grandWeight == 0m ? ReportFigure(0m, ReportShowingZeros, "N0")
                                          : (grandValue / grandWeight).ToString("N0"),
-                       true, TextAlignment.Right, none, figure: true), totalRow, 2));
+                       true, TextAlignment.Right, none, figure: true, secondary: true), totalRow, 2));
 
         ReportChip.Text = $"{grandWeight:N2} ct";
         ReportSubtitle.Text = $"{grades.Count} grade(s) × {sizes.Count} size(s) · "
@@ -5510,7 +5773,7 @@ public partial class MainWindow : Window
 
         // The catalogue moved, so the pickers built from it are stale — and the second read of the
         // sheet goes through Repo.GradesAsync anyway, which will now see the new rows.
-        await Catalogue.LoadAsync();
+        await ReloadCatalogueAsync();
         Say($"Added {missing.Count:N0} grade(s) · {string.Join(", ", missing)}");
         return true;
     }
@@ -5592,7 +5855,7 @@ public partial class MainWindow : Window
             return false;
         }
 
-        await Catalogue.LoadAsync();
+        await ReloadCatalogueAsync();
         Say($"{(allRetired ? "Restored" : "Added")} {missing.Count:N0} size(s) · "
             + string.Join(", ", missing.Select(m => m.Label)));
         return true;
@@ -6274,8 +6537,24 @@ public partial class MainWindow : Window
         if (target is TextBox box) box.SelectAll();
     }
 
+    /// <summary>
+    /// The status bar. Every message on every screen comes through here.
+    ///
+    /// THREAD-SAFE ON PURPOSE, and it is not a nicety. Most callers are the catch block of an
+    /// `async void` click handler, and an exception escaping one of those does not fail the
+    /// operation -- it ends the process, because there is no caller left to catch it. So a
+    /// continuation that resumed anywhere but the UI thread turned a database error that had
+    /// already been caught and handled into a crash, with the original error never shown.
+    ///
+    /// Marshalled rather than asserted: a caller reaching this line is already reporting a failure
+    /// and must not be handed a second one. BeginInvoke rather than Invoke -- reporting is not
+    /// worth blocking a background thread on, and Invoke from a thread the dispatcher is waiting on
+    /// would deadlock.
+    /// </summary>
     private void Say(string message, bool ok = false)
     {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => Say(message, ok)); return; }
+
         // Token brushes, not Brushes.SeaGreen/Firebrick — those don't follow the light/dark swap.
         Status.Foreground = (Brush)FindResource(ok ? "SuccessBrush" : "DangerBrush");
 

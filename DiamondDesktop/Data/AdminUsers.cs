@@ -37,8 +37,24 @@ public static class AdminUsers
         if (string.IsNullOrEmpty(token))
             return new AdminResult(false, "NO_SESSION", "Sign in again.");
 
+        // Db.Active, NOT AppSettings.Current. Current.Url is the LEGACY single-project field, which
+        // is empty on every install whose config uses the Workspaces array -- which is every install
+        // that can switch between Demo and Priya. Empty left this building the relative URI
+        // "/functions/v1/admin-users", and HttpClient has no BaseAddress, so it threw
+        // InvalidOperationException straight past the two catches below and out of an async void
+        // handler, which ends the process rather than the request.
+        //
+        // The wrong-project half is worse than the crash. Had the legacy field been filled in, an
+        // owner signed into Demo would have created logins in whichever project that field named --
+        // silently, on the other client's database. Admin actions go to the project the session
+        // they carry belongs to, and that is the active workspace.
+        if (!Uri.TryCreate(Db.Active.Url, UriKind.Absolute, out var root))
+            return new AdminResult(false, "NO_SERVER",
+                $"No server address is configured for \"{Db.Active.Name}\". "
+                + $"Check {AppSettings.FileName}.");
+
         var request = new HttpRequestMessage(HttpMethod.Post,
-            $"{AppSettings.Current.Url.TrimEnd('/')}/functions/v1/admin-users")
+            new Uri(root, "/functions/v1/admin-users"))
         {
             Content = new StringContent(JsonConvert.SerializeObject(payload),
                                         Encoding.UTF8, "application/json"),
@@ -70,6 +86,14 @@ public static class AdminUsers
         catch (HttpRequestException e)
         {
             return new AdminResult(false, "OFFLINE", $"Could not reach the server. {e.Message}");
+        }
+        // Anything else the request itself can raise -- a malformed address that got past the check
+        // above, a disposed handler. Reported, not thrown: every caller here is an async void click
+        // handler, where an escaping exception is not a failed action but a closed application.
+        catch (Exception e) when (e is InvalidOperationException or UriFormatException)
+        {
+            return new AdminResult(false, "BAD_SERVER",
+                $"The server address for \"{Db.Active.Name}\" is not usable. {e.Message}");
         }
     }
 

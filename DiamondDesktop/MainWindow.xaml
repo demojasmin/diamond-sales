@@ -410,7 +410,7 @@
                   SelectionChanged="Tabs_Changed">
 
       <!-- ══ SALES-001/003 · sales entry ══════════════════════════════════ -->
-      <TabItem Header="Sales entry">
+      <TabItem Header="Sales entry" x:Name="SalesEntryTab">
         <TabItem.Resources>
           <Style TargetType="ScrollBar" BasedOn="{StaticResource SlimScrollBar}"/>
         </TabItem.Resources>
@@ -990,14 +990,29 @@
                             AutomationProperties.HelpText="Records the amount against the selected invoice"
                             Style="{StaticResource NeedsRowPrimary}"/>
 
-                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                    <!-- A WrapPanel, not a horizontal StackPanel. The drawer's width is shared with
+                         the invoice list and changes as the window does, and a StackPanel answers
+                         "we do not fit" by running off the edge — which is how Cancel invoice lost
+                         its right-hand half the moment a third button joined the row. Wrapping puts
+                         the overflow on a second line instead. The bottom margin is on the buttons
+                         rather than the panel so a wrapped row does not sit against the one above.
+                         Same reasoning as the Sales entry header (docs/12). -->
+                    <WrapPanel Margin="0,10,0,-8">
+                      <!-- Only ever lit for a DRAFT, and disabled to begin with because nothing is
+                           selected yet. Not NeedsRowButton: that style disables on "no row", which is
+                           only half the rule here, and a local IsEnabled set from code outranks a
+                           style trigger anyway — mixing the two would leave the trigger dead and the
+                           reason for it invisible. InvoiceRow_Selected owns this button's state. -->
+                      <Button x:Name="EditDraftButton" Content="Edit draft" Click="EditDraft_Click"
+                              IsEnabled="False" Margin="0,0,8,8" Style="{StaticResource AppButton}"
+                              AutomationProperties.HelpText="Opens the selected draft in Sales entry"/>
                       <Button x:Name="PrintBill" Content="Print bill" Click="PrintInvoice_Click"
-                              Margin="0,0,8,0" Style="{StaticResource NeedsRowButton}"/>
+                              Margin="0,0,8,8" Style="{StaticResource NeedsRowButton}"/>
                       <!-- Cancelling reverses stock and cannot be undone. It should not look like
                            Export. -->
-                      <Button x:Name="CancelInvoiceButton" Content="Cancel invoice"
+                      <Button x:Name="CancelInvoiceButton" Content="Cancel invoice" Margin="0,0,0,8"
                               Click="CancelInvoice_Click" Style="{StaticResource NeedsRowDanger}"/>
-                    </StackPanel>
+                    </WrapPanel>
                   </StackPanel>
                 </Border>
 
@@ -1764,41 +1779,73 @@
 
           <!-- ── Which sizes, which rows ──────────────────────────────────── -->
           <Border DockPanel.Dock="Top" Style="{StaticResource DashToolbar}" Margin="0,0,0,12">
+            <!-- Two ROWS, not two columns.
+
+                 The sieves sat beside the mode controls, which meant their line could only ever be
+                 part of the toolbar however the split was weighted — and twelve checkboxes do not
+                 fit in part of it. Widening their share moved the wrap from "1/3" to "+23" and no
+                 further: the row stayed short by roughly the width of the controls next to it, so
+                 the last box always fell off. Ratios were the wrong tool.
+
+                 Given the whole width there is nothing to wrap. The controls keep the top line
+                 beside the caption, where they have always had room; the sieves get a line of their
+                 own spanning both columns. Column 1 stays star-sized so those controls still wrap
+                 rather than clip on a narrow window, which is a separate defect this file has
+                 already had once. -->
             <Grid>
               <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*" MinWidth="360"/>
               </Grid.ColumnDefinitions>
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
 
-              <StackPanel Grid.Column="0" Margin="0,0,16,0">
-                <TextBlock Text="SIZES" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                <!-- Filled from the catalogue on load, ticked for the ones the client's
-                     sheet carries. Anything else in the Size Master can be added here
-                     without the report needing to know about it in advance. -->
-                <ItemsControl x:Name="ReportSizes">
-                  <ItemsControl.ItemsPanel>
-                    <ItemsPanelTemplate><WrapPanel Orientation="Horizontal"/></ItemsPanelTemplate>
-                  </ItemsControl.ItemsPanel>
-                </ItemsControl>
-              </StackPanel>
+              <!-- Row 0 · the caption and Reset on the left, the mode controls on the right -->
+              <Grid Grid.Row="0" Grid.Column="0" Margin="0,0,16,6">
+                <!-- Reset sits with the caption, directly above the boxes it clears. It used to be
+                     last in the row of mode controls on the far side of the toolbar, which put a
+                     button nowhere near the thing it acts on and, once that row wrapped, alone on a
+                     line of its own.
 
-              <!-- Centre, not Bottom. The block beside this is a caption over a WrapPanel, so its
+                     It is bordered rather than a bare ghost: with no outline "Reset" read as a
+                     caption beside "SIZES" rather than as something to press. Secondary rather
+                     than Primary keeps it from competing with Refresh. -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                  <TextBlock Text="SIZES" Style="{StaticResource KpiLabel}" VerticalAlignment="Center"/>
+                  <Button x:Name="ReportReset" Content="Reset" Click="ResetStockReport_Click"
+                          Style="{StaticResource AppButton}" Margin="12,0,0,0" Padding="12,2"
+                          FontSize="11" MinHeight="24" Height="24" VerticalAlignment="Center"
+                          AutomationProperties.Name="Reset the sieve selection and filters"
+                          ToolTip="Put the sieve selection, Hide grades with no stock, and Show zero values back to their defaults."/>
+                </StackPanel>
+              </Grid>
+
+              <!-- Centre, not Bottom: the block beside this is a caption over a WrapPanel, so its
                    height changes with the number of sieves and a bottom-aligned toolbar drifted
-                   down the moment the sizes wrapped to a second line. -->
-              <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                   down the moment the sizes wrapped to a second line.
+
+                   A WrapPanel, so that on a narrow window the controls drop to a second line rather
+                   than run off the edge. The mode chip changes width with its own text — "Read
+                   only" is half the length of "Edit mode · click a weight to correct it" — so this
+                   row is not a fixed width even before the window is resized. -->
+              <WrapPanel Grid.Row="0" Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
                 <!-- Read only is the default and the safe state. Edit mode is hidden entirely from
                      anyone who could not save the change anyway: offering a switch that ends in a
                      refusal is worse than not offering it. -->
                 <Border x:Name="ReportModeChip" Style="{StaticResource DashChip}"
-                        Margin="0,0,12,0" VerticalAlignment="Center">
+                        Margin="0,0,12,4" VerticalAlignment="Center">
                   <TextBlock x:Name="ReportModeText" Style="{StaticResource DashChipText}"
                              Text="Read only"/>
                 </Border>
                 <CheckBox x:Name="ReportEditMode" Content="Edit mode" Click="ReportEditMode_Click"
-                          Margin="0,0,12,0" VerticalAlignment="Center"
+                          Style="{StaticResource FieldCheckBox}" Foreground="{DynamicResource TextBrush}"
+                          Margin="0,0,12,4" VerticalAlignment="Center"
                           ToolTip="Type a corrected weight into a cell. The difference is recorded as an adjustment on the stock ledger, with a reason — the calculated balance is never overwritten."/>
                 <CheckBox x:Name="ReportHideEmpty" Content="Hide grades with no stock"
-                          Click="LoadStockReport_Click" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                          Style="{StaticResource FieldCheckBox}" Foreground="{DynamicResource TextBrush}"
+                          Click="LoadStockReport_Click" Margin="0,0,12,4" VerticalAlignment="Center"/>
                 <!-- ON by default, which is a reversal. The argument for off was that 297 cells of
                      0.00 bury the figures that mean something — true of a screen read on its own,
                      and wrong for the job this screen actually does. It exists to be held against
@@ -1806,11 +1853,20 @@
                      A blank where the paper says 0.00 reads as a figure that failed to import,
                      which is exactly the report we got. Untick it for the sparse view. -->
                 <CheckBox x:Name="ReportShowZeros" Content="Show zero values" IsChecked="True"
-                          Click="LoadStockReport_Click" Margin="0,0,12,0" VerticalAlignment="Center"
+                          Style="{StaticResource FieldCheckBox}" Foreground="{DynamicResource TextBrush}"
+                          Click="LoadStockReport_Click" Margin="0,0,12,4" VerticalAlignment="Center"
                           ToolTip="Print 0.00 in buckets holding nothing, the way the stock sheet does. Untick to leave an untraded bucket blank."/>
-                <Button Content="Reset" Click="ResetStockReport_Click"
-                        Style="{StaticResource DashButton}"/>
-              </StackPanel>
+              </WrapPanel>
+
+              <!-- Row 1 · every sieve, across the FULL width of the toolbar -->
+                <!-- Filled from the catalogue on load, ticked for the ones the client's
+                     sheet carries. Anything else in the Size Master can be added here
+                     without the report needing to know about it in advance. -->
+                <ItemsControl x:Name="ReportSizes" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate><WrapPanel Orientation="Horizontal"/></ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                </ItemsControl>
             </Grid>
           </Border>
 
@@ -3147,9 +3203,20 @@
                   <ComboBoxItem Tag="inventory-aging">W12 · Inventory aging</ComboBoxItem>
                   <ComboBoxItem Tag="broker-cost">W14 · Broker cost</ComboBoxItem>
                 </ComboBox>
-                <ComboBox x:Name="PeriodBucket" Width="90" SelectedIndex="0" Margin="8,0,0,0" SelectionChanged="Breakdown_Changed">
-                  <ComboBoxItem>day</ComboBoxItem><ComboBoxItem>week</ComboBoxItem><ComboBoxItem>month</ComboBoxItem>
-                </ComboBox>
+                <!-- Only "Sales by period" has a time axis to bucket, so this group collapses for
+                     every other breakdown rather than leaving a hole in the header. The caption
+                     goes with it: an unlabelled "day" beside a widget picker reads as a second
+                     widget, which is what made it look like it came and went at random. -->
+                <StackPanel x:Name="PeriodBucketGroup" Orientation="Horizontal"
+                            VerticalAlignment="Center" Margin="12,0,0,0">
+                  <TextBlock Text="grouped by" Style="{StaticResource DashSubheading}"
+                             VerticalAlignment="Center" Margin="0,0,8,0"/>
+                  <ComboBox x:Name="PeriodBucket" Width="90" SelectedIndex="0"
+                            SelectionChanged="Breakdown_Changed"
+                            AutomationProperties.Name="Group sales by day, week or month">
+                    <ComboBoxItem>day</ComboBoxItem><ComboBoxItem>week</ComboBoxItem><ComboBoxItem>month</ComboBoxItem>
+                  </ComboBox>
+                </StackPanel>
               </StackPanel>
 
               <ScrollViewer VerticalScrollBarVisibility="Auto" PreviewMouseWheel="InnerWheel">

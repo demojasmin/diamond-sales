@@ -1,0 +1,138 @@
+// A catalogue reload must not empty a half-typed invoice.
+//
+// NO DATABASE. The catalogue and party lists are seeded by hand; what is under test is WPF's
+// binding behaviour and the snapshot/restore that survives it.
+//
+// THE DEFECT THIS PINS DOWN
+//
+// Catalogue.LoadAsync clears Catalogue.Grades and Catalogue.AllSizes, and LoadPartiesAsync clears
+// the buyer and broker lists. Every one of those collections IS the ItemsSource of a picker whose
+// SelectedItem is two-way bound to the invoice -- so clearing it makes WPF drop the selection and
+// write that null straight back into the model. The repair that ran afterwards was re-pointing
+// "the object the line still holds", which by then was null.
+//
+// Weight, selection and price always survived, because nothing about them is bound to a
+// collection. That is what made the loss look arbitrary rather than mechanical.
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+var t = new Thread(() =>
+{
+    void SeedCatalogue()
+    {
+        Catalogue.Grades.Clear();
+        Catalogue.AllSizes.Clear();
+        Catalogue.Grades.Add(new Grade { GradeId = 5, Code = "NO II" });
+        Catalogue.Grades.Add(new Grade { GradeId = 6, Code = "NO 2" });
+        Catalogue.AllSizes.Add(new SizeBucket { SizeId = 3, Code = "+6.5" });
+        Catalogue.AllSizes.Add(new SizeBucket { SizeId = 4, Code = "-6.5" });
+    }
+
+    var invoice = new InvoiceEntry();
+    void SeedParties()
+    {
+        invoice.Buyers.Clear();
+        invoice.Buyers.Add(new PartyRef(11, "ABC EXPORTS", 45));
+        invoice.Buyers.Add(new PartyRef(12, "KIRAN EXPORTS", 30));
+        invoice.Brokers.Clear();
+        invoice.Brokers.Add(new PartyRef(21, "R K BROKER", null, 1m));
+    }
+
+    SeedCatalogue();
+    SeedParties();
+
+    var line = invoice.Lines[0];
+    line.GrossWeightCt = 1m;
+    line.SelectionCt = 1m;
+    line.PricePerCt = 1000m;
+
+    // The four pickers, bound exactly as Sales entry binds them.
+    ComboBox Bound(System.Collections.IEnumerable items, object ctx, string path)
+    {
+        var c = new ComboBox { ItemsSource = items, DataContext = ctx };
+        c.SetBinding(Selector.SelectedItemProperty,
+            new Binding(path) { Mode = BindingMode.TwoWay,
+                                UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged });
+        return c;
+    }
+
+    var panel = new StackPanel();
+    panel.Children.Add(Bound(Catalogue.Grades, line, nameof(SaleLine.Grade)));
+    panel.Children.Add(Bound(Catalogue.AllSizes, line, nameof(SaleLine.Size)));
+    panel.Children.Add(Bound(invoice.Buyers, invoice, nameof(InvoiceEntry.SelectedBuyer)));
+    panel.Children.Add(Bound(invoice.Brokers, invoice, nameof(InvoiceEntry.SelectedBroker)));
+
+    var w = new Window { Content = panel, Width = 220, Height = 260,
+                         WindowStartupLocation = WindowStartupLocation.Manual, Left = -4000, Top = -4000 };
+    w.Show();
+
+    line.Grade = Catalogue.Grades.First(g => g.Code == "NO II");
+    line.Size = Catalogue.AllSizes.First(s => s.Code == "+6.5");
+    invoice.SelectedBuyer = invoice.Buyers.First(b => b.Id == 11);
+    invoice.SelectedBroker = invoice.Brokers.First(b => b.Id == 21);
+
+    Check("RELOAD - an invoice can be filled in",
+          line.Grade?.Code == "NO II" && line.Size?.Code == "+6.5"
+          && invoice.BuyerId == 11 && invoice.BrokerId == 21,
+          $"{invoice.Buyer} · {line.Grade?.Code} x {line.Size?.Code}");
+
+    // ── the reload, in the order the app performs it ───────────────────────
+    invoice.RememberCatalogue();
+    SeedCatalogue();
+    SeedParties();
+
+    Check("RELOAD - WPF really does null the selections (the defect being guarded)",
+          line.Grade is null && line.Size is null,
+          "grade and size are null immediately after the clear");
+
+    invoice.CatalogueChanged();
+
+    Check("RELOAD - the weight survives", line.GrossWeightCt == 1m, line.GrossWeightCt.ToString());
+    Check("RELOAD - the price survives", line.PricePerCt == 1000m, line.PricePerCt.ToString());
+    Check("RELOAD - the GRADE survives", line.Grade?.Code == "NO II", line.Grade?.Code ?? "<null>");
+    Check("RELOAD - the SIZE survives", line.Size?.Code == "+6.5", line.Size?.Code ?? "<null>");
+    Check("RELOAD - the BUYER survives", invoice.BuyerId == 11, invoice.Buyer ?? "<null>");
+    Check("RELOAD - the BROKER survives", invoice.BrokerId == 21, invoice.Broker ?? "<null>");
+
+    // Re-pointed to the NEW objects, not left holding the old ones -- otherwise the next save
+    // would send an id from a catalogue that no longer exists.
+    Check("RELOAD - the grade is the NEW catalogue object",
+          ReferenceEquals(line.Grade, Catalogue.Grades.First(g => g.Code == "NO II")));
+    Check("RELOAD - the size is the NEW catalogue object",
+          ReferenceEquals(line.Size, Catalogue.AllSizes.First(s => s.Code == "+6.5")));
+
+    // A second reload with nothing remembered must not resurrect or corrupt anything.
+    invoice.CatalogueChanged();
+    Check("RELOAD - a restore with no snapshot is harmless",
+          line.Grade?.Code == "NO II" && line.Size?.Code == "+6.5" && invoice.BuyerId == 11);
+
+    // An empty line has nothing to remember and must not invent anything.
+    var blank = new SaleLine();
+    blank.RememberCatalogue();
+    SeedCatalogue();
+    blank.CatalogueChanged();
+    Check("RELOAD - an untouched line stays empty",
+          blank.Grade is null && blank.Size is null,
+          $"{blank.Grade?.Code ?? "<null>"} x {blank.Size?.Code ?? "<null>"}");
+
+    w.Close();
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Application.Current?.Shutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+Environment.Exit(fail);
