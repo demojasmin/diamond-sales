@@ -6,23 +6,33 @@ using Microsoft.Data.Sqlite;
 
 namespace DiamondDesktop.Data;
 
-/// NOT WIRED. Nothing calls this yet — no write path enqueues, nothing triggers ReplayAsync, and
-/// no screen shows the pending count. It was dead code before it was deleted and it is dead code
-/// now; restored because SYNC-001/FR-SYNC-1 make offline entry a Must and this is the right shape
-/// for it, not because the app has offline support.
+/// PARTLY WIRED, and the header said otherwise for long enough to matter.
 ///
-/// What working offline needs on top of this: every Repo write branching to EnqueueAsync when
-/// Db.IsOnline is false, a reconnect trigger calling ReplayAsync, PendingChanged bound to the sync
-/// chip, and a stable client_ref per user action rather than per attempt (see ConvertAsync).
+/// What IS connected today: the offline stock import enqueues (MainWindow.QueueStockImportAsync),
+/// a DispatcherTimer calls ReplayAsync through TrySyncAsync, and PendingChanged drives the sync
+/// chip. One write path, not every write path.
+///
+/// What working offline generally still needs: the remaining Repo writes branching to EnqueueAsync
+/// when Db.IsOnline is false, and a stable client_ref per user action rather than per attempt
+/// (see ConvertAsync).
 ///
 /// Writes parked on disk while the network is down, replayed in order when it comes back.
 /// `operation` is the PostgREST path the write targets — a table name ("receipt") or "rpc/post_invoice" —
 /// so one code path covers both. `payloadJson` is the raw body, client_ref already inside it.
 public static class Outbox
 {
-    // Same source as Db, so the two can never point at different projects.
-    private static string Url => AppSettings.Current.Url;
-    private static string AnonKey => AppSettings.Current.AnonKey;
+    // Db.Active, NOT AppSettings.Current. Current.Url and Current.AnonKey are the LEGACY
+    // single-project fields, kept readable only so a config file written before workspaces existed
+    // still loads -- they are EMPTY on every install whose file uses the Workspaces array, which is
+    // every install that can switch between projects.
+    //
+    // Empty made the replay URI relative and HttpClient has no BaseAddress, so a queued write threw
+    // InvalidOperationException past the catch below and out of the sync timer's async void tick.
+    // Filled in, it was worse: a queue composed against one project would replay into whichever
+    // project that field named -- the exact silent cross-project write DbPath below exists to
+    // prevent. The queue file is already keyed on Db.Active.Ref; the destination now agrees with it.
+    private static string Url => Db.Active.Url;
+    private static string AnonKey => Db.Active.AnonKey;
 
     /// <summary>
     /// Where the queue lives. SOLITAIREDESK_OUTBOX overrides it, which exists for one reason: the
@@ -183,9 +193,17 @@ public static class Outbox
     /// Returns null on success, else a message worth showing a human.
     private static async Task<string?> SendAsync(string operation, string payload)
     {
+        // Before anything is sent. A workspace with no usable address must stall the queue with a
+        // sentence, not tear the process down -- ReplayAsync is reached from a DispatcherTimer tick,
+        // which is an async void, and an exception escaping one of those ends the app rather than
+        // the send. The queued rows stay on disk either way.
+        if (!Uri.TryCreate(Url, UriKind.Absolute, out var root))
+            return $"No server address is configured for \"{Db.Active.Name}\". "
+                 + $"Check {AppSettings.FileName}. The queue is untouched.";
+
         try
         {
-            var request = new HttpRequestMessage(HttpMethod.Post, $"{Url}/rest/v1/{operation}")
+            var request = new HttpRequestMessage(HttpMethod.Post, new Uri(root, $"/rest/v1/{operation}"))
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json")
             };
@@ -210,6 +228,12 @@ public static class Outbox
         }
         // TaskCanceledException is what a timed-out HttpClient throws; it is offline, not a crash.
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException) { return ex.Message; }
+        // A malformed address that got past the check above, or a disposed handler. Reported so the
+        // replay stops on this row and says why, rather than throwing out of the timer.
+        catch (Exception ex) when (ex is InvalidOperationException or UriFormatException)
+        {
+            return $"The server address for \"{Db.Active.Name}\" is not usable. {ex.Message}";
+        }
     }
 
     private static string? Field(string json, string name)

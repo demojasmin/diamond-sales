@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -164,7 +164,14 @@ public static class Catalogue
 }
 
 /// A buyer or broker as the entry screen needs it: an id, a name, and its default.
-public sealed record PartyRef(long Id, string Name, int? DefaultTermsDays = null, decimal? DefaultBrokerPct = null)
+/// <param name="Active">
+/// False only for a party carried on an invoice that was written before it was deactivated. Such a
+/// one is added to THAT invoice's own picker so the name it was billed to stays on screen, and is
+/// filtered out when a new invoice is started -- an inactive buyer must not be selectable for new
+/// trade, and must not silently vanish from old trade either.
+/// </param>
+public sealed record PartyRef(long Id, string Name, int? DefaultTermsDays = null,
+                              decimal? DefaultBrokerPct = null, bool Active = true)
 {
     public override string ToString() => Name;
 }
@@ -224,15 +231,39 @@ public sealed class SaleLine : Notifier
     /// </summary>
     public void CatalogueChanged()
     {
-        if (_grade is { } g)
-            _grade = Catalogue.Grades.FirstOrDefault(x => x.Code == g.Code) ?? _grade;
-        if (_size is { } s)
-            _size = Catalogue.AllSizes.FirstOrDefault(x => x.Code == s.Code) ?? _size;
+        // _gradeWas first, because by the time this runs the picker has usually already nulled
+        // _grade -- see RememberCatalogue.
+        if ((_gradeWas ?? _grade?.Code) is { } gc)
+            _grade = Catalogue.Grades.FirstOrDefault(x => x.Code == gc) ?? _grade;
+        if ((_sizeWas ?? _size?.Code) is { } sc)
+            _size = Catalogue.AllSizes.FirstOrDefault(x => x.Code == sc) ?? _size;
+
+        _gradeWas = _sizeWas = null;
 
         Raise(nameof(Grade));
         Raise(nameof(AllowedSizes));
         Raise(nameof(Size));
     }
+
+    /// <summary>
+    /// What this line was showing, captured BEFORE the catalogue is reloaded.
+    ///
+    /// CatalogueChanged alone was not enough and the reason is WPF, not this class. The pickers
+    /// bind SelectedItem to a ComboBox whose ItemsSource IS Catalogue.Grades; clearing that
+    /// collection makes the Selector drop its selection and write the resulting null straight back
+    /// down the two-way binding. So the line is already blank before the repair runs, and
+    /// re-pointing "the object it still holds" has nothing to re-point.
+    ///
+    /// Weight, selection and price survived a reload precisely because nothing about them is bound
+    /// to a collection -- which is what made the loss look arbitrary rather than mechanical.
+    /// </summary>
+    public void RememberCatalogue()
+    {
+        _gradeWas = _grade?.Code;
+        _sizeWas = _size?.Code;
+    }
+
+    private string? _gradeWas, _sizeWas;
 
     public SizeBucket? Size { get => _size; set => Set(ref _size, value); }
     public decimal GrossWeightCt { get => _grossWeightCt; set => Set(ref _grossWeightCt, value); }
@@ -367,11 +398,49 @@ public sealed class InvoiceEntry : Notifier
         Lines.Add(new SaleLine());
     }
 
-    /// <summary>Tell every line the catalogue was reloaded. See <see cref="SaleLine.CatalogueChanged"/>.</summary>
+    /// <summary>Capture what the screen is showing, BEFORE a reload. See <see cref="SaleLine.RememberCatalogue"/>.</summary>
+    public void RememberCatalogue()
+    {
+        // The party, not its id. A reload refills Buyers from the ACTIVE list, so an invoice
+        // written to a buyer that has since been deactivated would find nothing to re-point to and
+        // lose the name off the screen. Holding the row itself means it can be put back.
+        _buyerWas = _selectedBuyer;
+        _brokerWas = _selectedBroker;
+        foreach (var line in Lines) line.RememberCatalogue();
+    }
+
+    /// <summary>Put it back afterwards. See <see cref="SaleLine.CatalogueChanged"/>.</summary>
     public void CatalogueChanged()
     {
+        // The fields, not the SelectedBuyer property: its setter fills in the party's default terms
+        // and broker percentage, which is right when a person picks a buyer and wrong when a reload
+        // re-points the same one. Restoring is not choosing.
+        if (_buyerWas is { } b)
+        {
+            // Not in the reloaded list and known to be inactive: this invoice's own buyer, put back
+            // on this invoice's own picker. Never for an active one that simply failed to reload --
+            // that is a read problem, and inventing the row would hide it.
+            var buyer = Buyers.FirstOrDefault(x => x.Id == b.Id);
+            if (buyer is null && !b.Active) { Buyers.Add(b); buyer = b; }
+            if (buyer is not null) { _selectedBuyer = buyer; Buyer = buyer.Name; BuyerId = buyer.Id; }
+        }
+        if (_brokerWas is { } r)
+        {
+            var broker = Brokers.FirstOrDefault(x => x.Id == r.Id);
+            if (broker is null && !r.Active) { Brokers.Add(r); broker = r; }
+            if (broker is not null) { _selectedBroker = broker; Broker = broker.Name; BrokerId = broker.Id; }
+        }
+        _buyerWas = _brokerWas = null;
+
+        Raise(nameof(SelectedBuyer));
+        Raise(nameof(Buyer));
+        Raise(nameof(SelectedBroker));
+        Raise(nameof(Broker));
+
         foreach (var line in Lines) line.CatalogueChanged();
     }
+
+    private PartyRef? _buyerWas, _brokerWas;
 
     public ObservableCollection<SaleLine> Lines { get; } = [];
 

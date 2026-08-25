@@ -56,6 +56,20 @@
     <SolidColorBrush x:Key="DangerSoftBrush" Color="#1FE5634D"/>
     <SolidColorBrush x:Key="DangerBorderBrush" Color="#4DE5634D"/>
 
+    <!-- ============================================================
+         Stock report sheet. The report draws its own grid in code, so the two things that
+         have to differ between themes are named here rather than decided in C# — the cells
+         bind them with SetResourceReference, so a theme toggle re-colours a report already
+         on screen instead of leaving it stale until the next load.
+         ============================================================ -->
+    <!-- NOT the text colour. #E6EBF2 rules on a #0E1116 ground glare, and a grid brighter than its
+         own figures is a grid you read instead of the numbers. Muted enough to recede, strong
+         enough to still be a rule. -->
+    <SolidColorBrush x:Key="ReportRuleBrush" Color="#55606F"/>
+    <!-- Mono figures at 13px need the extra stroke on a dark ground and do not on a light
+         one, where the same weight reads as shouting. -->
+    <FontWeight x:Key="ReportFigureWeight">Medium</FontWeight>
+
     <!-- Dialog scrim -->
     <SolidColorBrush x:Key="OverlayBrush" Color="#73000000"/>
 

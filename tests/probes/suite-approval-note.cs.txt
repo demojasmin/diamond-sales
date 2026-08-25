@@ -1,0 +1,143 @@
+// The printed approval note, as it actually lays out.
+//
+// NO DATABASE. Reports.BuildApprovalNote takes two views and a letterhead and returns a
+// FlowDocument, so the one artefact a customer physically receives can be checked without a
+// printer attached -- which is the whole reason BuildInvoice was split out in the first place.
+//
+// The structural checks matter more than the textual ones here. A missing word is obvious the
+// first time somebody prints; a table that has silently collapsed its columns to two pixels, or a
+// note that has spilled onto a second sheet, is not.
+using System.Threading;
+using System.Windows;
+using System.Windows.Documents;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+var t = new Thread(() =>
+{
+    var invoice = new VInvoice
+    {
+        InvoiceId = 4, InvoiceNo = "INV-2026-00004", InvoiceDate = new DateOnly(2026, 8, 21),
+        BuyerId = 11, BuyerName = "QUEST DIAMOND", BrokerName = "R K BROKER",
+        BrokerPct = 1m, TermsDays = 45, DocType = "BILL", Status = "POSTED",
+        AmountTotal = 139864.73m, CaratsSold = 2.30m,
+    };
+    var lines = new List<VSalesLine>
+    {
+        new() { GradeCode = "NO II", SizeCode = "-6.5", GrossWeightCt = 2.30m, SelectionCt = 2.30m,
+                PricePerCt = 63000m, ExRate = 1m, Amount = 139864.73m, Remark = "sorted parcel" },
+        new() { GradeCode = "NO 1 BB", SizeCode = "+6.5", GrossWeightCt = 12.50m, SelectionCt = 10.25m,
+                PricePerCt = 36000m, ExRate = 1m, Amount = 354423.76m, Remark = "" },
+    };
+
+    var head = new Reports.Letterhead();
+    var doc = Reports.BuildApprovalNote(invoice, lines, head);
+    string text = new TextRange(doc.ContentStart, doc.ContentEnd).Text;
+
+    // -- the letterhead --------------------------------------------------------
+    Check("NOTE - says what the document is", text.Contains("APPROVAL NOTE"));
+    Check("NOTE - carries the company name", text.Contains("PRIYA GEMS"));
+    Check("NOTE - and the trade line", text.Contains("MANUFACTURERS OF DIAMONDS"));
+    Check("NOTE - the address and the email", text.Contains("Dahisar (E), Mumbai - 400 068.")
+                                              && text.Contains("priyagems13@gmail.com"));
+    Check("NOTE - the telephone and QBC", text.Contains("3392 7439") && text.Contains("QBC : 7439"));
+
+    // -- who it is for ---------------------------------------------------------
+    Check("NOTE - names the buyer on the To line", text.Contains("QUEST DIAMOND"));
+    Check("NOTE - names the broker on the Through line", text.Contains("R K BROKER"));
+    Check("NOTE - carries the invoice number", text.Contains("INV-2026-00004"));
+
+    // A slash inside a date format string is the CULTURE's separator, not a slash. On a machine set
+    // to dd-MM-yyyy this printed 21 - 08 - 2026 until the format was escaped.
+    Check("NOTE - the date reads as the pad prints it, with slashes",
+          text.Contains("21  /  08  /  2026"),
+          text.Split('\n').FirstOrDefault(l => l.Contains("Date")) ?? "<no date line>");
+
+    Check("NOTE - the approval wording is intact",
+          text.Contains("goods on approval for Export / Local Sale / Assortment / Mfgr."));
+
+    // -- the goods -------------------------------------------------------------
+    Check("NOTE - every column heading", text.Contains("PARTICULARS") && text.Contains("WEIGHT")
+                                         && text.Contains("RATE per") && text.Contains("REMARKS"));
+    Check("NOTE - prints each line's grade and size",
+          text.Contains("NO II") && text.Contains("-6.5")
+          && text.Contains("NO 1 BB") && text.Contains("+6.5"));
+    Check("NOTE - prints the weights", text.Contains("2.30") && text.Contains("12.50"));
+    Check("NOTE - prints the rate per carat", text.Contains("63,000.00") && text.Contains("36,000.00"));
+    Check("NOTE - prints the per-line remark, which no screen shows", text.Contains("sorted parcel"));
+
+    // -- the acknowledgement ---------------------------------------------------
+    Check("NOTE - the entrustment wording", text.Contains("Acknowledgement of entrustment"));
+    Check("NOTE - the jurisdiction", text.Contains("Subject to Mumbai Jurisdiction."));
+    Check("NOTE - the GSTIN", text.Contains("GSTIN : 27AGRPB2357E1ZH"));
+    Check("NOTE - both signature captions",
+          text.Contains("Receiver") && text.Contains("Authorised Sign."));
+    Check("NOTE - and who it is signed for", text.Contains("For  PRIYA GEMS"));
+
+    // -- structure, which is what silently goes wrong --------------------------
+    var paginator = (DynamicDocumentPaginator)((IDocumentPaginatorSource)doc).DocumentPaginator;
+    paginator.PageSize = new Size(794, 1123);
+    paginator.ComputePageCount();
+
+    Check("NOTE - fits on ONE A4 sheet", paginator.PageCount == 1, $"{paginator.PageCount} page(s)");
+    Check("NOTE - is A4, not whatever the printer reports",
+          doc.PageWidth == 794 && doc.PageHeight == 1123, $"{doc.PageWidth} x {doc.PageHeight}");
+
+    // The defect that printed one character per line: an unbounded content width leaves every star
+    // column resolving to nothing. Both of these have to hold for the table to lay out at all.
+    Check("NOTE - the content width is bounded, never infinity",
+          !double.IsInfinity(doc.ColumnWidth), doc.ColumnWidth.ToString());
+    Check("NOTE - the text column may not grow past it", !doc.IsColumnWidthFlexible);
+
+    var table = doc.Blocks.OfType<Table>().Single(x => x.Columns.Count == 5);
+    Check("NOTE - the goods table has five columns", table.Columns.Count == 5);
+    Check("NOTE - every column has a real width, none left to a star",
+          table.Columns.All(c => c.Width.IsAbsolute && c.Width.Value > 20),
+          string.Join(" | ", table.Columns.Select(c => c.Width.Value.ToString())));
+    Check("NOTE - the columns total the printable width",
+          Math.Abs(table.Columns.Sum(c => c.Width.Value) - (794 - 90)) < 1,
+          table.Columns.Sum(c => c.Width.Value).ToString());
+
+    // -- the pad is ruled whether or not the lines are used --------------------
+    int rows = table.RowGroups[0].Rows.Count;
+    Check("NOTE - eleven ruled rows plus a heading", rows == 12, $"{rows} row(s)");
+
+    var one = Reports.BuildApprovalNote(invoice, [lines[0]], head);
+    var oneTable = one.Blocks.OfType<Table>().Single(x => x.Columns.Count == 5);
+    Check("NOTE - a one-line note is still ruled to eleven",
+          oneTable.RowGroups[0].Rows.Count == 12, $"{oneTable.RowGroups[0].Rows.Count} row(s)");
+
+    // More lines than the pad has rules must not be dropped to make it fit.
+    var many = Enumerable.Range(0, 18).Select(i => new VSalesLine
+    {
+        GradeCode = "NO II", SizeCode = "-6.5", GrossWeightCt = 1m, PricePerCt = 1000m, ExRate = 1m,
+        Remark = $"row{i}",
+    }).ToList();
+    var big = Reports.BuildApprovalNote(invoice, many, head);
+    string bigText = new TextRange(big.ContentStart, big.ContentEnd).Text;
+    Check("NOTE - eighteen lines all print, none dropped to fit the pad",
+          Enumerable.Range(0, 18).All(i => bigText.Contains($"row{i}")));
+
+    // -- the name follows the database, the stationery does not ----------------
+    var other = Reports.BuildApprovalNote(invoice, lines, head with { Name = "PRIYA SALES" });
+    string otherText = new TextRange(other.ContentStart, other.ContentEnd).Text;
+    Check("NOTE - the company name is the one passed in",
+          otherText.Contains("PRIYA SALES") && otherText.Contains("For  PRIYA SALES"));
+    Check("NOTE - and the rest of the letterhead is unchanged by it",
+          otherText.Contains("GSTIN : 27AGRPB2357E1ZH") && otherText.Contains("3392 7439"));
+
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Application.Current?.Shutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+Environment.Exit(fail);

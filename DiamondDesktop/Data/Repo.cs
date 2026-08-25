@@ -84,13 +84,27 @@ public static class Repo
     public static async Task<List<GradeSize>> GradeSizesAsync() =>
         (await Db.Client.From<GradeSize>().Get()).Models;
 
-    public static async Task<List<Buyer>> BuyersAsync() =>
-        (await Db.Client.From<Buyer>().Filter("active", Operator.Equals, "true")
-            .Order("name", Ordering.Ascending).Get()).Models;
+    /// <summary>
+    /// Buyers for a picker, which means the ACTIVE ones -- deactivating a buyer is how the office
+    /// stops new invoices being written against it.
+    ///
+    /// <paramref name="activeOnly"/> false is for Master data, and only for Master data. That page
+    /// is where a buyer is deactivated, and while it read this list filtered the row vanished the
+    /// moment it was switched off: no way to see it, no way to switch it back on, and the button
+    /// that did it still saying "or deactivate it". A one-way door nobody meant to build.
+    /// </summary>
+    public static async Task<List<Buyer>> BuyersAsync(bool activeOnly = true)
+    {
+        var q = Db.Client.From<Buyer>().Order("name", Ordering.Ascending);
+        return (await (activeOnly ? q.Filter("active", Operator.Equals, "true") : q).Get()).Models;
+    }
 
-    public static async Task<List<Broker>> BrokersAsync() =>
-        (await Db.Client.From<Broker>().Filter("active", Operator.Equals, "true")
-            .Order("name", Ordering.Ascending).Get()).Models;
+    /// <inheritdoc cref="BuyersAsync"/>
+    public static async Task<List<Broker>> BrokersAsync(bool activeOnly = true)
+    {
+        var q = Db.Client.From<Broker>().Order("name", Ordering.Ascending);
+        return (await (activeOnly ? q.Filter("active", Operator.Equals, "true") : q).Get()).Models;
+    }
 
     public static async Task<List<Currency>> CurrenciesAsync() =>
         (await Db.Client.From<Currency>().Order("code", Ordering.Ascending).Get()).Models;

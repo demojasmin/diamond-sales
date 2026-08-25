@@ -1,0 +1,177 @@
+// The Sales trend axis, and the breakdown header that changes with the widget.
+//
+// NO DATABASE. AxisScale is pure, and the header controls are measured on a real window.
+//
+// THE DEFECT THIS PINS DOWN
+//
+// Every axis tick chose its own unit. A peak of 12,470,000 drew "1.25 Cr" over "93.56 L" over
+// "62.37 L" -- five ticks, three counting systems, on a chart whose entire job is to let the eye
+// compare them. And none of them matched the "12.47 M" printed in the chart's own caption.
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using DiamondDesktop;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+// AxisScale is private and static: the whole point of it is that it can be reasoned about without
+// a chart, so it is exercised directly rather than by reading pixels back off a Canvas.
+var axisScale = typeof(MainWindow).GetMethod("AxisScale",
+    BindingFlags.Static | BindingFlags.NonPublic)!;
+
+Func<decimal, string> Scale(decimal peak) =>
+    (Func<decimal, string>)axisScale.Invoke(null, [peak])!;
+
+string[] Ticks(decimal peak) =>
+    Enumerable.Range(0, 5).Select(step => Scale(peak)(peak * step / 4)).ToArray();
+
+// -- one unit per axis, whatever the peak ------------------------------------
+foreach (var (peak, expected) in new (decimal, string)[]
+         {
+             (12_470_000m, " M"),      // the figure from the screenshot
+             (999_999m, " K"),
+             (1_000_000m, " M"),
+             (2_500_000_000m, " B"),
+             (850m, ""),
+         })
+{
+    var ticks = Ticks(peak);
+    var suffixes = ticks.Skip(1)                                   // 0 carries no unit
+        .Select(t => new string(t.Where(c => char.IsLetter(c) || c == ' ').ToArray()).TrimEnd())
+        .Distinct().ToArray();
+
+    Check($"AXIS - peak {peak:N0} uses ONE unit across every tick",
+          suffixes.Length == 1, string.Join(" | ", ticks));
+    Check($"AXIS - and that unit is '{expected.Trim()}'",
+          suffixes.Length == 1 && suffixes[0].Trim() == expected.Trim(),
+          suffixes.Length == 1 ? suffixes[0] : "<mixed>");
+}
+
+// The exact case from the screenshot: the axis top must agree with the caption above the chart.
+Check("AXIS - the top tick reads the same as the chart's own peak caption",
+      Scale(12_470_000m)(12_470_000m) == "12.47 M",
+      Scale(12_470_000m)(12_470_000m));
+Check("AXIS - and no tick says Cr or L any more",
+      Ticks(12_470_000m).All(t => !t.Contains("Cr") && !t.Contains('L')),
+      string.Join(" | ", Ticks(12_470_000m)));
+Check("AXIS - zero stays zero, with no unit hung off it",
+      Scale(12_470_000m)(0m) == "0", Scale(12_470_000m)(0m));
+
+// A peak of zero must not divide by anything or invent a unit.
+Check("AXIS - an empty period does not fall over", Scale(0m)(0m) == "0", Scale(0m)(0m));
+
+// -- the breakdown header --------------------------------------------------
+var t = new Thread(() =>
+{
+    // NO SynchronizationContext is installed, deliberately. Selecting the Dashboard tab starts a
+    // real read that fails without a session, and its continuation therefore resumes on the thread
+    // pool -- the harshest version of what the app faces. If MainWindow.Say is not thread-safe this
+    // suite dies with a cross-thread exception AFTER reporting that every check passed, which is
+    // exactly how the defect was found. Leaving the context out keeps that pressure on.
+    var app = new Application();
+    foreach (string d in new[]
+             {
+                 "Themes/LightTheme.xaml", "Themes/Typography.xaml", "Styles/Buttons.xaml",
+                 "Styles/Inputs.xaml", "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
+                 "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
+                 "Styles/Audit.xaml",
+             })
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+                               Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1400 };
+    win.Show();
+
+    var tabs = (TabControl)win.FindName("Tabs")!;
+    tabs.SelectedItem = tabs.Items.OfType<TabItem>().Single(i => (i.Header as string) == "Dashboard");
+    win.UpdateLayout();
+
+    var picker = (ComboBox)win.FindName("BreakdownPicker")!;
+    var group = (FrameworkElement)win.FindName("PeriodBucketGroup")!;
+    var bucket = (ComboBox)win.FindName("PeriodBucket")!;
+
+    Check("HEADER - the bucket picker is grouped with a caption",
+          group is Panel p && p.Children.Count == 2, group.GetType().Name);
+    Check("HEADER - and the dropdown carries an accessible name",
+          !string.IsNullOrWhiteSpace(
+              (string?)bucket.GetValue(System.Windows.Automation.AutomationProperties.NameProperty)));
+
+    // Switching widget is what made it appear and disappear. Hidden left the space behind; the
+    // group must actually collapse, and must come back.
+    void Select(string tag)
+    {
+        picker.SelectedItem = picker.Items.OfType<ComboBoxItem>()
+            .Single(i => (i.Tag as string) == tag);
+        win.UpdateLayout();
+    }
+
+    Select("period");
+    Check("HEADER - 'Sales by period' shows the grouping control",
+          group.Visibility == Visibility.Visible && group.ActualWidth > 0,
+          $"{group.Visibility}, {group.ActualWidth:F0}px");
+
+    foreach (string tag in new[] { "buyer", "salesperson", "ageing", "inventory", "broker-cost" })
+    {
+        Select(tag);
+        Check($"HEADER - '{tag}' collapses it, leaving NO gap",
+              group.Visibility == Visibility.Collapsed && group.ActualWidth == 0,
+              $"{group.Visibility}, {group.ActualWidth:F0}px");
+    }
+
+    Select("period");
+    Check("HEADER - and it comes back when a period view is chosen again",
+          group.Visibility == Visibility.Visible && group.ActualWidth > 0,
+          $"{group.Visibility}, {group.ActualWidth:F0}px");
+
+    // -- the status bar survives being written to from off the UI thread ------
+    // This is the crash itself, reduced. Say is the sink for every message in the app and most of
+    // its callers are the catch block of an `async void` handler, where a second exception is not
+    // a failed operation but a dead process.
+    var say = typeof(MainWindow).GetMethod("Say", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var status = (System.Windows.Controls.TextBlock)win.FindName("Status")!;
+
+    say.Invoke(win, ["on the UI thread", false]);
+    Check("SAY - still writes straight through on the UI thread",
+          status.Text.Contains("on the UI thread"), status.Text);
+
+    Exception? offThread = null;
+    var worker = new Thread(() =>
+    {
+        try { say.Invoke(win, ["from a background thread", false]); }
+        catch (Exception ex) { offThread = ex.InnerException ?? ex; }
+    });
+    worker.Start();
+    worker.Join();
+
+    Check("SAY - and does not throw when called from a background thread",
+          offThread is null, offThread?.GetType().Name ?? "no exception");
+
+    // The queued update needs a pump to land; without one it simply waits, which is the point --
+    // it neither throws nor tears the process down.
+    var frame = new System.Windows.Threading.DispatcherFrame();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+        System.Windows.Threading.DispatcherPriority.Background,
+        new Action(() => frame.Continue = false));
+    System.Windows.Threading.Dispatcher.PushFrame(frame);
+
+    Check("SAY - the background message reaches the status bar once pumped",
+          status.Text.Contains("from a background thread"), status.Text);
+
+    win.Close();
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+
+    Console.Out.Flush();
+    Environment.Exit(fail);
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+Environment.Exit(fail);
