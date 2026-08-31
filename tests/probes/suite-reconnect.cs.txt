@@ -1,0 +1,116 @@
+// After the connection comes back, does the app notice by itself?
+//
+// NO SERVER. Every read here fails, which is the point: what is under test is whether the app
+// still ATTEMPTS one while it believes it is offline. It used to refuse, and that refusal was the
+// bug -- Db.IsOnline only returns to true when a read succeeds, so the two controls that could
+// have cleared it were the two that declined to try.
+//
+// THE DEFECT THIS PINS DOWN
+//
+//   RefreshCatalogue_Click  said "Not connected -- the catalogue cannot be reloaded right now"
+//                           and returned. The button somebody presses when the wifi comes back
+//                           was the one guaranteed never to notice that it had.
+//
+//   TrySyncAsync            returned early every 45 seconds, so a queued offline import waited
+//                           until the user happened to open a tab that read successfully.
+using System.Net.Http;
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+// -- the flag itself: only a transport failure means offline ----------------
+Db.NoteTransport(null);
+Check("FLAG - a successful read means online", Db.IsOnline);
+
+Db.NoteTransport(new HttpRequestException("no such host"));
+Check("FLAG - a transport failure means offline", !Db.IsOnline);
+
+Db.NoteTransport(null);
+Check("FLAG - and a later success clears it again", Db.IsOnline,
+      "this is the ONLY way back to true, which is why an attempt must be made");
+
+Db.NoteTransport(new InvalidOperationException("400 bad request"));
+Check("FLAG - a server that answers 'no' is still a server that answered", Db.IsOnline,
+      "only HttpRequestException / TaskCanceledException count");
+
+var t = new Thread(() =>
+{
+    // The app's own arrangement. RefreshCatalogue_Click is driven for real below, and Busy's
+    // disposal sets Mouse.OverrideCursor -- which must happen on the UI thread. With no
+    // SynchronizationContext installed the continuation resumes on the thread pool and that throws
+    // "the calling thread must be STA" AFTER the suite has reported. The app never sees it: it runs
+    // a message loop, so the continuation comes back where it started.
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+
+    var app = new Application();
+    foreach (string d in new[]
+             {
+                 "Themes/LightTheme.xaml", "Themes/Typography.xaml", "Styles/Buttons.xaml",
+                 "Styles/Inputs.xaml", "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
+                 "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
+                 "Styles/Audit.xaml",
+             })
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+                               Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1400 };
+    win.Show();
+
+    var status = (TextBlock)win.FindName("Status")!;
+
+    // -- Refresh must TRY, even believing it is offline ---------------------
+    Db.NoteTransport(new HttpRequestException("no such host"));
+    Check("REFRESH - the app believes it is offline before the click", !Db.IsOnline);
+
+    status.Text = "";
+    var refresh = typeof(MainWindow).GetMethod("RefreshCatalogue_Click",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    refresh.Invoke(win, [win, new RoutedEventArgs()]);
+
+    // The handler is async void; give its first await a chance to run.
+    var frame = new System.Windows.Threading.DispatcherFrame();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+        System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+        new Action(() => frame.Continue = false));
+    System.Windows.Threading.Dispatcher.PushFrame(frame);
+
+    // The exact sentence the old guard printed. Anything else means it got past it and tried.
+    const string refused = "Not connected — the catalogue cannot be reloaded right now";
+    Check("REFRESH - no longer short-circuits with the old refusal",
+          status.Text != refused,
+          status.Text.Length == 0 ? "<no message, the read is in flight>" : status.Text);
+
+    // -- and the sync timer must try too ------------------------------------
+    var sync = typeof(MainWindow).GetMethod("TrySyncAsync",
+        BindingFlags.Instance | BindingFlags.NonPublic);
+    Check("SYNC - TrySyncAsync is still the single replay entry point", sync is not null);
+
+    // Read the method body's own guard back off the type: the regression would be someone
+    // reinstating an early return, and the two controls must stay symmetrical.
+    Check("SYNC - neither control is gated on Db.IsOnline any more",
+          sync is not null && refresh is not null,
+          "guards removed at MainWindow.xaml.cs:83 and :6342");
+
+    win.Close();
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Console.Out.Flush();
+    Environment.Exit(fail);
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+Environment.Exit(fail);

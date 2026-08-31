@@ -210,6 +210,92 @@ public static class Repo
             .Filter("movement_type", Operator.Equals, Movement.REJECTION)
             .Order(MovementIdColumn, Ordering.Descending));
 
+    /// <summary>
+    /// Every SALE movement, filtered in the DATABASE, exactly as RejectionsAsync is.
+    ///
+    /// No new table, no new view and no new arithmetic: these are the same rows the ledger and
+    /// v_reconciliation already read. The Stock report sums them so it can show what has been sold
+    /// out of the buckets on screen beside what is left in them.
+    ///
+    /// SALE only. A REJECTION is carats that left as rejected, not as a sale, and it has its own
+    /// figure on that card already -- adding the two together would say the parcel was sold twice.
+    /// </summary>
+    public static async Task<List<VStockMovement>> SalesAsync() =>
+        await AllPagesAsync(() => Db.Client.From<VStockMovement>()
+            .Filter("movement_type", Operator.Equals, Movement.SALE)
+            .Order(MovementIdColumn, Ordering.Descending));
+
+    /// <summary>
+    /// Holds what a line currently says against its bucket (0043).
+    ///
+    /// Called again every time that line changes, and the database UPSERTS on
+    /// (client_ref, line_key) -- so this is the same hold being corrected, never a second one.
+    /// A weight of zero releases instead, leaving no row claiming nothing.
+    ///
+    /// Returns null when it worked, or the database's own sentence when it refused -- which it
+    /// does when the line is larger than the bucket holds. NOT thrown: this is called while
+    /// somebody is typing, and an exception out of an `async void` cell handler ends the process.
+    /// </summary>
+    public static async Task<string?> ReserveLineAsync(
+        Guid clientRef, Guid lineKey, long gradeId, long sizeId, decimal weightCt)
+    {
+        try
+        {
+            await Db.Client.Rpc("reserve_line", new Dictionary<string, object?>
+            {
+                ["p_client_ref"] = clientRef,
+                ["p_line_key"]   = lineKey.ToString(),
+                ["p_grade_id"]   = gradeId,
+                ["p_size_id"]    = sizeId,
+                ["p_weight_ct"]  = weightCt,
+            });
+            Db.NoteTransport(null);
+            return null;
+        }
+        catch (Exception e) { Db.NoteTransport(e); return Friendly.Message(e.Message); }
+    }
+
+    /// <summary>Gives one line's carats back: the row was removed, or emptied.</summary>
+    public static async Task<string?> ReleaseLineAsync(Guid clientRef, Guid lineKey)
+    {
+        try
+        {
+            await Db.Client.Rpc("release_line", new Dictionary<string, object?>
+            {
+                ["p_client_ref"] = clientRef,
+                ["p_line_key"]   = lineKey.ToString(),
+            });
+            Db.NoteTransport(null);
+            return null;
+        }
+        catch (Exception e) { Db.NoteTransport(e); return Friendly.Message(e.Message); }
+    }
+
+    /// <summary>
+    /// MOVE TO STOCK. Returns everything this entry is holding, and reports how much that was.
+    ///
+    /// It cannot return more than was taken: the function deletes only the rows this client_ref
+    /// holds, and each holds exactly what its line last said. There is no figure sent for the
+    /// database to get wrong. Pressing it twice returns the carats once and then zero.
+    /// </summary>
+    public static async Task<(string? Failure, decimal Returned, int Lines)> ReleaseEntryAsync(Guid clientRef)
+    {
+        try
+        {
+            var res = await Db.Client.Rpc("release_entry", new Dictionary<string, object?>
+            {
+                ["p_client_ref"] = clientRef,
+            });
+            Db.NoteTransport(null);
+
+            var body = System.Text.Json.JsonDocument.Parse(res.Content ?? "{}").RootElement;
+            return (null,
+                    body.TryGetProperty("returned", out var ct) ? ct.GetDecimal() : 0m,
+                    body.TryGetProperty("lines", out var n) ? n.GetInt32() : 0);
+        }
+        catch (Exception e) { Db.NoteTransport(e); return (Friendly.Message(e.Message), 0m, 0); }
+    }
+
     public static async Task<List<VReceivablesAgeing>> ReceivablesAsync() =>
         await AllPagesAsync(() => Db.Client.From<VReceivablesAgeing>()
             .Order("due_date", Ordering.Ascending).Order(InvoiceIdColumn, Ordering.Ascending));
@@ -338,7 +424,10 @@ public static class Repo
     /// table fills the whole limit. Add to this when a trigger is added.
     /// </summary>
     public static readonly string[] AuditedTables =
-        ["buyer", "price_list", "receipt", "sales_invoice", "sales_line", "stock_movement"];
+        ["buyer", "price_list", "receipt", "sales_invoice", "sales_line", "stock_movement",
+         // Since 0045. A sales entry takes carats out of the available position the moment a line
+         // is typed, and until now that was the one act on a screen that left no trace of who.
+         "stock_reservation"];
 
     public static async Task<List<Profile>> UsersAsync() =>
         (await Db.Client.From<Profile>().Order("full_name", Ordering.Ascending).Get()).Models;
@@ -363,6 +452,55 @@ public static class Repo
     }
 
     // ---------- writes ----------
+
+    /// <summary>
+    /// Corrects a POSTED invoice: 0040 replaces its lines and rewrites the stock movements it
+    /// wrote, in one transaction, keeping the invoice number and the POSTED status.
+    ///
+    /// Separate from SaveDraftAsync on purpose. That one filters on status = DRAFT and treats
+    /// zero rows as the refusal, which is exactly right for a draft and exactly wrong here -- a
+    /// posted invoice has movements to give back first, and doing it client-side would mean two
+    /// round trips with the stock returned but the lines not yet rewritten if the second failed.
+    ///
+    /// The reason is required by the function, not merely by the screen: an unexplained edit of a
+    /// document the office has already acted on is worse than no edit.
+    /// </summary>
+    public static async Task<WriteResult> EditPostedAsync(DraftInvoice d, string reason)
+    {
+        if (d.InvoiceId is not { } id) return new WriteResult("This invoice has never been saved.");
+        if (string.IsNullOrWhiteSpace(reason)) return new WriteResult("A reason for the update is required.");
+
+        try
+        {
+            var res = await Db.Client.Rpc("edit_posted_invoice", new Dictionary<string, object?>
+            {
+                ["p_invoice_id"]   = id,
+                ["p_invoice_date"] = D(d.InvoiceDate),
+                ["p_buyer_id"]     = d.BuyerId,
+                ["p_broker_id"]    = d.BrokerId,
+                ["p_broker_pct"]   = d.BrokerPct,
+                ["p_terms_days"]   = d.TermsDays,
+                ["p_doc_type"]     = d.DocType,
+                ["p_currency_id"]  = d.CurrencyId,
+                ["p_reason"]       = reason.Trim(),
+                ["p_lines"] = d.Lines.Select(l => new Dictionary<string, object?>
+                {
+                    ["grade_id"]        = l.GradeId,
+                    ["size_id"]         = l.SizeId,
+                    ["gross_weight_ct"] = l.GrossWeightCt,
+                    ["selection_ct"]    = l.SelectionCt,
+                    ["price_per_ct"]    = l.PricePerCt,
+                    // A zero rate would silently zero the whole invoice, the same trap SaveDraftAsync guards.
+                    ["ex_rate"]         = l.ExRate == 0 ? 1 : l.ExRate,
+                    ["less1_pct"]       = l.Less1Pct,
+                    ["less2_pct"]       = l.Less2Pct,
+                    ["remark"]          = l.Remark,
+                }).ToList(),
+            });
+            return Outcome(res.Content);
+        }
+        catch (Exception e) { return new WriteResult(Err(e)); }
+    }
 
     public static async Task<long> SaveDraftAsync(DraftInvoice d)
     {

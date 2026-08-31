@@ -1,4 +1,4 @@
-// The printed approval note, as it actually lays out.
+﻿// The printed approval note, as it actually lays out.
 //
 // NO DATABASE. Reports.BuildApprovalNote takes two views and a letterhead and returns a
 // FlowDocument, so the one artefact a customer physically receives can be checked without a
@@ -10,6 +10,9 @@
 using System.Threading;
 using System.Windows;
 using System.Windows.Documents;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Controls;
 using DiamondDesktop;
 using DiamondDesktop.Data;
 
@@ -47,12 +50,97 @@ var t = new Thread(() =>
     Check("NOTE - and the trade line", text.Contains("MANUFACTURERS OF DIAMONDS"));
     Check("NOTE - the address and the email", text.Contains("Dahisar (E), Mumbai - 400 068.")
                                               && text.Contains("priyagems13@gmail.com"));
-    Check("NOTE - the telephone and QBC", text.Contains("3392 7439") && text.Contains("QBC : 7439"));
+    Check("NOTE - the telephone and O.BC", text.Contains("3392 7439") && text.Contains("O.BC : 7439"));
 
     // -- who it is for ---------------------------------------------------------
     Check("NOTE - names the buyer on the To line", text.Contains("QUEST DIAMOND"));
     Check("NOTE - names the broker on the Through line", text.Contains("R K BROKER"));
-    Check("NOTE - carries the invoice number", text.Contains("INV-2026-00004"));
+    // The pad has NO invoice-number field, so neither does this. The number this app assigns is
+    // its own; printing it would put a figure on the note the office has never seen on one.
+    Check("NOTE - carries no invoice number, as the pad does not",
+          !text.Contains("INV-2026-00004") && !text.Contains("No."),
+          text.Contains("INV-2026-00004") ? "the number is on it" : "clean");
+
+    // ── whose note it is, and whether it can be read ───────────────────────
+    // Both callers used to hand PrintInvoice the APPLICATION's title, so the note went out headed
+    // "Diamond Sales & Inventory" over Priya Gems' address, telephone, email and GSTIN. A
+    // letterhead is one identity; the name cannot come from somewhere else than the address.
+    Check("REF - headed with the letterhead's own name",
+          text.Contains("PRIYA GEMS") && !text.Contains("Diamond Sales & Inventory"),
+          text.Contains("Diamond Sales & Inventory") ? "the app title is on it" : "PRIYA GEMS");
+
+    // The note is read across a counter. Nothing on it may be smaller than this.
+    var tooSmall = new List<string>();
+    void Walk(DependencyObject? d)
+    {
+        if (d is null) return;
+        if (d is System.Windows.Documents.TextElement te && te.FontSize < 11
+            && te is not System.Windows.Documents.Span)
+            tooSmall.Add($"{te.GetType().Name} @ {te.FontSize}");
+        foreach (object child in System.Windows.LogicalTreeHelper.GetChildren(d))
+            if (child is DependencyObject dep) Walk(dep);
+    }
+    foreach (var b in doc.Blocks) Walk(b);
+    Check("REF - nothing on the note is printed below 11pt",
+          tooSmall.Count == 0, tooSmall.Count == 0 ? "all legible" : string.Join(", ", tooSmall.Take(4)));
+
+    // One sheet. The pad is one sheet, and a note continuing overleaf is a note whose second half
+    // goes missing between the counter and the safe.
+    var sheet = ((System.Windows.Documents.IDocumentPaginatorSource)doc).DocumentPaginator;
+    sheet.ComputePageCount();
+    Check("REF - and it fits on ONE page", sheet.PageCount == 1, $"{sheet.PageCount} page(s)");
+
+    // ── everything the reference prints, in the order it prints it ──────────
+    string[] mustSay =
+    [
+        "APPROVAL NOTE",
+        "Tel.: 3392 7439",
+        "O.BC : 7439",
+        "PRIYA GEMS",
+        "IMPORTERS",
+        "EXPORTERS",
+        "MANUFACTURERS OF DIAMONDS",
+        "A-101/B, Tanvi's Diamond Ind. Premises Estate, S.V. Road, Dahisar (E), Mumbai - 400 068.",
+        "Email : priyagems13@gmail.com",
+        "Date :",
+        "To,",
+        "Through",
+        "Mob.:",
+        "Please receive the following goods on approval for Export / Local Sale / Assortment / Mfgr.",
+        "S.",
+        "No",
+        "PARTICULARS",
+        "WEIGHT",
+        "RATE per",
+        "Carat",
+        "\u20b9 / $",
+        "REMARKS",
+        "Acknowledgement of entrustment as per the",
+        "conditions of reserve.",
+        "Subject to Mumbai Jurisdiction.",
+        "GSTIN : 27AGRPB2357E1ZH",
+        "For PRIYA GEMS",
+        "Thru / Receiver's Sign",
+        "Authorised Sign.",
+    ];
+    foreach (string phrase in mustSay)
+        Check($"REF - prints \"{phrase}\"", text.Contains(phrase));
+
+    // In the order the pad has them, not merely present somewhere.
+    // Searched FORWARD from the last match, not from the top. "S." occurs in "S.V. Road" long
+    // before the table header, so an absolute IndexOf reported the header as out of order when it
+    // was simply preceded by an address.
+    int at = 0;
+    bool ordered = true;
+    string? outOfOrder = null;
+    foreach (string phrase in mustSay)
+    {
+        int i = text.IndexOf(phrase, at, StringComparison.Ordinal);
+        if (i < 0) { ordered = false; outOfOrder = phrase; break; }
+        at = i + 1;
+    }
+    Check("REF - and in the reference's own order", ordered, outOfOrder ?? "in order");
+
 
     // A slash inside a date format string is the CULTURE's separator, not a slash. On a machine set
     // to dd-MM-yyyy this printed 21 - 08 - 2026 until the format was escaped.
@@ -79,7 +167,7 @@ var t = new Thread(() =>
     Check("NOTE - the GSTIN", text.Contains("GSTIN : 27AGRPB2357E1ZH"));
     Check("NOTE - both signature captions",
           text.Contains("Receiver") && text.Contains("Authorised Sign."));
-    Check("NOTE - and who it is signed for", text.Contains("For  PRIYA GEMS"));
+    Check("NOTE - and who it is signed for", text.Contains("For PRIYA GEMS"));
 
     // -- structure, which is what silently goes wrong --------------------------
     var paginator = (DynamicDocumentPaginator)((IDocumentPaginatorSource)doc).DocumentPaginator;
@@ -97,12 +185,98 @@ var t = new Thread(() =>
     Check("NOTE - the text column may not grow past it", !doc.IsColumnWidthFlexible);
 
     var table = doc.Blocks.OfType<Table>().Single(x => x.Columns.Count == 5);
+
+    // -- every TYPED value prints in the data colour, every label does not -----
+    // The broker slipped through the first time this was done: it was interpolated into its own
+    // label ("Through  R K BROKER") before it reached the colouring, so it arrived as one string
+    // and printed as stationery while every other value printed as data. Nothing caught it but a
+    // person holding the page. This walks the finished document and checks each one by name.
+    var runs = new List<Run>();
+    void Collect(DependencyObject node)
+    {
+        foreach (object child in LogicalTreeHelper.GetChildren(node))
+        {
+            if (child is Run r && r.Text.Trim().Length > 0) runs.Add(r);
+            if (child is DependencyObject d) Collect(d);
+        }
+    }
+    Collect(doc);
+
+    Color Of(Run r) => (r.Foreground as SolidColorBrush)?.Color ?? Colors.Transparent;
+    Run? Find(string needle) => runs.FirstOrDefault(r => r.Text.Contains(needle));
+
+    foreach (var (what, needle) in new[]
+    {
+        ("the buyer",   "QUEST DIAMOND"),
+        ("the broker",  "R K BROKER"),
+        ("the date",    "2026"),
+        ("a grade",     "NO II"),
+        ("a weight",    "2.30"),
+        ("a rate",      "63,000.00"),
+        ("a remark",    "sorted parcel"),
+    })
+    {
+        var run = Find(needle);
+        Check($"INK - {what} prints as a typed value, not as stationery",
+              run is not null && Of(run) != Color.FromRgb(0x1B, 0x2A, 0x6B),
+              run is null ? "<not on the note>" : Of(run).ToString());
+    }
+
+    foreach (var (what, needle) in new[]
+    {
+        ("To,",        "To,"),
+        ("Through",    "Through"),
+        ("Mob.:",      "Mob.:"),
+        ("PARTICULARS","PARTICULARS"),
+        ("a row rule", "11"),
+    })
+    {
+        var run = Find(needle);
+        Check($"INK - {what} stays stationery",
+              run is not null && Of(run) == Color.FromRgb(0x1B, 0x2A, 0x6B),
+              run is null ? "<missing>" : Of(run).ToString());
+    }
+
+    // -- the letterhead's mark actually loaded ---------------------------------
+    // Reports.LogoOrNull swallows a load failure and returns null on purpose, so the note still
+    // prints when the resource is missing. That is the right behaviour and it is also silent: the
+    // note goes out with an empty corner and nobody finds out. These are the checks that do.
+    var lockup = doc.Blocks.OfType<Table>().Single(x => x.Columns.Count == 3
+                                                     && x.Columns[0].Width.Value == 128);
+    var mark = lockup.RowGroups[0].Rows[0].Cells[0].Blocks.FirstOrDefault();
+    var markImage = (mark as BlockUIContainer)?.Child as Image;
+    Check("LOGO - the mark is the real logo, not a placeholder",
+          markImage?.Source is not null, mark?.GetType().Name ?? "<nothing>");
+    Check("LOGO - sized 128 square, as the reference sets it",
+          markImage is { Width: 128, Height: 128 },
+          markImage is null ? "<no image>" : $"{markImage.Width} x {markImage.Height}");
+    Check("LOGO - and the same mark sits behind the table as a watermark",
+          table.Background is ImageBrush, table.Background?.GetType().Name ?? "<none>");
+
+    // -- the watermark brush must FILL its box, or the note does not print -----
+    // This is the check that earns its keep. A brush painting only part of its bounding box -- a
+    // Viewport, a TileMode, anything less than the whole area -- makes the Microsoft Print to PDF
+    // driver write a ZERO-BYTE file. Nothing throws, the status bar still says "Sent to the
+    // printer", the on-screen render is perfect and every other check here passes. It is only
+    // visible on paper, which is the one place this document exists.
+    var brush = table.Background as ImageBrush;
+    Check("PRINT - the watermark brush fills its box (a Viewport prints an EMPTY pdf)",
+          brush is { Opacity: 1 }
+            && brush.Viewport == new Rect(0, 0, 1, 1)
+            && brush.ViewportUnits == BrushMappingMode.RelativeToBoundingBox
+            && brush.TileMode == TileMode.None,
+          brush is null ? "<no brush>"
+            : $"opacity {brush.Opacity}, viewport {brush.Viewport} ({brush.ViewportUnits}), tile {brush.TileMode}");
+    Check("PRINT - and carries no alpha channel for a driver to misread",
+          brush?.ImageSource is BitmapSource { Format.Masks.Count: 3 },
+          (brush?.ImageSource as BitmapSource)?.Format.ToString() ?? "<none>");
     Check("NOTE - the goods table has five columns", table.Columns.Count == 5);
     Check("NOTE - every column has a real width, none left to a star",
           table.Columns.All(c => c.Width.IsAbsolute && c.Width.Value > 20),
           string.Join(" | ", table.Columns.Select(c => c.Width.Value.ToString())));
+    // 8mm a side, as the reference sets it: 794 - 2 x (8 x 96 / 25.4).
     Check("NOTE - the columns total the printable width",
-          Math.Abs(table.Columns.Sum(c => c.Width.Value) - (794 - 90)) < 1,
+          Math.Abs(table.Columns.Sum(c => c.Width.Value) - (794 - (2 * 8 * 96 / 25.4))) < 1,
           table.Columns.Sum(c => c.Width.Value).ToString());
 
     // -- the pad is ruled whether or not the lines are used --------------------
@@ -129,7 +303,7 @@ var t = new Thread(() =>
     var other = Reports.BuildApprovalNote(invoice, lines, head with { Name = "PRIYA SALES" });
     string otherText = new TextRange(other.ContentStart, other.ContentEnd).Text;
     Check("NOTE - the company name is the one passed in",
-          otherText.Contains("PRIYA SALES") && otherText.Contains("For  PRIYA SALES"));
+          otherText.Contains("PRIYA SALES") && otherText.Contains("For PRIYA SALES"));
     Check("NOTE - and the rest of the letterhead is unchanged by it",
           otherText.Contains("GSTIN : 27AGRPB2357E1ZH") && otherText.Contains("3392 7439"));
 

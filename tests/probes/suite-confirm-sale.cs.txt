@@ -1,0 +1,210 @@
+// The sign-off shown before any carat leaves stock.
+//
+// NO DATABASE. MainWindow.SaleSummary is pure -- an invoice in, the figures and lines out -- so
+// what the desk is asked to approve can be checked without a dialog on screen. That matters more
+// than it sounds: a summary that agrees with the entry grid but not with what actually posts is
+// worse than no summary, because somebody signed it.
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+
+    var app = new Application();
+    foreach (string d in new[]
+             {
+                 "Themes/LightTheme.xaml", "Themes/Typography.xaml", "Styles/Buttons.xaml",
+                 "Styles/Inputs.xaml", "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
+                 "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
+                 "Styles/Audit.xaml",
+             })
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    // -- a catalogue and an invoice -----------------------------------------
+    Catalogue.Grades.Clear();
+    Catalogue.AllSizes.Clear();
+    var noii = new Grade { GradeId = 5, Code = "NO II" };          // its mark is "#"
+    var no2 = new Grade { GradeId = 6, Code = "NO 2" };            // its mark is "2"
+    var s65 = new SizeBucket { SizeId = 3, Code = "+6.5" };
+    var m65 = new SizeBucket { SizeId = 4, Code = "-6.5" };
+    Catalogue.Grades.Add(noii); Catalogue.Grades.Add(no2);
+    Catalogue.AllSizes.Add(s65); Catalogue.AllSizes.Add(m65);
+
+    var inv = new InvoiceEntry { InvoiceDate = new DateTime(2026, 8, 26), TermsDays = 45 };
+    inv.Buyers.Add(new PartyRef(11, "ABC EXPORTS", 45));
+    inv.SelectedBuyer = inv.Buyers[0];
+
+    inv.Lines.Clear();
+    inv.Lines.Add(new SaleLine { Grade = noii, Size = s65,
+                                 GrossWeightCt = 2.30m, SelectionCt = 2.00m, PricePerCt = 63000m });
+    inv.Lines.Add(new SaleLine { Grade = no2, Size = m65,
+                                 GrossWeightCt = 5.00m, SelectionCt = 4.25m, PricePerCt = 40500m });
+
+    var (facts, bullets) = MainWindow.SaleSummary(inv);
+    string Fact(string label) => facts.FirstOrDefault(f => f.Label == label).Value ?? "<missing>";
+
+    // -- the figures --------------------------------------------------------
+    // 2.30 + 5.00 = 7.30 leaving. 2.00 + 4.25 = 6.25 sold. 0.30 + 0.75 = 1.05 rejected.
+    Check("SUMMARY - leads with the WHOLE parcel, not the selection",
+          Fact("Leaving stock") == "7.30 ct", Fact("Leaving stock"));
+    Check("SUMMARY - and breaks it into sold", Fact("of which sold") == "6.25 ct", Fact("of which sold"));
+    Check("SUMMARY - and rejected", Fact("of which rejected") == "1.05 ct", Fact("of which rejected"));
+    Check("SUMMARY - sold + rejected equals what leaves", 6.25m + 1.05m == 7.30m);
+    Check("SUMMARY - names the buyer", Fact("Buyer") == "ABC EXPORTS", Fact("Buyer"));
+    Check("SUMMARY - and the due date the terms give",
+          Fact("Due") == inv.DueDate.ToString("dd MMM yyyy"), Fact("Due"));
+
+    // -- one bullet per parcel, in the sheet's own vocabulary ---------------
+    Check("SUMMARY - one line per parcel", bullets.Count == 2, $"{bullets.Count}");
+    Check("SUMMARY - the grade reads as the printed sheet writes it",
+          bullets[0].StartsWith("# × +6.5"), bullets[0]);
+    Check("SUMMARY - each line states what leaves and how it splits",
+          bullets[0].Contains("2.30 ct out") && bullets[0].Contains("2.00 sold")
+          && bullets[0].Contains("0.30 rejected"), bullets[0]);
+    Check("SUMMARY - and its rate", bullets[0].Contains("63,000.00"), bullets[0]);
+    Check("SUMMARY - the second line too",
+          bullets[1].StartsWith("2 × -6.5") && bullets[1].Contains("5.00 ct out"), bullets[1]);
+
+    // -- a blank line is not a parcel ---------------------------------------
+    inv.Lines.Add(new SaleLine());
+    var (_, withBlank) = MainWindow.SaleSummary(inv);
+    Check("SUMMARY - an untouched row is not counted as a line",
+          withBlank.Count == 2, $"{withBlank.Count}");
+
+    // -- the button says what it does ---------------------------------------
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+                               Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1400 };
+    win.Show();
+
+    var post = (Button)win.FindName("Post")!;
+    var move = (Button)win.FindName("MoveToStock")!;
+    // Content is an icon-and-label panel now, so the label is read out of it.
+    static string Label(Button b) =>
+        ((StackPanel)b.Content).Children.OfType<TextBlock>().First().Text;
+    Check("BUTTON - names the consequence, not the mechanism",
+          Label(post) == "Confirm sale", Label(post));
+    Check("BUTTON - and Move to stock is a button of its own",
+          Label(move) == "Move to stock", Label(move));
+    // No style assertion any more. These two are COLLAPSED ANCHORS -- the visible buttons live
+    // per row in the Action column, where a DataTemplate leaves them no x:Name -- so they carry no
+    // style at all. Busy() names them to swap a caption, which is what has to keep working.
+    Check("BUTTON - both anchors are reachable by the name Busy uses",
+          post is not null && move is not null);
+    // Move to stock must never be a second way to move stock. If it ever grows a Repo call this
+    // stops being true, because posting is the only thing that hands the invoice an id.
+    Check("BUTTON - Move to stock comes BEFORE Confirm sale, so the sign-off is last",
+          ((System.Windows.Controls.Panel)move.Parent).Children.IndexOf(move)
+          < ((System.Windows.Controls.Panel)post.Parent).Children.IndexOf(post));
+
+    // -- nothing is written before the sign-off -----------------------------
+    // Post_Click validates BEFORE the summary, and asks BEFORE SaveDraftAsync. An empty invoice
+    // must therefore stop at the refusal, never reach a draft.
+    //
+    // The refusal is MODAL, so the probe has to answer it -- left alone, ShowDialog never returns
+    // and this suite hangs. Catching every window that opens also proves the click was answered
+    // by a dialog and not only by the status bar at the bottom edge of the screen.
+    int dialogs = 0;
+    string? dialogTitle = null;
+    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+        new RoutedEventHandler((o, _) =>
+        {
+            if (o is not Window w || ReferenceEquals(w, win)) return;
+            dialogs++;
+            dialogTitle = w.Title;
+            w.Close();
+        }));
+
+    var status = (TextBlock)win.FindName("Status")!;
+    status.Text = "";
+    var click = typeof(MainWindow).GetMethod("Post_Click",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    click.Invoke(win, [post, new RoutedEventArgs()]);
+
+    var frame = new System.Windows.Threading.DispatcherFrame();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+        System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+        new Action(() => frame.Continue = false));
+    System.Windows.Threading.Dispatcher.PushFrame(frame);
+
+    // Not the status bar: Validate routes its complaint to the field itself, as an adorner. The
+    // property worth asserting is the one the user cares about -- that NOTHING was written. The
+    // confirmation is asked before SaveDraftAsync, so a click that never got past validation must
+    // leave the invoice with no id at all.
+    var entry = typeof(MainWindow).GetField("_invoice",
+        BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(win)!;
+    var idProp = entry.GetType().GetProperty("InvoiceId")!;
+
+    // The refusal is written UNDER THE FIELDS now, not in a modal: the message and the box to fix
+    // are the same place, and nothing has to be memorised across a dialog. The status bar carries
+    // the part that is about the press rather than any one box.
+    Check("GUARD - the click is answered where the user is looking, not only in a dialog",
+          status.Text.Contains("nothing has been saved"),
+          status.Text.Length == 0 ? "<silent>" : status.Text);
+    Check("GUARD - an empty invoice writes no draft and no movement",
+          idProp.GetValue(entry) is null && !status.Text.Contains("Posted"),
+          idProp.GetValue(entry) is null ? "no invoice id — nothing was saved"
+                                         : $"id {idProp.GetValue(entry)} WAS created");
+
+    // -- every problem at once, not one refusal at a time -------------------
+    // A sign-off that names one fault, then a second after you fix it, then a third, is three
+    // refusals for one click. Problems() is what the dialog lists; Validate() is its first entry,
+    // so Save draft and the correction path still behave exactly as they did.
+    var broken = new InvoiceEntry { InvoiceDate = new DateTime(2026, 8, 26) };
+    broken.TermsDays = 9999;
+    broken.BrokerPct = 200;
+    broken.Lines.Clear();
+    broken.Lines.Add(new SaleLine { Grade = noii, Size = s65,
+                                    GrossWeightCt = 1.00m, SelectionCt = 5.00m, PricePerCt = 100m });
+
+    var probs = broken.Problems();
+    Check("REFUSAL - names ALL of it, not just the first",
+          probs.Count == 4, string.Join(" | ", probs));
+    Check("REFUSAL - header faults first, in the order the fields sit",
+          probs[0].StartsWith("Buyer") && probs[1].StartsWith("Terms")
+          && probs[2].StartsWith("Broker %"), string.Join(" | ", probs));
+    Check("REFUSAL - then the line, numbered as the grid numbers it",
+          probs[3].StartsWith("Line 1:"), probs.Count > 3 ? probs[3] : "<none>");
+    Check("REFUSAL - Validate() is unchanged: still the first problem",
+          broken.Validate() == probs[0], broken.Validate());
+
+    var empty = new InvoiceEntry();
+    empty.Buyers.Add(new PartyRef(11, "ABC EXPORTS", 30));
+    empty.SelectedBuyer = empty.Buyers[0];
+    Check("REFUSAL - an untouched screen says what is missing, in words",
+          empty.Problems().Count == 1
+          && empty.Problems()[0] == "An invoice needs at least one line",
+          string.Join(" | ", empty.Problems()));
+
+    Check("REFUSAL - a complete invoice has nothing to say",
+          inv.Problems().Count == 0, string.Join(" | ", inv.Problems()));
+
+    // -- the summary is pure: asking twice changes nothing ------------------
+    var (againF, againB) = MainWindow.SaleSummary(inv);
+    Check("SUMMARY - reading it does not alter the invoice",
+          againB.Count == withBlank.Count && againF.Count == facts.Count);
+
+    win.Close();
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Console.Out.Flush();
+    Environment.Exit(fail);
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+Environment.Exit(fail);

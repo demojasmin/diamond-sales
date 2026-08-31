@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Priya Gems — Approval Note</title>
+<!--
+  ────────────────────────────────────────────────────────────────────────────
+  Everything below is ABSOLUTELY POSITIONED from measurements taken off the
+  photographed pad, so the layout is the reference's own geometry rather than a
+  flow that happens to look similar.
+
+  The reference photo's printed area was measured as
+      x 128 .. 978 px   (850 px wide)
+      y  35 .. 1490 px  (1455 px tall)
+  and each element's position mapped onto A4 as
+
+      x_mm = 8 + (px - 128) / 850 * 194
+      y_mm =     (py -  35) / 1455 * 297
+
+  i.e. an 8 mm side margin (the pad itself runs almost edge to edge, which no
+  desktop printer will reproduce) and the full 297 mm height.
+  ────────────────────────────────────────────────────────────────────────────
+-->
+<style>
+@page { size: A4 portrait; margin: 0; }
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0;
+  background: #f2f3f5;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  color: #0d0d0d;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.sheet {
+  position: relative;
+  width: 210mm; height: 297mm;
+  margin: 8mm auto;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: 0 2px 14px rgba(0,0,0,.18);
+}
+@media print {
+  html, body { background: #fff; }
+  .sheet { margin: 0; box-shadow: none; }
+}
+
+/* Every child is placed by coordinate. */
+.sheet > * { position: absolute; }
+
+/* ── Header ground ──────────────────────────────────────────────────────
+   The pad is printed on a silver-grey ground that fades out just below the
+   address block; the strapline sits on a darker band inside it. */
+.ground { left: 0; top: 0; width: 210mm; height: 60.7mm;
+          background: linear-gradient(176deg,#d7dade 0%,#e3e6e9 55%,#eceef0 100%); }
+
+.logo  { left: 5mm;  top: 3mm;  width: 66mm; height: 61mm; }
+.logo svg { display: block; width: 100%; height: 100%; }
+
+.approval { left: 68mm; top: 22.6mm; width: 82mm; text-align: center; }
+.approval span {
+  font-size: 13pt; font-weight: 700; letter-spacing: .3pt;
+  border-bottom: 1.5pt solid #0d0d0d; padding-bottom: .7mm;
+}
+
+.tel { left: 132mm; top: 20.8mm; width: 60.2mm; text-align: right;
+       font-size: 11pt; line-height: 1.55; white-space: nowrap; }
+
+.brand { left: 88mm; top: 37.4mm; width: 109.9mm; text-align: right;
+         font-size: 44pt; font-weight: 700; letter-spacing: .9pt; line-height: 1;
+         color: #1a56a8; }
+
+.band { left: 0; top: 54.1mm; width: 210mm; height: 6.6mm;
+        background: #ccd1d6; }
+.band span { display: block; text-align: center; line-height: 6.6mm;
+             font-size: 10pt; font-weight: 700; letter-spacing: .5pt; }
+
+.addr1 { left: 8mm; top: 61.8mm; width: 194mm; text-align: center; font-size: 10pt; }
+.addr2 { left: 8mm; top: 67.2mm; width: 194mm; text-align: center; font-size: 10pt; }
+
+/* ── Fill-in fields ─────────────────────────────────────────────────────── */
+.f { font-size: 11pt; }
+.rule { border-bottom: 1pt solid #0d0d0d; }
+
+.date     { left: 120mm; top: 79.4mm; width: 82mm; text-align: right; white-space: nowrap; }
+.date i   { font-style: normal; display: inline-block; border-bottom: 1pt solid #0d0d0d; }
+.date .d  { width: 12mm; } .date .m { width: 12mm; } .date .y { width: 21mm; }
+.date b   { font-weight: 400; padding: 0 1mm; }
+
+.to-lbl   { left: 8.5mm;  top: 87.6mm; }
+.to-rule  { left: 22.1mm; top: 92.4mm; width: 179.9mm; }
+
+.thr-lbl  { left: 8.5mm;  top: 97.9mm; }
+.thr-rule { left: 30.7mm; top: 102.7mm; width: 91.9mm; }
+.mob-lbl  { left: 126mm;  top: 97.9mm; }
+.mob-rule { left: 140mm;  top: 102.7mm; width: 62mm; }
+
+.please   { left: 8.5mm;  top: 106.9mm; width: 194mm; }
+
+/* ── Watermark, behind the goods table ─────────────────────────────────── */
+.wm { left: 57mm; top: 133mm; width: 96mm; height: 96mm; z-index: 0; opacity: .40; }
+.wm svg { display: block; width: 100%; height: 100%; }
+
+/* ── Goods table ────────────────────────────────────────────────────────── */
+table {
+  left: 8mm; top: 113.3mm; width: 194mm;
+  border-collapse: collapse; table-layout: fixed;
+  z-index: 1; background: transparent;
+}
+th, td { border: 1pt solid #0d0d0d; background: transparent; }
+
+thead th { height: 15.9mm; padding: 0 1mm; line-height: 1.18;
+           font-size: 10.5pt; font-weight: 700; text-align: center; vertical-align: middle; }
+thead th .cur { display: block; font-size: 9.5pt; }
+
+tbody td { height: 10.9mm; }
+tbody td.sn { text-align: center; font-size: 11pt; }
+
+/* Measured off the reference: 48 / 362 / 145 / 145 / 138 of 838 px. */
+.c1 { width: 11.1mm; } .c2 { width: 83.8mm; } .c3 { width: 33.6mm; }
+.c4 { width: 33.6mm; } .c5 { width: 31.9mm; }
+
+/* ── Footer ─────────────────────────────────────────────────────────────── */
+.terms { left: 8.5mm; top: 251.9mm; width: 120mm; font-size: 10pt; line-height: 1.53; }
+.terms .g { font-weight: 700; }
+
+.forus { left: 130mm; top: 254.6mm; width: 71.9mm; text-align: right;
+         font-size: 14pt; font-weight: 700; white-space: nowrap; }
+.forus em { font-style: normal; color: #1a56a8; }
+
+.thru      { left: 8.5mm;  top: 284.6mm; font-size: 10.5pt; }
+.thru-rule { left: 55mm;   top: 289.2mm; width: 45mm; }
+.auth      { left: 140mm;  top: 284.9mm; width: 61.5mm; text-align: right; font-size: 10.5pt; }
+</style>
+</head>
+<body>
+
+<div class="sheet">
+
+  <div class="ground"></div>
+
+  <!-- Two cut squares over a faceted monogram, as the pad prints it. -->
+  <div class="logo">
+    <svg viewBox="0 0 66 61" aria-label="Priya Gems">
+      <!-- units are millimetres of the logo box, so these are the measured positions -->
+      <path d="M33.7 20.5 L53.6 38.9 L33.7 57.2 L13.7 38.9 Z" fill="#98a1aa"/>
+      <path d="M33.7 20.5 L53.6 38.9 L33.7 38.9 Z" fill="#7c8690"/>
+      <text x="33.7" y="48.5" text-anchor="middle"
+            font-family="Arial, Helvetica, sans-serif" font-weight="700"
+            font-size="27" fill="#eef1f4">G</text>
+      <path d="M56.6 47.0 L64.0 53.7 L56.6 60.3 L49.1 53.7 Z" fill="#5aa8ea"/>
+      <path d="M15.5 2.1 L27.4 12.8 L15.5 23.5 L3.6 12.8 Z" fill="#2f6fc4"/>
+      <path d="M42.8 1.1 L54.8 11.8 L42.8 22.5 L30.8 11.8 Z" fill="#5aa8ea"/>
+    </svg>
+  </div>
+
+  <div class="approval"><span>APPROVAL NOTE</span></div>
+
+  <div class="tel">Tel.: 3392 7439<br>O.B.C. : 7439</div>
+
+  <div class="brand">PRIYA GEMS</div>
+
+  <div class="band"><span>IMPORTERS, EXPORTERS, MANUFACTURERS OF DIAMONDS</span></div>
+
+  <div class="addr1">A-101/B, Tanvi's Diamond Ind. Premises Estate, S.V. Road, Dahisar (E), Mumbai - 400 068.</div>
+  <div class="addr2">Email : priyagems13@gmail.com</div>
+
+  <div class="date f">Date :&nbsp;<i class="d"></i><b>/</b><i class="m"></i><b>/</b><i class="y"></i></div>
+
+  <div class="to-lbl f">To,</div>
+  <div class="to-rule rule"></div>
+
+  <div class="thr-lbl f">Through</div>
+  <div class="thr-rule rule"></div>
+  <div class="mob-lbl f">Mob.:</div>
+  <div class="mob-rule rule"></div>
+
+  <div class="please f">Please receive the following goods on approval for Export / Local Sale / Assortment / Mfgr.</div>
+
+  <div class="wm" aria-hidden="true">
+    <svg viewBox="0 0 200 200">
+      <g fill="#b7cee9">
+        <path d="M100 10 L190 100 L100 190 L10 100 Z" opacity=".5"/>
+        <path d="M100 10 L190 100 L100 100 Z" opacity=".78"/>
+      </g>
+      <text x="100" y="132" text-anchor="middle"
+            font-family="Arial, Helvetica, sans-serif" font-weight="700"
+            font-size="104" fill="#ffffff" opacity=".72">G</text>
+      <g fill="#b7cee9">
+      </g>
+    </svg>
+  </div>
+
+  <table>
+    <colgroup><col class="c1"><col class="c2"><col class="c3"><col class="c4"><col class="c5"></colgroup>
+    <thead>
+      <tr>
+        <th>S.<br>No</th>
+        <th>PARTICULARS</th>
+        <th>WEIGHT</th>
+        <th>RATE per<br>Carat<span class="cur">&#8377; / $</span></th>
+        <th>REMARKS</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td class="sn">1</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="sn">2</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="sn">3</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="sn">4</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="sn">5</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="sn">6</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="sn">7</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="sn">8</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="sn">9</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="sn">10</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="sn">11</td><td></td><td></td><td></td><td></td></tr>
+    </tbody>
+  </table>
+
+  <div class="terms">
+    Acknowledgement of entrustment as per the<br>
+    conditions of reserve.<br>
+    Subject to Mumbai Jurisdiction.<br>
+    <span class="g">GSTIN : 27AGRPB2357E1ZH</span>
+  </div>
+
+  <div class="forus">For <em>PRIYA GEMS</em></div>
+
+  <div class="thru">Thru / Receiver's Sign</div>
+  <div class="thru-rule rule"></div>
+  <div class="auth">Authorised Sign.</div>
+
+</div>
+
+</body>
+</html>

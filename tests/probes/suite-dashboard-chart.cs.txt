@@ -137,9 +137,30 @@ var t = new Thread(() =>
     var say = typeof(MainWindow).GetMethod("Say", BindingFlags.Instance | BindingFlags.NonPublic)!;
     var status = (System.Windows.Controls.TextBlock)win.FindName("Status")!;
 
+    // Drained FIRST. Opening the window kicks off background reads -- the dashboard refresh, the
+    // memo list -- and with no database behind them their failures land in this same status bar.
+    // That is the bar doing its job; it is only noise HERE, where the subject is whether Say
+    // marshals rather than what it last said. Let them all arrive before the test writes its own.
+    var settle = new System.Windows.Threading.DispatcherFrame();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+        System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+        new Action(() => settle.Continue = false));
+    System.Windows.Threading.Dispatcher.PushFrame(settle);
+
     say.Invoke(win, ["on the UI thread", false]);
     Check("SAY - still writes straight through on the UI thread",
           status.Text.Contains("on the UI thread"), status.Text);
+
+    // Every value the bar takes, not just the one left at the end. Opening the window kicks off
+    // background reads whose failures land here too, and with no database behind them one of those
+    // can arrive after the message under test -- which says nothing about whether Say marshalled,
+    // only about who spoke last.
+    // TextBlock has no TextChanged -- that is TextBox. The dependency property is the only place
+    // to watch a TextBlock's text from outside.
+    var said = new List<string>();
+    System.ComponentModel.DependencyPropertyDescriptor
+        .FromProperty(TextBlock.TextProperty, typeof(TextBlock))
+        .AddValueChanged(status, (_, _) => said.Add(status.Text));
 
     Exception? offThread = null;
     var worker = new Thread(() =>
@@ -162,7 +183,8 @@ var t = new Thread(() =>
     System.Windows.Threading.Dispatcher.PushFrame(frame);
 
     Check("SAY - the background message reaches the status bar once pumped",
-          status.Text.Contains("from a background thread"), status.Text);
+          said.Any(v => v.Contains("from a background thread")),
+          said.Count == 0 ? "<nothing reached the bar>" : string.Join(" | ", said));
 
     win.Close();
     Console.WriteLine();

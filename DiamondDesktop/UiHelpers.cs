@@ -298,6 +298,31 @@ public sealed class EmptyToVisibilityConverter : IValueConverter
 /// Presentation only — no rule is decided here. v_invoice computes is_overdue and outstanding;
 /// this just picks the word for them.
 /// </summary>
+/// <summary>
+/// The word the status chip prints. PRESENTATION ONLY -- the database still stores POSTED and
+/// DRAFT, every rule still reads them, and the CSV export is untouched. This is the desk's own
+/// vocabulary put over the top: a posted invoice IS the sale, and a draft is a memo.
+///
+/// The chip's colour triggers deliberately still bind to the raw Status, so renaming a word here
+/// can never change which pill is green.
+/// </summary>
+public sealed class StatusWordConverter : IValueConverter
+{
+    public static string Word(string? status) => status switch
+    {
+        "POSTED" => "SALE",
+        "DRAFT" => "MEMO",
+        null => "",
+        _ => status,
+    };
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        Word(value as string);
+
+    public object ConvertBack(object? value, Type t, object? p, CultureInfo c) =>
+        throw new NotSupportedException();
+}
+
 public sealed class InvoiceStateConverter : IValueConverter
 {
     /// <summary>
@@ -309,7 +334,8 @@ public sealed class InvoiceStateConverter : IValueConverter
     public static string State(DiamondDesktop.Data.VInvoice invoice) => invoice switch
     {
         { Status: "CANCELLED" } => "Cancelled",
-        { Status: "DRAFT" } => "Draft",
+        // The word the desk uses. The stored status is still DRAFT -- see StatusWordConverter.
+        { Status: "DRAFT" } => "Memo",
         { IsOverdue: true } => "Overdue",
         { Outstanding: <= 0 } => "Paid",
         _ => "Pending",
@@ -343,8 +369,22 @@ public sealed class AuditRow
     public Guid? ChangedBy { get; init; }
     public IReadOnlyList<AuditField> Fields { get; init; } = [];
 
-    public string When => ChangedAt.ToString("dd-MM-yyyy HH:mm:ss");
-    public string Time => ChangedAt.ToString("HH:mm:ss");
+    /// <summary>
+    /// LOCAL time, not UTC. The column was headed "WHEN (UTC)" and the desk reads it against a
+    /// clock on the wall five and a half hours away -- so every entry looked like it happened in
+    /// the middle of the previous working day, and "who was at the desk at the time" could not be
+    /// answered from the trail at all.
+    ///
+    /// The stored value is a timestamptz; PostgREST hands it back as UTC, so this is a conversion
+    /// and not a relabelling.
+    /// </summary>
+    public DateTime LocalAt =>
+        (ChangedAt.Kind == DateTimeKind.Unspecified
+            ? DateTime.SpecifyKind(ChangedAt, DateTimeKind.Utc)
+            : ChangedAt).ToLocalTime();
+
+    public string When => LocalAt.ToString("dd-MM-yyyy HH:mm:ss");
+    public string Time => LocalAt.ToString("HH:mm:ss");
     public string Record => RecordId is { } id ? $"#{id}" : "";
 
     /// <summary>
@@ -389,6 +429,110 @@ public sealed class AuditRow
         _ => FieldCount,
     };
     public string FieldCount => $"{Fields.Count} field{(Fields.Count == 1 ? "" : "s")}";
+
+    /// <summary>
+    /// The table, as the people using it call it.
+    ///
+    /// The trail is the one screen where the database's own vocabulary leaked into the app --
+    /// "sales_line", "stock_movement" -- and it is also the screen someone reaches for when
+    /// something has gone wrong and they are least inclined to translate.
+    /// </summary>
+    public string EntityName => Entity switch
+    {
+        "sales_invoice"     => "Invoice",
+        "sales_line"        => "Invoice line",
+        "stock_movement"    => "Stock movement",
+        "stock_reservation" => "Stock reservation",
+        "price_list"        => "Price list",
+        "buyer"             => "Buyer",
+        "broker"            => "Broker",
+        "receipt"           => "Receipt",
+        "profiles"          => "User account",
+        _                   => Entity,
+    };
+
+    /// <summary>
+    /// WHAT HAPPENED, in the words the act is known by on the screen that did it.
+    ///
+    /// "sales_line UPDATE #1500 · no field changed" is true and tells nobody anything. The same row
+    /// is "Invoice line changed". A trail is read when something is already wrong, and a reader
+    /// who has to reconstruct the act from a table name and a column list is being asked to do the
+    /// app's work.
+    ///
+    /// Falls back to the plain entity and action wherever the values do not say enough -- never
+    /// invents a description it cannot support from the row.
+    /// </summary>
+    public string What
+    {
+        get
+        {
+            string? after(string f) => Fields.FirstOrDefault(x => x.Name == f)?.After is { Length: > 0 } v ? v : null;
+            string? before(string f) => Fields.FirstOrDefault(x => x.Name == f)?.Before is { Length: > 0 } v ? v : null;
+            bool changed(string f) => Fields.FirstOrDefault(x => x.Name == f)?.Changed == true;
+
+            string ct(string? w) => w is null ? "" : $" · {w} ct";
+
+            return (Entity, Action) switch
+            {
+                // A reservation IS the sales entry, seen from the database. It is the only act on
+                // this list that moves a bucket without touching the ledger.
+                ("stock_reservation", "INSERT") =>
+                    $"Stock reserved by a sales entry{ct(after("weight_ct"))}",
+                ("stock_reservation", "UPDATE") =>
+                    $"Reservation corrected{ct(after("weight_ct"))}"
+                    + (before("weight_ct") is { } was ? $" (was {was})" : ""),
+                ("stock_reservation", "DELETE") =>
+                    $"Reservation released{ct(before("weight_ct"))} — confirmed, returned or cleared",
+
+                // Status is the field that turns a memo into a sale and a sale into a cancellation.
+                ("sales_invoice", "INSERT") => "Memo created",
+                ("sales_invoice", "UPDATE") when changed("status") => after("status") switch
+                {
+                    "POSTED"    => "Sale confirmed — stock moved out",
+                    "CANCELLED" => "Invoice cancelled — carats returned",
+                    "DRAFT"     => "Sale reopened as a memo",
+                    var st      => $"Invoice status → {st}",
+                },
+                ("sales_invoice", "UPDATE") => Summary is { Length: > 0 } s ? $"Invoice edited · {s}" : "Invoice edited",
+                ("sales_invoice", "DELETE") => "Invoice removed",
+
+                ("sales_line", "INSERT") => $"Invoice line added{ct(after("gross_weight_ct"))}",
+                ("sales_line", "UPDATE") => Fields.Any(f => f.Changed)
+                    ? $"Invoice line changed · {Summary}"
+                    : "Invoice line rewritten, no figure changed",
+                ("sales_line", "DELETE") => $"Invoice line removed{ct(before("gross_weight_ct"))}",
+
+                // The ledger itself. movement_type is what makes one of these a sale and another
+                // an intake, so it leads.
+                ("stock_movement", "INSERT") => (after("movement_type") ?? "Movement") switch
+                {
+                    "INTAKE"      => $"Stock taken in{ct(after("weight_ct"))}",
+                    "SALE"        => $"Stock sold{ct(after("weight_ct"))}",
+                    "REJECTION"   => $"Rejection out of stock{ct(after("weight_ct"))}",
+                    "ADJUST"      => $"Stock adjusted{ct(after("weight_ct"))}",
+                    "CONVERT_IN"  => $"Converted in{ct(after("weight_ct"))}",
+                    "CONVERT_OUT" => $"Converted out{ct(after("weight_ct"))}",
+                    var t         => $"{t}{ct(after("weight_ct"))}",
+                },
+                ("stock_movement", "DELETE") =>
+                    $"Stock movement removed{ct(before("weight_ct"))} — an invoice was corrected",
+
+                ("receipt", "INSERT") => "Payment received",
+                ("receipt", "DELETE") => "Payment removed",
+                ("price_list", _)     => $"Price list {Action.ToLowerInvariant()}d",
+                ("buyer", "INSERT")   => $"Buyer added{(after("name") is { } n ? $" · {n}" : "")}",
+                ("broker", "INSERT")  => $"Broker added{(after("name") is { } n ? $" · {n}" : "")}",
+
+                _ => Action switch
+                {
+                    "INSERT" => $"{EntityName} created",
+                    "DELETE" => $"{EntityName} removed",
+                    "UPDATE" => Summary is { Length: > 0 } s ? $"{EntityName} changed · {s}" : $"{EntityName} changed",
+                    _        => $"{EntityName} {Action.ToLowerInvariant()}",
+                },
+            };
+        }
+    }
 
     /// What changed, in a column's worth of room. An UPDATE names the fields that actually differ;
     /// anything else reports its size, because listing every column of an INSERT says nothing.

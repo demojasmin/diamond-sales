@@ -507,3 +507,5 @@ new-project-setup.zip
 
 # Per-developer Claude Code permissions. The filename says local; treat it as local.
 .claude/settings.local.json
+
+supabase/.temp/

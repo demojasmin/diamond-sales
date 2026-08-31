@@ -1,0 +1,143 @@
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+// One audit row, built the way the page builds them: straight from an audit_log record.
+AuditRow Row(string table, string action,
+             Dictionary<string, object>? before = null, Dictionary<string, object>? after = null) =>
+    AuditRow.From(new AuditLog
+    {
+        AuditedTable = table,
+        Action = action,
+        RecordId = 1,
+        ChangedAt = new DateTime(2026, 8, 27, 11, 16, 52, DateTimeKind.Utc),
+        OldValues = before,
+        NewValues = after,
+    });
+
+// ── the trail says what happened, not which columns moved ──────────────────
+// "sales_line UPDATE #1500 . no field changed" is true and tells nobody anything. The page is
+// opened when something has already gone wrong, and a reader who has to reconstruct the act from
+// a table name and a column list is being asked to do the app's work.
+
+Check("WORDS - a sales entry taking carats out says so",
+      Row("stock_reservation", "INSERT", after: new() { ["weight_ct"] = "5.0000" }).What
+        == "Stock reserved by a sales entry · 5.0000 ct",
+      Row("stock_reservation", "INSERT", after: new() { ["weight_ct"] = "5.0000" }).What);
+
+// Correcting 10 to 1 is ONE reservation, not two -- the trail has to show the same, or it reads
+// as a second hold that was never released.
+var corrected = Row("stock_reservation", "UPDATE",
+                    before: new() { ["weight_ct"] = "5.0000" },
+                    after:  new() { ["weight_ct"] = "2.0000" });
+Check("WORDS - correcting a held weight names both figures",
+      corrected.What.Contains("Reservation corrected") && corrected.What.Contains("2.0000")
+      && corrected.What.Contains("was 5.0000"), corrected.What);
+
+Check("WORDS - and releasing one says what went back",
+      Row("stock_reservation", "DELETE", before: new() { ["weight_ct"] = "5.0000" }).What
+        .StartsWith("Reservation released"),
+      Row("stock_reservation", "DELETE", before: new() { ["weight_ct"] = "5.0000" }).What);
+
+// The status field is what turns a memo into a sale and a sale into a cancellation. It is the one
+// column on the whole trail worth naming in words.
+Check("WORDS - confirming a sale is not \"status\"",
+      Row("sales_invoice", "UPDATE", before: new() { ["status"] = "DRAFT" },
+          after: new() { ["status"] = "POSTED" }).What == "Sale confirmed — stock moved out");
+Check("WORDS - nor is cancelling one",
+      Row("sales_invoice", "UPDATE", before: new() { ["status"] = "POSTED" },
+          after: new() { ["status"] = "CANCELLED" }).What == "Invoice cancelled — carats returned");
+Check("WORDS - a memo is a memo",
+      Row("sales_invoice", "INSERT", after: new() { ["invoice_no"] = "INV-1" }).What == "Memo created");
+
+// The ledger. movement_type is what makes one row a sale and another an intake.
+Check("WORDS - a SALE movement reads as stock sold",
+      Row("stock_movement", "INSERT",
+          after: new() { ["movement_type"] = "SALE", ["weight_ct"] = "4.0000" }).What
+        == "Stock sold · 4.0000 ct");
+Check("WORDS - an INTAKE reads as stock taken in",
+      Row("stock_movement", "INSERT",
+          after: new() { ["movement_type"] = "INTAKE", ["weight_ct"] = "9.0000" }).What
+        == "Stock taken in · 9.0000 ct");
+Check("WORDS - and a rejection is not called a sale",
+      Row("stock_movement", "INSERT",
+          after: new() { ["movement_type"] = "REJECTION", ["weight_ct"] = "1.0000" }).What
+        .StartsWith("Rejection"));
+
+// An UPDATE that changed nothing still happened, and saying so beats "no field changed".
+Check("WORDS - a line rewritten with no change still reads as an act",
+      Row("sales_line", "UPDATE", before: new() { ["price_per_ct"] = "40000" },
+          after: new() { ["price_per_ct"] = "40000" }).What
+        == "Invoice line rewritten, no figure changed");
+
+// Nothing is invented. An unknown table falls back to its own name and action rather than to a
+// description the row cannot support.
+Check("WORDS - an unmapped table falls back rather than guessing",
+      Row("app_config", "UPDATE", before: new() { ["v"] = "1" }, after: new() { ["v"] = "2" }).What
+        .StartsWith("app_config changed"),
+      Row("app_config", "UPDATE", before: new() { ["v"] = "1" }, after: new() { ["v"] = "2" }).What);
+
+// ── the table names come out of the vocabulary ─────────────────────────────
+Check("WORDS - the trail stops saying sales_line",
+      Row("sales_line", "INSERT").EntityName == "Invoice line"
+      && Row("stock_movement", "INSERT").EntityName == "Stock movement"
+      && Row("stock_reservation", "INSERT").EntityName == "Stock reservation");
+
+// ── and the clock is the one on the wall ───────────────────────────────────
+// The column was headed "WHEN (UTC)" against a desk five and a half hours away, so every entry
+// looked like it happened in the middle of the previous working day.
+var utc = Row("buyer", "INSERT");
+Check("WHEN - the trail is shown in local time, not UTC",
+      utc.LocalAt == new DateTime(2026, 8, 27, 11, 16, 52, DateTimeKind.Utc).ToLocalTime()
+      && utc.When == utc.LocalAt.ToString("dd-MM-yyyy HH:mm:ss"),
+      $"{utc.When} local for 11:16:52 UTC");
+
+// ── reservations are reachable from the entity filter ──────────────────────
+// The filter is built from this list, so a table missing from it cannot be picked even once its
+// rows are on the trail.
+Check("FILTER - stock_reservation is one of the audited tables",
+      Repo.AuditedTables.Contains("stock_reservation"),
+      string.Join(", ", Repo.AuditedTables));
+
+// ── the trigger that puts them there ───────────────────────────────────────
+string sql = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+    "supabase", "migrations", "0045_audit_stock_reservation.sql"));
+Check("TRIGGER - reserve, correct and release are all recorded",
+      sql.Contains("after insert or update or delete on public.stock_reservation"));
+Check("TRIGGER - with the row on both sides, so a release says what went back",
+      sql.Contains("then to_jsonb(old) end") && sql.Contains("then to_jsonb(new) end"));
+Check("TRIGGER - and who did it",
+      sql.Contains("auth.uid()"));
+
+// ── the description has to fit, or it says the wrong thing ─────────────────
+// "Sale confirmed, stock moved out" was being cut to "Sale confirmed, stock r" with no ellipsis,
+// which reads as a value that ends there rather than one that ran out of room. WHAT HAPPENED is
+// the star column, so its width is whatever the fixed five leave it.
+string markup = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+    "DiamondDesktop", "MainWindow.xaml"));
+int audit = markup.IndexOf("x:Name=\"AuditGrid\"");
+string cols = markup[audit..markup.IndexOf("</DataGrid.Columns>", audit)];
+
+int fixedPx = System.Text.RegularExpressions.// (?<![A-Za-z]) so MinWidth is not counted as a fixed width: it is a floor, not a size.
+    Regex.Matches(cols, @"(?<![A-Za-z])Width=""(\d+)""")
+    .Select(m => int.Parse(m.Groups[1].Value)).Sum();
+Check("WIDTH - the fixed columns leave real room for the description",
+      fixedPx <= 540, $"{fixedPx}px of fixed columns");
+
+Check("WIDTH - and the description column will not be squeezed below readable",
+      cols.Contains("Width=\"*\" MinWidth=\"240\""));
+
+// When it IS cut, the reader must be able to see that it was and read the rest.
+Check("WIDTH - a cut description is marked and readable on hover",
+      cols.Contains("TextTrimming") && cols.Contains("Value=\"{Binding What}\""),
+      "ellipsis and tooltip");
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+Environment.Exit(fail);

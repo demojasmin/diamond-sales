@@ -581,7 +581,16 @@
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*" MinWidth="180"/>
-          <ColumnDefinition Width="200"/>
+          <!-- Proportional, not a pinned 200. Every value shared one width whatever it held, which
+               suits "15" and "60" and cuts stock_sheet_rates off mid-list. The column now takes a
+               share of the card, so a wide window gives the long values room instead of leaving it
+               to the label.
+
+               MinWidth is the old 200, so the box never gets NARROWER than it is today; MaxWidth
+               stops the numeric settings turning into a field the width of the page on a large
+               monitor. Between them the column stays uniform down the card, which is what makes it
+               read as a column at all. -->
+          <ColumnDefinition Width="0.4*" MinWidth="200" MaxWidth="460"/>
         </Grid.ColumnDefinitions>
 
         <StackPanel Grid.Column="0" Margin="0,0,16,0" VerticalAlignment="Center">
@@ -599,9 +608,18 @@
                      Foreground="{DynamicResource TextMutedBrush}" Opacity="0.75" Margin="0,3,0,0"/>
         </StackPanel>
 
+        <!-- ToolTip for the values still longer than any sensible box: these two hold a whole
+             sheet layout, and no width that suits "15" will ever show one in full. A TextBox
+             cannot ellipsise, so the tooltip IS the overflow story: the value can be read
+             without clicking into the field and arrowing to the end.
+
+             No horizontal scrollbar: inside a 32px box it would eat a third of the height and
+             change the row. The caret already scrolls the content when the field is focused,
+             which is how a long value gets edited. -->
         <TextBox Grid.Column="1" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
                  Height="32" VerticalAlignment="Center"
                  VerticalContentAlignment="Center"
+                 ToolTip="{Binding Value}"
                  AutomationProperties.Name="{Binding Label}"/>
       </Grid>
     </Border>

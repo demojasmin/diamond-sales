@@ -1,0 +1,136 @@
+using System.IO;
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+string outDir = @"C:\Users\jbc\AppData\Local\Temp\claude\d--diamond-inventory\f589c178-ac6f-46af-813b-facbf945a589\scratchpad";
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    Catalogue.Grades.Clear(); Catalogue.AllSizes.Clear();
+    var g = new Grade { GradeId = 5, Code = "NO 1" };
+    var sz = new SizeBucket { SizeId = 3, Code = "+11" };
+    Catalogue.Grades.Add(g); Catalogue.AllSizes.Add(sz);
+
+    // ── 1 . the grid opens with one row to type into ──────────────────────
+    // A keyboard-first screen needs somewhere for the first keystroke to land. Enter appends the
+    // next line from there, so the opening row is the start of the work rather than a spare.
+    var fresh = new InvoiceEntry();
+    Check("OPEN - a new invoice starts with one row to type into",
+          fresh.Lines.Count == 1, $"{fresh.Lines.Count} row(s)");
+    // It is a ROW, not a LINE. Nothing is sold, nothing is counted, nothing would post.
+    Check("OPEN - but it counts as no lines: it is blank",
+          fresh.LineCount == 0 && fresh.RealLines.Count == 0 && fresh.Lines[0].IsBlank,
+          $"{fresh.LineCount} line(s)");
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1400, Height = 760 };
+    win.Show();
+    var entry = (InvoiceEntry)typeof(MainWindow).GetField("_invoice",
+        BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(win)!;
+    Check("OPEN - and the screen opens the same way",
+          entry.Lines.Count == 1 && entry.Lines[0].IsBlank, $"{entry.Lines.Count} row(s)");
+
+    // The chip counts LINES, not rows. It bound to the grid's Items.Count, so the opening row made
+    // an untouched screen read "1 line" while the hint underneath said nothing had been typed.
+    string chipXaml = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "MainWindow.xaml"));
+    Check("OPEN - and the chip counts lines, not rows",
+          chipXaml.Contains("Text=\"{Binding LineCount,")
+          && !chipXaml.Contains("Items.Count, ElementName=Grid,"),
+          "bound to LineCount");
+
+    var add = (Button)win.FindName("AddLineButton")!;
+    typeof(MainWindow).GetMethod("AddLine_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, [add, new RoutedEventArgs()]);
+    Check("OPEN - Add line appends beside it", entry.Lines.Count == 2, $"{entry.Lines.Count} row(s)");
+
+    // The grid always keeps one row: removing the last leaves a fresh blank rather than a table
+    // with nothing to type into.
+    while (entry.Lines.Count > 1)
+        typeof(MainWindow).GetMethod("RemoveLine_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(win, [new Button { Tag = entry.Lines[^1] }, new RoutedEventArgs()]);
+
+    var last = entry.Lines[0];
+    typeof(MainWindow).GetMethod("RemoveLine_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, [new Button { Tag = last }, new RoutedEventArgs()]);
+    Check("OPEN - removing the last row leaves a fresh one, not an empty grid",
+          entry.Lines.Count == 1, $"{entry.Lines.Count} row(s)");
+
+    // ── 2 . Save memo and its card are gone ───────────────────────────────
+    Check("MEMO - the Save memo button is gone", win.FindName("SaveMemo") is null);
+    Check("MEMO - and the Saved memos card with it",
+          win.FindName("MemoCard") is null && win.FindName("MemoGrid") is null);
+    Check("MEMO - Print memo stays, and still prints rather than saving",
+          win.FindName("SaveDraft") is Button);
+
+    // ── 3 . the Update modal wears the Sales entry layout ─────────────────
+    var e2 = new InvoiceEntry { TermsDays = 15 };
+    e2.Buyers.Add(new PartyRef(1, "RAJ IMPEX", 15));
+    e2.SelectedBuyer = e2.Buyers[0];
+    e2.Lines.Add(new SaleLine { Grade = g, Size = sz, GrossWeightCt = 22.08m,
+                                SelectionCt = 22.08m, PricePerCt = 325m });
+    e2.Lines.Add(new SaleLine { Grade = g, Size = sz, GrossWeightCt = 16.42m,
+                                SelectionCt = 16.42m, PricePerCt = 300m });
+
+    var dlg = new UpdateInvoiceDialog(e2, "MIG-5", win.Resources)
+    { WindowStartupLocation = WindowStartupLocation.Manual, Left = -4000, Top = -4000,
+      ShowInTaskbar = false };
+    dlg.Show();
+    var f = new System.Windows.Threading.DispatcherFrame();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+        System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+    System.Windows.Threading.Dispatcher.PushFrame(f);
+
+    var page = (DataGrid)win.FindName("Grid")!;
+    var modalGrid = (DataGrid)dlg.FindName("LineGrid")!;
+    string Cols(DataGrid gr) => string.Join(", ", gr.Columns.Select(c => c.Header as string ?? "·"));
+    Check("MODAL - the same header fields as Sales entry",
+          dlg.FindName("BuyerPicker") is ComboBox && dlg.FindName("BrokerPicker") is ComboBox
+          && dlg.FindName("BrokerPctBox") is TextBox && dlg.FindName("TermsBox") is TextBox
+          && dlg.FindName("DocTypePicker") is ComboBox && dlg.FindName("InvoiceDatePicker") is DatePicker);
+    // Compared WHOLE. The old version stripped the tick column from the page's list and not from
+    // the modal's, so the two could never match once the modal grew a tick column of its own --
+    // it printed two identical lists and called them different.
+    Check("MODAL - and the same invoice-line columns",
+          Cols(modalGrid) == Cols(page),
+          $"modal [{Cols(modalGrid)}]  page [{Cols(page)}]");
+    // RealLines, not Items: an InvoiceEntry opens with a blank row to type into, so the grid holds
+    // one more than the invoice has lines. Counting rows counted that one too.
+    Check("MODAL - carrying the invoice's own lines",
+          e2.RealLines.Count == 2, $"{e2.RealLines.Count} line(s) of {modalGrid.Items.Count} row(s)");
+    Check("MODAL - it has Add line, as the page does", dlg.FindName("AddLineButton") is Button);
+    Check("MODAL - Save changes and Cancel",
+          dlg.FindName("SaveButton") is Button && dlg.FindName("CancelButton") is Button);
+    Check("MODAL - and the totals are the entry's own arithmetic",
+          e2.TotalCarats == 38.50m, $"{e2.TotalCarats}");
+
+    var bmp = new RenderTargetBitmap((int)dlg.ActualWidth, (int)dlg.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+    bmp.Render(dlg);
+    var enc = new PngBitmapEncoder(); enc.Frames.Add(BitmapFrame.Create(bmp));
+    using (var fs = File.Create(Path.Combine(outDir, "modal.png"))) enc.Save(fs);
+    dlg.Close();
+
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Environment.Exit(fail);
+});
+t.SetApartmentState(ApartmentState.STA); t.Start(); t.Join();

@@ -1,0 +1,727 @@
+// Ticking, removing, memos, and the desk's own vocabulary.
+//
+// NO DATABASE. Everything here is either a pure function or a control's state, so the whole of it
+// can be checked without a connection -- which matters most for the memo rules, because the point
+// of a memo is that it saves the state a stricter screen would have refused.
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+static IEnumerable<T> FindAll<T>(System.Windows.DependencyObject? d) where T : System.Windows.DependencyObject
+{
+    if (d is null) yield break;
+    for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(d); i++)
+    {
+        var c = System.Windows.Media.VisualTreeHelper.GetChild(d, i);
+        if (c is T hit) yield return hit;
+        foreach (var deep in FindAll<T>(c)) yield return deep;
+    }
+}
+
+static T? FindDown<T>(System.Windows.DependencyObject? d) where T : System.Windows.DependencyObject
+{
+    if (d is null) return null;
+    for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(d); i++)
+    {
+        var c = System.Windows.Media.VisualTreeHelper.GetChild(d, i);
+        if (c is T hit) return hit;
+        if (FindDown<T>(c) is { } deep) return deep;
+    }
+    return null;
+}
+
+static string GetClickHandlerName(Button b)
+{
+    // The handler a XAML Click= wired up, read back off the button's own event table.
+    var store = typeof(System.Windows.UIElement)
+        .GetProperty("EventHandlersStore", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .GetValue(b);
+    if (store is null) return "<none>";
+
+    var got = store.GetType()
+        .GetMethod("GetRoutedEventHandlers", BindingFlags.Instance | BindingFlags.Public)!
+        .Invoke(store, [System.Windows.Controls.Primitives.ButtonBase.ClickEvent]);
+
+    if (got is not System.Collections.IEnumerable seq) return "<none>";
+    foreach (var item in seq)
+    {
+        var h = item?.GetType().GetProperty("Handler")?.GetValue(item) as Delegate;
+        if (h is not null) return h.Method.Name;
+    }
+    return "<none>";
+}
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+
+    var app = new Application();
+    foreach (string d in new[]
+             {
+                 "Themes/LightTheme.xaml", "Themes/Typography.xaml", "Styles/Buttons.xaml",
+                 "Styles/Inputs.xaml", "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
+                 "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
+                 "Styles/Audit.xaml",
+             })
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    Catalogue.Grades.Clear();
+    Catalogue.AllSizes.Clear();
+    var noii = new Grade { GradeId = 5, Code = "NO II" };
+    var s65 = new SizeBucket { SizeId = 3, Code = "+6.5" };
+    Catalogue.Grades.Add(noii);
+    Catalogue.AllSizes.Add(s65);
+
+    // ── the tick changes nothing about the sale ────────────────────────────
+    var inv = new InvoiceEntry();
+    inv.Buyers.Add(new PartyRef(11, "ABC EXPORTS", 30));
+    inv.SelectedBuyer = inv.Buyers[0];
+    inv.Lines.Clear();
+    inv.Lines.Add(new SaleLine { Grade = noii, Size = s65,
+                                 GrossWeightCt = 2.00m, SelectionCt = 1.60m, PricePerCt = 100m });
+    inv.Lines.Add(new SaleLine { Grade = noii, Size = s65,
+                                 GrossWeightCt = 3.00m, SelectionCt = 3.00m, PricePerCt = 100m });
+
+    decimal caratsBefore = inv.TotalCarats;
+    decimal amountBefore = inv.TotalAmount;
+    int realBefore = inv.RealLines.Count;
+
+    inv.Lines[0].Selected = true;
+
+    Check("TICK - is selection, not inclusion: the carats do not move",
+          inv.TotalCarats == caratsBefore, $"{caratsBefore} -> {inv.TotalCarats}");
+    Check("TICK - nor the amount", inv.TotalAmount == amountBefore);
+    Check("TICK - nor what would post", inv.RealLines.Count == realBefore);
+    Check("TICK - and ticking a blank row does not make it a line",
+          new SaleLine { Selected = true }.IsBlank);
+
+    // ── memo: validated, and refused when it does not hold ─────────────────
+    // Save memo and Confirm sale share ONE rule set, through Complete(). A memo is still a row in
+    // sales_invoice with real lines under it, and a selection above its weight is a figure
+    // somebody confirms later without re-reading it.
+    var scratch = new InvoiceEntry();
+    scratch.Buyers.Add(new PartyRef(11, "ABC EXPORTS", 30));
+    scratch.SelectedBuyer = scratch.Buyers[0];
+    scratch.TermsDays = 9999;
+    scratch.Lines.Clear();
+    scratch.Lines.Add(new SaleLine { Grade = noii, Size = s65,
+                                     GrossWeightCt = 1.00m, SelectionCt = 5.00m, PricePerCt = 0m });
+
+    Check("MEMO - an invalid memo has problems to report",
+          scratch.Problems().Count == 2, string.Join(" | ", scratch.Problems()));
+    Check("MEMO - and they are the SAME ones Confirm sale reports",
+          scratch.Problems()[0].StartsWith("Terms")
+          && scratch.Problems()[1].StartsWith("Line 1:"), string.Join(" | ", scratch.Problems()));
+
+    // A line with no grade could not be written at all -- it has no ids. Problems() catches it as
+    // a line error, so the refusal happens before anything reaches the database.
+    scratch.Lines.Add(new SaleLine { GrossWeightCt = 4.00m });
+    Check("MEMO - a line with no grade is a problem, not something to save around",
+          scratch.Problems().Any(p => p.StartsWith("Line 2:")),
+          string.Join(" | ", scratch.Problems()));
+
+    var clean = new InvoiceEntry();
+    clean.Buyers.Add(new PartyRef(11, "ABC EXPORTS", 30));
+    clean.SelectedBuyer = clean.Buyers[0];
+    clean.Lines.Clear();
+    clean.Lines.Add(new SaleLine { Grade = noii, Size = s65,
+                                   GrossWeightCt = 2.00m, SelectionCt = 1.50m, PricePerCt = 100m });
+    Check("MEMO - a memo that holds together saves",
+          clean.Problems().Count == 0, string.Join(" | ", clean.Problems()));
+
+    // ── the desk's vocabulary ──────────────────────────────────────────────
+    Check("WORDS - POSTED reads as SALE", StatusWordConverter.Word("POSTED") == "SALE");
+    Check("WORDS - DRAFT reads as MEMO", StatusWordConverter.Word("DRAFT") == "MEMO");
+    Check("WORDS - CANCELLED is left alone", StatusWordConverter.Word("CANCELLED") == "CANCELLED");
+    // The rename is a label. Anything that renamed the stored value would break post_invoice,
+    // v_reconciliation and every migration that reads status.
+    Check("WORDS - and the STORED status is untouched",
+          InvoiceStatus.POSTED == "POSTED" && InvoiceStatus.DRAFT == "DRAFT");
+
+    // ── the screen ─────────────────────────────────────────────────────────
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+                               Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1500 };
+    win.Show();
+
+    // Let the window finish laying out. ScrollViewer viewport and bar visibility are arrange-time
+    // facts, and asserting them straight after Show measures a half-built tree.
+    var laid = new System.Windows.Threading.DispatcherFrame();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+        System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+        new Action(() => laid.Continue = false));
+    System.Windows.Threading.Dispatcher.PushFrame(laid);
+
+    var save = (Button)win.FindName("SaveDraft")!;
+    var del = (Button)win.FindName("DeleteLines")!;
+    var grid = (DataGrid)win.FindName("Grid")!;
+
+    Check("SCREEN - Remove lines is out of the way until something is ticked",
+          del.Visibility == Visibility.Collapsed, del.Visibility.ToString());
+
+    // The tick column is first, and the row actions come after Remark.
+    var headers = grid.Columns.Select(c => c.Header as string ?? "").ToList();
+    Check("SCREEN - the tick column leads the grid",
+          grid.Columns[0].Header is null or "", $"[{string.Join(", ", headers)}]");
+    // Ctrl+P, not Ctrl+S: nothing on this screen saves any more. Print memo prints, Confirm sale
+    // is the only thing that writes.
+    Check("SCREEN - the print shortcut is discoverable, on the tooltip",
+          (((Button)win.FindName("SaveDraft")!).ToolTip as string ?? "").Contains("Ctrl+P"),
+          ((Button)win.FindName("SaveDraft")!).ToolTip as string);
+    Check("SCREEN - Action is the last column, right after Remark",
+          headers[^1] == "Action" && headers[^2] == "Remark", $"[{string.Join(", ", headers)}]");
+
+    // ── every row offers every one of its actions ──────────────────────────
+    // Remove used to be gated on there being more than one line, so the single row you most often
+    // want to clear was the one row with no way to clear it. Taking the last line off is not a
+    // special case: a fresh blank row replaces it, so the grid still always has one to type into.
+    // No opening row any more, so there is no cell to inspect until one is added.
+    if (entryOf(win).Lines.Count == 0)
+    {
+        typeof(MainWindow).GetMethod("AddLine_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(win, [win.FindName("AddLineButton")!, new RoutedEventArgs()]);
+        var settle2 = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+            new Action(() => settle2.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(settle2);
+    }
+
+    var actionCell = FindAll<DataGridCell>(grid)
+        .First(c => c.Column?.Header as string == "Action");
+    var rowButtons = FindAll<Button>(actionCell).ToList();
+
+    Check("ROW - a single row still shows all four actions",
+          rowButtons.Count == 4 && rowButtons.All(b => b.Visibility == Visibility.Visible),
+          $"{rowButtons.Count(b => b.Visibility == Visibility.Visible)} of {rowButtons.Count} visible");
+    Check("ROW - including Remove, which used to vanish on the last row",
+          rowButtons.Any(b => (b.ToolTip as string ?? "").Contains("Take this line off")));
+    Check("ROW - every row action carries an icon and a tooltip",
+          rowButtons.All(b => (b.Content is System.Windows.Shapes.Path
+                               || b.Content is StackPanel)
+                              && (b.ToolTip as string ?? "").Length > 15),
+          string.Join(", ", rowButtons.Select(b => b.Content?.GetType().Name)));
+
+    // Removing the only line leaves a fresh one behind rather than an empty grid.
+    var only = entryOf(win).Lines.Single();
+    typeof(MainWindow).GetMethod("RemoveLine_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, [new Button { Tag = only }, new RoutedEventArgs()]);
+    // The grid always keeps one row to type into: a keyboard-first screen with nowhere for the
+    // next keystroke to land is worse than a spare blank row.
+    Check("ROW - removing the last line leaves a fresh row, not an empty grid",
+          entryOf(win).Lines.Count == 1, $"{entryOf(win).Lines.Count} row(s)");
+
+    static InvoiceEntry entryOf(MainWindow w) =>
+        (InvoiceEntry)typeof(MainWindow).GetField("_invoice",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(w)!;
+
+    // ── one action area: icon, label and tooltip on every button ───────────
+    // Everything that acts on this invoice is in one row beside the heading. Nothing is per-row,
+    // which is what kept the old Action column cramped enough to cut its own buttons in half.
+    var actions = new[] { "AddLineButton", "DeleteLines", "New", "SaveDraft", "MoveToStock", "Post" }
+        .Where(n => win.FindName(n) is Button)
+        .Select(n => (Name: n, Button: (Button)win.FindName(n)!)).ToList();
+
+    Check("ACTIONS - the invoice-level actions are all present",
+          actions.Count >= 5, $"{actions.Count}: {string.Join(", ", actions.Select(a => a.Name))}");
+
+    // One panel. Busy() names these, so they must be the REAL buttons, not hidden anchors standing
+    // in for buttons that live somewhere else.
+    Check("ACTIONS - they share one action area",
+          actions.Select(a => a.Button.Parent).Distinct().Count() == 1,
+          string.Join(", ", actions.Select(a => a.Button.Parent?.GetType().Name).Distinct()));
+    Check("ACTIONS - which wraps rather than pushing Confirm sale off the edge",
+          actions[0].Button.Parent is WrapPanel);
+    Check("ACTIONS - and none of them is a hidden anchor",
+          actions.All(a => a.Name == "DeleteLines" || a.Button.Visibility == Visibility.Visible),
+          string.Join(", ", actions.Select(a => $"{a.Name}={a.Button.Visibility}")));
+
+    foreach (var (name, b) in actions)
+    {
+        var panel = b.Content as StackPanel;
+        var icon = panel?.Children.OfType<System.Windows.Shapes.Path>().FirstOrDefault();
+        var label = panel?.Children.OfType<TextBlock>().FirstOrDefault();
+
+        Check($"ACTIONS - {name} carries an icon",
+              icon?.Data is not null, icon is null ? "no icon" : "ok");
+        // One size and one weight across the set, or the row reads as six separate decisions.
+        Check($"ACTIONS - {name}'s icon matches the others",
+              icon is not null && icon.Width == 15 && icon.Height == 15
+              && Math.Abs(icon.StrokeThickness - 1.5) < 0.01,
+              icon is null ? "none" : $"{icon.Width}x{icon.Height} @ {icon.StrokeThickness}");
+        Check($"ACTIONS - and the same gap between icon and label",
+              label is not null && label.Margin.Left == 7,
+              label is null ? "no label" : $"{label.Margin.Left}");
+        // A tooltip that only repeats the label teaches nothing. These say what the button DOES.
+        string tip = b.ToolTip as string ?? "";
+        Check($"ACTIONS - {name} explains itself in a tooltip",
+              tip.Length > 20 && tip != (label?.Text ?? ""), tip.Length == 0 ? "none" : $"{tip.Length} chars");
+        Check($"ACTIONS - {name} is named for a screen reader",
+              System.Windows.Automation.AutomationProperties.GetName(b).Length > 0);
+    }
+
+    // The labels themselves, so a rename cannot quietly change what a button claims to do.
+    string Label(string n) => ((StackPanel)((Button)win.FindName(n)!).Content)
+        .Children.OfType<TextBlock>().First().Text;
+    Check("ACTIONS - Add line", Label("AddLineButton") == "Add line", Label("AddLineButton"));
+    // There is no Clear button on the screen any more. NewInvoice_Click is still live -- the post
+    // path calls it to reset the entry after a sale -- so the handler is what gets asserted, not a
+    // button that is no longer there to press.
+    Check("ACTIONS - starting a new invoice is still reachable in code",
+          typeof(MainWindow).GetMethod("NewInvoice_Click",
+              BindingFlags.Instance | BindingFlags.NonPublic) is not null);
+    Check("ACTIONS - Print memo", Label("SaveDraft") == "Print memo", Label("SaveDraft"));
+    Check("ACTIONS - Move to stock", Label("MoveToStock") == "Move to stock", Label("MoveToStock"));
+    Check("ACTIONS - Confirm sale, and it is the primary",
+          Label("Post") == "Confirm sale"
+          && ((Button)win.FindName("Post")!).Style == win.FindResource("DashGoldButton"),
+          Label("Post"));
+
+    // Named, styled and labelled -- not WHERE they sit. Container topology is the part of this
+    // screen that moves most, and asserting it made these tests fail on every relayout without
+    // anything being wrong.
+    var add = (Button)win.FindName("AddLineButton")!;
+
+    var confirm = (Button)win.FindName("Post")!;
+    var move = (Button)win.FindName("MoveToStock")!;
+    // These four are COLLAPSED ANCHORS: the visible buttons live per row in the Action column,
+    // where a DataTemplate leaves them no x:Name. Busy() names these to change a caption and grey
+    // a row out, so they must keep existing and keep their captions -- Busy puts the caption back
+    // when it finishes, and it puts back whatever it found.
+
+    // ── Remove n lines counts EVERY ticked row ───────────────────────────────
+    var entry = (InvoiceEntry)typeof(MainWindow)
+        .GetField("_invoice", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(win)!;
+    entry.Lines.Clear();
+    entry.Lines.Add(new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1m });
+    entry.Lines.Add(new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 2m, SelectionCt = 2m, PricePerCt = 1m });
+    entry.Lines.Add(new SaleLine());                                   // the row you type into
+
+    var tickAllMethod = typeof(MainWindow).GetMethod("TickAllLines_Click",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var box = new CheckBox { IsChecked = true };
+    tickAllMethod.Invoke(win, [box, new RoutedEventArgs()]);
+
+    // EVERY row, the empty one included. A line just added is the one most likely to be a
+    // mistake, and it is blank by definition -- leaving it untickable meant the rows you most
+    // wanted rid of were the ones you could not select.
+    Check("REMOVE - tick-all takes every row, blank ones included",
+          entry.Lines.Count(l => l.Selected) == 3,
+          $"{entry.Lines.Count(l => l.Selected)} of {entry.Lines.Count} ticked");
+    var delLabel = (TextBlock)win.FindName("DeleteLinesLabel")!;
+    Check("REMOVE - the button appears and counts them",
+          del.Visibility == Visibility.Visible && delLabel.Text == "Remove 3 lines",
+          $"{del.Visibility} / {delLabel.Text}");
+
+    box.IsChecked = false;
+    tickAllMethod.Invoke(win, [box, new RoutedEventArgs()]);
+    Check("REMOVE - unticking puts it away again",
+          del.Visibility == Visibility.Collapsed, del.Visibility.ToString());
+
+    // ── the header box tells the truth about three situations ──────────────
+    // With two of five ticked, a plain unticked header box is a lie and a plain ticked one is a
+    // worse lie. The middle state is the whole reason this is not a bool.
+    var tickAll = (CheckBox)typeof(MainWindow)
+        .GetField("_tickAll", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(win)!;
+    var count = typeof(MainWindow).GetMethod("TickCountChanged",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    foreach (var l in entry.Lines) l.Selected = false;
+    count.Invoke(win, null);
+    Check("THREE - none ticked reads unticked", tickAll.IsChecked == false,
+          $"{tickAll.IsChecked?.ToString() ?? "null"}");
+
+    entry.Lines[0].Selected = true;
+    count.Invoke(win, null);
+    Check("THREE - SOME ticked reads indeterminate, not one of the two lies",
+          tickAll.IsChecked is null, $"{tickAll.IsChecked?.ToString() ?? "null"}");
+
+    foreach (var l in entry.Lines) l.Selected = true;
+    count.Invoke(win, null);
+    Check("THREE - every one ticked reads ticked", tickAll.IsChecked == true,
+          $"{tickAll.IsChecked?.ToString() ?? "null"}");
+
+    // A blank row left unticked is still 'some', not 'all' -- the count is over every row.
+    entry.Lines[^1].Selected = false;
+    count.Invoke(win, null);
+    Check("THREE - a blank row left out still reads indeterminate",
+          tickAll.IsChecked is null, $"{tickAll.IsChecked?.ToString() ?? "null"}");
+
+    // A CLICK never lands on the middle state: from indeterminate WPF hands us true, and that is
+    // the answer a half-ticked list makes you want.
+    entry.Lines[0].Selected = false;
+    count.Invoke(win, null);
+
+    box.IsChecked = true;                                   // what WPF does from indeterminate
+    tickAllMethod.Invoke(win, [box, new RoutedEventArgs()]);
+    Check("THREE - clicking from indeterminate ticks everything",
+          entry.RealLines.All(l => l.Selected) && tickAll.IsChecked == true);
+
+    Check("THREE - and IsThreeState stays off, so the user cannot choose 'some'",
+          !tickAll.IsThreeState);
+
+    // ── a busy scope released off the UI thread must not end the process ───
+    // Mouse.OverrideCursor throws "the calling thread must be STA" when touched from a pool
+    // thread, and this runs from the using-block of an `async void` handler -- so before it was
+    // marshalled, a handler that failed before its first await turned a handled error into an
+    // unhandled one. Found by a probe going silently from 42 checks to 22.
+    var busy = typeof(MainWindow).GetMethod("Busy",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var scope = (IDisposable)busy.Invoke(win, [save, "Working…", Array.Empty<Button>()])!;
+
+    Exception? escaped = null;
+    var offThread = new Thread(() => { try { scope.Dispose(); } catch (Exception ex) { escaped = ex; } });
+    offThread.Start();
+    offThread.Join();
+
+    Check("BUSY - releasing from another thread does not throw",
+          escaped is null, escaped?.GetType().Name ?? "clean");
+
+    // It was marshalled, not swallowed: the caption still comes back, just on the UI thread.
+    var pump = new System.Windows.Threading.DispatcherFrame();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+        System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+        new Action(() => pump.Continue = false));
+    System.Windows.Threading.Dispatcher.PushFrame(pump);
+
+    // Busy swaps Content for "Saving…" and puts back whatever it found -- which is the whole
+    // icon-and-label panel now, not a bare string. Getting that wrong would leave the button
+    // showing "Saving…" for ever, or lose its icon.
+    var restored = save.Content as StackPanel;
+    Check("BUSY - and the button still comes back to itself, icon and all",
+          restored is not null
+          && restored.Children.OfType<System.Windows.Shapes.Path>().Any()
+          && restored.Children.OfType<TextBlock>().First().Text == "Print memo"
+          && save.IsEnabled,
+          restored is null ? save.Content?.ToString() : "icon + label restored");
+
+    // ── the Update modal refuses rather than saving bad figures ────────────
+    var bad = new InvoiceEntry();
+    bad.Buyers.Add(new PartyRef(11, "ABC EXPORTS", 30));
+    bad.SelectedBuyer = bad.Buyers[0];
+    bad.Lines.Clear();
+    bad.Lines.Add(new SaleLine { Grade = noii, Size = s65,
+                                 GrossWeightCt = 1.00m, SelectionCt = 9.00m, PricePerCt = 100m });
+
+    // The dialog borrows the page's dictionary for its styles, so the probe hands it over too.
+    var modal = new UpdateInvoiceDialog(bad, "INV-2026-00002", win.Resources)
+    { WindowStartupLocation = WindowStartupLocation.Manual, Left = -4000, Top = -4000,
+      ShowInTaskbar = false };
+    modal.Show();
+
+    // The refusal is a plain TextBlock under the box now, not a bordered panel: the same size,
+    // colour and offset FieldErrorAdorner uses everywhere else in this app.
+    var errorBox = (TextBlock)modal.FindName("ErrorText")!;
+    var errorText = (TextBlock)modal.FindName("ErrorText")!;
+    var reason = (TextBox)modal.FindName("ReasonBox")!;
+    var saveBtn = (Button)modal.FindName("SaveButton")!;
+    var cancelBtn = (Button)modal.FindName("CancelButton")!;
+
+    Check("MODAL - opens pre-filled from the invoice",
+          ReferenceEquals(modal.DataContext, bad)
+          && ((DataGrid)modal.FindName("LineGrid")!).Items.Count == 1);
+    // Save carries an icon beside its label now, as every action on the entry screen does.
+    Check("MODAL - Save and Cancel are both there",
+          ((StackPanel)saveBtn.Content).Children.OfType<TextBlock>().First().Text == "Save changes"
+          && (cancelBtn.Content as string) == "Cancel",
+          saveBtn.Content?.GetType().Name);
+    Check("MODAL - nothing is wrong on screen until Save is pressed",
+          errorBox.Visibility == Visibility.Collapsed);
+
+    var saveClick = typeof(UpdateInvoiceDialog).GetMethod("Save_Click",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    saveClick.Invoke(modal, [saveBtn, new RoutedEventArgs()]);
+
+    // DialogResult is deliberately NOT read here: it can only be set on a window opened with
+    // ShowDialog, so the refusal path is exactly the one a probe can check -- and it is the one
+    // that matters, because it is the path that must not write.
+    Check("MODAL - a blank reason is refused",
+          errorBox.Visibility == Visibility.Visible && errorText.Text.Contains("reason"),
+          errorText.Text);
+    Check("MODAL - and so are the figures, in the same list",
+          errorText.Text.Contains("selection 9.00 exceeds gross 1.00"),
+          errorText.Text);
+
+    reason.Text = "price agreed lower";
+    saveClick.Invoke(modal, [saveBtn, new RoutedEventArgs()]);
+    Check("MODAL - a reason alone is not enough while a line is wrong",
+          errorBox.Visibility == Visibility.Visible && !errorText.Text.Contains("reason"),
+          errorText.Text);
+
+    bad.Lines[0].SelectionCt = 0.80m;
+    Check("MODAL - and with both fixed there is nothing left to refuse",
+          bad.Problems().Count == 0 && modal.Reason.Length > 0,
+          string.Join(" | ", bad.Problems()));
+    // The refusal must not outlive what it complained about. It only reappeared on the next Save,
+    // so "A reason is required." sat in red under a box with a reason typed into it -- the form
+    // contradicting itself.
+    reason.Text = "price agreed lower after a re-count";
+    Check("MODAL - typing a reason clears the refusal it answered",
+          errorBox.Visibility == Visibility.Collapsed, errorBox.Visibility.ToString());
+
+    modal.Close();
+
+    // ── Print memo prints; it does not save ────────────────────────────────
+    // The two are deliberately different acts. Print memo puts the paper that goes out with the
+    // parcel in the printer while the deal is still being agreed; Confirm sale is the only thing
+    // on this screen that writes anything at all.
+    var printBtn = (Button)win.FindName("SaveDraft")!;
+    Check("PRINT - the button prints rather than saving",
+          GetClickHandlerName(printBtn) == "PrintMemo_Click", GetClickHandlerName(printBtn));
+    Check("PRINT - and says so, without promising to save",
+          (printBtn.ToolTip as string ?? "").Contains("Nothing is saved"),
+          printBtn.ToolTip as string);
+
+    // Nothing to print is a message, not a printer dialog.
+    entry.Lines.Clear();
+    entry.Lines.Add(new SaleLine());
+    var st = (TextBlock)win.FindName("Status")!;
+    st.Text = "";
+    typeof(MainWindow).GetMethod("PrintMemo_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, [printBtn, new RoutedEventArgs()]);
+    Check("PRINT - an empty invoice is refused before any printer dialog",
+          st.Text.Contains("Nothing to print"), st.Text.Length == 0 ? "<silent>" : st.Text);
+    Check("PRINT - and printing books nothing: still no invoice id",
+          entry.InvoiceId is null, entry.InvoiceId?.ToString() ?? "null");
+
+    // The Saved memos card is gone, and so is everything that fed it.
+    Check("PRINT - the Saved memos card is gone",
+          win.FindName("MemoCard") is null && win.FindName("MemoGrid") is null);
+    Check("PRINT - and nothing is left calling for it",
+          typeof(MainWindow).GetMethod("RefreshMemos", BindingFlags.Instance | BindingFlags.NonPublic) is null
+          && typeof(MainWindow).GetMethod("FillMemosAsync", BindingFlags.Instance | BindingFlags.NonPublic) is null);
+
+    // Confirm sale is untouched: it is still the one path that saves and posts, in that order.
+    Check("PRINT - Confirm sale still writes, and is still the primary",
+          ((Button)win.FindName("Post")!).Style == win.FindResource("DashGoldButton"));
+
+    // ── Invoices: a memo is not a sale ─────────────────────────────────────
+    var filter = (ComboBox)win.FindName("InvoiceStatusFilter")!;
+    Check("LIST - the page opens on all sales",
+          ((ComboBoxItem)filter.Items[0]).Content as string == "All sales" && filter.SelectedIndex == 0,
+          $"index {filter.SelectedIndex}");
+    // A filter that can only ever come back empty is worse than no filter.
+    Check("LIST - and offers no Memo filter, because memos are never on this page",
+          !filter.Items.OfType<ComboBoxItem>().Any(i => (i.Content as string) == "Memo"));
+
+    typeof(MainWindow).GetField("_invoices", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .SetValue(win, new List<VInvoice>
+        {
+            new() { InvoiceId = 1, InvoiceNo = "INV-1", BuyerName = "ABC", Status = InvoiceStatus.POSTED },
+            new() { InvoiceId = 2, InvoiceNo = null, BuyerName = "ABC", Status = InvoiceStatus.DRAFT },
+            new() { InvoiceId = 3, InvoiceNo = "INV-3", BuyerName = "ABC", Status = InvoiceStatus.CANCELLED },
+        });
+
+    var apply = typeof(MainWindow).GetMethod("ApplyInvoiceFilter",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var invoiceGrid = (DataGrid)win.FindName("InvoiceGrid")!;
+
+    apply.Invoke(win, null);
+    var shown = ((IEnumerable<VInvoice>)invoiceGrid.ItemsSource).ToList();
+    Check("LIST - the memo is not in the list of sales",
+          shown.Count == 2 && shown.All(i => i.Status != InvoiceStatus.DRAFT),
+          string.Join(", ", shown.Select(i => i.Status)));
+    Check("LIST - a cancelled sale still is: it happened",
+          shown.Any(i => i.Status == InvoiceStatus.CANCELLED));
+
+    // Excluded BEFORE the status filter, so no setting can bring one back.
+    foreach (var item in filter.Items.OfType<ComboBoxItem>())
+    {
+        filter.SelectedItem = item;
+        apply.Invoke(win, null);
+        var rows = ((IEnumerable<VInvoice>)invoiceGrid.ItemsSource).ToList();
+        if (rows.Any(i => i.Status == InvoiceStatus.DRAFT))
+        {
+            Check($"LIST - no setting brings a memo back ({item.Content})", false);
+            break;
+        }
+    }
+    Check("LIST - no setting of the filter brings a memo back", true);
+
+    // ── a table that ends mid-row ends mid-BOX ────────────────────────────
+    // The alias column is the one editable cell in the app, and EditableCell draws it as a real
+    // input box. Where every other grid's clipped last row reads as "there is more below", a
+    // half-drawn field reads as broken -- which is how it was reported.
+    // The tab has to be SELECTED first: a TabControl does not realise an unselected tab's
+    // content, so nothing is measured and SizeChanged never fires. The check would otherwise pass
+    // an untouched MaxHeight of infinity and prove nothing.
+    var tabs = (TabControl)win.FindName("Tabs")!;
+    foreach (var t in tabs.Items.OfType<TabItem>())
+        if (t.Header as string == "Master data") { t.IsSelected = true; break; }
+    win.UpdateLayout();
+
+    var gradeGrid = (DataGrid)win.FindName("GradeGrid")!;
+    var gradeArea = (Panel)win.FindName("GradeArea")!;
+
+    // The row has to be able to hold the box in the first place: 32 high inside a 4px margin,
+    // over AppCell's 1px rule. If a restyle ever drops RowHeight below that, no amount of
+    // snapping helps and this is the check that says so.
+    Check("GRID - a grades row is tall enough for the field it draws",
+          gradeGrid.RowHeight >= 32 + 4 + 4 + 1,
+          $"row {gradeGrid.RowHeight}px for a 41px field");
+
+    gradeArea.Height = 400;
+    win.UpdateLayout();
+
+    double chrome = gradeGrid.ColumnHeaderHeight + gradeGrid.BorderThickness.Top
+                                                 + gradeGrid.BorderThickness.Bottom;
+    double body = gradeGrid.MaxHeight - chrome;
+    Check("GRID - and the table stops between rows, never through one",
+          body > 0 && Math.Abs(body % gradeGrid.RowHeight) < 0.01,
+          $"{body}px of body over {gradeGrid.RowHeight}px rows");
+
+    // It must not overflow what it was given -- snapping DOWN to a whole row, not up past the card.
+    Check("GRID - without spilling past the space the card gave it",
+          gradeGrid.MaxHeight <= 400, $"{gradeGrid.MaxHeight}px inside 400px");
+
+    // A card squeezed smaller than one row still shows a row and scrolls, rather than showing none.
+    gradeArea.Height = 20;
+    win.UpdateLayout();
+    Check("GRID - a cramped card still shows one whole row",
+          gradeGrid.MaxHeight >= chrome + gradeGrid.RowHeight,
+          $"{gradeGrid.MaxHeight}px");
+    gradeArea.Height = double.NaN;
+
+    // ── a setting value is not always short ───────────────────────────────
+    // The value column was pinned at 200px, which suits "15" and "60" and cuts stock_sheet_rates
+    // off mid-list. It is a column, so it has to stay uniform down the card -- the fix is a share
+    // of the width, not a per-row size.
+    var settingRow = (DataTemplate)Application.Current.TryFindResource("SettingRow")!;
+    var built = (FrameworkElement)settingRow.LoadContent();
+    // The real SettingItem, not an anonymous type: Value binds TwoWay, and WPF throws outright on
+    // a read-only property. Building the row against the type the screen actually uses is also the
+    // only way this proves anything about the screen.
+    built.DataContext = new SettingItem
+    {
+        Key = "stock_sheet_rates", Label = "Stock sheet rates", Description = "d",
+        Category = "Other", OriginalValue = "",
+        Value = "PREMIUM,+6.5,51000;PREMIUM,+11,48000;NO 1,+6.5,44000",
+    };
+
+    var cols = ((Grid)((Border)built).Child).ColumnDefinitions;
+    Check("SETTING - the value column takes a share of the card, not a fixed 200px",
+          cols[1].Width.IsStar, $"{cols[1].Width}");
+    // Never narrower than it is today, and never the width of the page on a large monitor.
+    Check("SETTING - with today's width as the floor and a ceiling above it",
+          cols[1].MinWidth == 200 && cols[1].MaxWidth == 460,
+          $"{cols[1].MinWidth}..{cols[1].MaxWidth}");
+
+    // Wide card: the long value gets room the label was hogging.
+    built.Width = 1100; built.Measure(new Size(1100, 200));
+    built.Arrange(new Rect(0, 0, 1100, 200)); built.UpdateLayout();
+    Check("SETTING - so a wide card gives a long value more than the old 200px",
+          cols[1].ActualWidth > 200, $"{cols[1].ActualWidth:N0}px at 1100");
+
+    // Narrow card: it holds the floor rather than collapsing.
+    built.Width = 420; built.Measure(new Size(420, 200));
+    built.Arrange(new Rect(0, 0, 420, 200)); built.UpdateLayout();
+    Check("SETTING - and a narrow one does not squeeze it below the floor",
+          cols[1].ActualWidth >= 200, $"{cols[1].ActualWidth:N0}px at 420");
+
+    // A TextBox cannot ellipsise, so the tooltip is the whole overflow story for the values that
+    // no sensible box will ever show in full.
+    var valueBox = (TextBox)((Grid)((Border)built).Child).Children[1];
+    Check("SETTING - a value too long for any box is still readable on hover",
+          valueBox.ToolTip is not null);
+
+    // ── a tooltip that fits on the screen ─────────────────────────────────
+    // A tooltip is a Popup, so it was never clipped by a card. It laid a long value out as ONE
+    // unwrapped line -- stock_sheet_rates is a whole sheet layout -- so it measured thousands of
+    // pixels wide and ran off both edges with only its middle on screen. WPF already keeps a popup
+    // inside the monitor's work area; it cannot fit something wider than the monitor.
+    string longValue = string.Join(";", Enumerable.Range(0, 40).Select(i => $"PREMIUM,+6.5,{51000 + i}"));
+
+    var tipStyle = (Style)Application.Current.FindResource(typeof(ToolTip));
+    double maxW = (double)tipStyle.Setters.OfType<Setter>()
+        .First(x => x.Property == FrameworkElement.MaxWidthProperty).Value;
+    var tipTemplate = (DataTemplate)tipStyle.Setters.OfType<Setter>()
+        .First(x => x.Property == ContentControl.ContentTemplateProperty).Value;
+
+    Check("TIP - every tooltip in the app is bounded, not just the reported one",
+          maxW > 0 && maxW <= 640, $"MaxWidth {maxW}");
+
+    var tipText = (TextBlock)tipTemplate.LoadContent();
+    Check("TIP - and its text wraps rather than running in one line",
+          tipText.TextWrapping == TextWrapping.Wrap);
+
+    // Measured through a real content host, not by poking the template's TextBlock directly: a
+    // {Binding} on a detached element never resolves, and the check would have measured an empty
+    // string and passed for the wrong reason.
+    var tipHost = new ContentControl { Content = longValue, ContentTemplate = tipTemplate,
+                                       MaxWidth = maxW };
+    tipHost.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+
+    // The whole bug, measured: a value 40 entries long has to come back inside the bound.
+    Check("TIP - so a sheet-length value measures within the bound instead of off-screen",
+          tipHost.DesiredSize.Width > 0 && tipHost.DesiredSize.Width <= maxW,
+          $"{tipHost.DesiredSize.Width:N0}px of a possible {maxW:N0} for {longValue.Length} chars");
+
+    // Bounded AND wrapped: width alone would clip the tail instead of showing it.
+    var oneLine = new ContentControl { Content = "PREMIUM,+6.5,51000", ContentTemplate = tipTemplate };
+    oneLine.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+    Check("TIP - by flowing onto more lines, not by hiding the tail",
+          tipHost.DesiredSize.Height > oneLine.DesiredSize.Height * 2,
+          $"{tipHost.DesiredSize.Height:N0}px tall against {oneLine.DesiredSize.Height:N0} for one line");
+
+    // The one tooltip whose content is a panel rather than a string has to opt out, or the
+    // template above would render its type name.
+    string tipMarkup = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "MainWindow.xaml"));
+    Check("TIP - the one composed tooltip opts out of the text template",
+          tipMarkup.Contains("<ToolTip ContentTemplate=\"{x:Null}\">"),
+          "dashboard chart row keeps its panel");
+
+    // ── an invoice number is not a different invoice ──────────────────────
+    // 118px cut "INV-2026-00004" to "INV-2026-0000", so two invoices on the card read the same.
+    var drill = (DataGrid)win.FindName("DrillGrid")!;
+    var invoiceNo = drill.Columns[0];
+    Check("GRID - the invoice number column is sized from the numbers themselves",
+          invoiceNo.Width.IsAuto, $"{invoiceNo.Width}");
+    Check("GRID - with a floor that fits a full invoice number",
+          invoiceNo.MinWidth >= 132, $"MinWidth {invoiceNo.MinWidth}");
+
+    // ── a line goes under the last line, and stays there ──────────────────
+    // Add line appends to Lines; a DataGrid sorts by default, so one click on a header reordered
+    // the view and the appended row landed somewhere other than under the last line on screen.
+    string entryMarkup = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "MainWindow.xaml"));
+    string modalMarkup = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "UpdateInvoiceDialog.xaml"));
+
+    Check("ORDER - the Sales entry grid cannot be re-sorted out of typed order",
+          entryMarkup.Contains("CanUserSortColumns=\"False\""));
+    Check("ORDER - and neither can the Update modal's",
+          modalMarkup.Contains("CanUserSortColumns=\"False\""));
+
+    var ordered = new InvoiceEntry();
+    ordered.Lines.Clear();
+    var first = new SaleLine { Remark = "first" };
+    ordered.Lines.Add(first);
+    var second = new SaleLine { Remark = "second" };
+    ordered.Lines.Add(second);
+    Check("ORDER - a new line goes after the last one, leaving the others alone",
+          ReferenceEquals(ordered.Lines[0], first) && ReferenceEquals(ordered.Lines[^1], second),
+          $"{ordered.Lines.Count} row(s), last is \"{ordered.Lines[^1].Remark}\"");
+
+    win.Close();
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Console.Out.Flush();
+    Environment.Exit(fail);
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+Environment.Exit(fail);

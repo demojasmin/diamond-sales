@@ -1,0 +1,223 @@
+// Correcting a POSTED invoice: what the screen offers, and what it refuses.
+//
+// NO DATABASE. The transaction itself lives in 0040 and is exercised by
+// supabase/VERIFY_EDIT_POSTED_INVOICE.sql against a live server -- there is nowhere else a
+// plpgsql function can be run. What is checked here is everything around it: which invoices the
+// button lights for, which the handler turns away, and that the payload sent is the one the
+// screen is showing.
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+// -- which invoice numbers count as imported --------------------------------
+// The whole "imported sales are untouched" promise rests on this one predicate.
+Check("IMPORTED - MIG- is imported", Repo.IsImported("MIG-1"));
+Check("IMPORTED - MIG-12 is imported", Repo.IsImported("MIG-12"));
+Check("IMPORTED - an app invoice is not", !Repo.IsImported("INV-2026-00001"));
+Check("IMPORTED - an unnumbered draft is not", !Repo.IsImported(null));
+
+// -- EditPostedAsync will not send an unexplained or unsaved correction ------
+var lines = new List<DraftLine>
+{
+    new(5, 3, 2.30m, 2.00m, 63000m, 1m, 2m, 1m, "corrected"),
+};
+var saved = new DraftInvoice(77, Guid.NewGuid(), new DateOnly(2026, 8, 25), 11, null, 0m, 45,
+                             "BILL", 1, lines);
+var never = saved with { InvoiceId = null };
+
+var r1 = await Repo.EditPostedAsync(never, "typo in the weight");
+Check("GUARD - an invoice that was never saved is refused before any call",
+      !r1.Ok && (r1.Failure ?? "").Contains("never been saved"), r1.Failure);
+
+foreach (string blank in new[] { "", "   " })
+{
+    var r2 = await Repo.EditPostedAsync(saved, blank);
+    Check($"GUARD - a blank reason is refused (\"{blank}\")",
+          !r2.Ok && (r2.Failure ?? "").Contains("reason"), r2.Failure);
+}
+
+// A well-formed call still fails here -- there is no session -- but it must ANSWER, never throw.
+Exception? thrown = null;
+WriteResult? r3 = null;
+try { r3 = await Repo.EditPostedAsync(saved, "typo in the weight"); }
+catch (Exception ex) { thrown = ex; }
+Check("GUARD - a real correction returns a result rather than throwing", thrown is null,
+      thrown?.GetType().Name ?? r3?.Failure);
+
+// -- the screen ------------------------------------------------------------
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+
+    var app = new Application();
+    foreach (string d in new[]
+             {
+                 "Themes/LightTheme.xaml", "Themes/Typography.xaml", "Styles/Buttons.xaml",
+                 "Styles/Inputs.xaml", "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
+                 "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
+                 "Styles/Audit.xaml",
+             })
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+                               Left = -4000, Top = -4000, ShowInTaskbar = false,
+                               Width = 1400, Height = 900 };
+    win.Show();
+
+    var tabs = (TabControl)win.FindName("Tabs")!;
+    tabs.SelectedItem = tabs.Items.OfType<TabItem>().Single(i => (i.Header as string) == "Invoices");
+    win.UpdateLayout();
+
+    var grid = (DataGrid)win.FindName("InvoiceGrid")!;
+    var button = (Button)win.FindName("EditDraftButton")!;
+    var selected = typeof(MainWindow).GetMethod("InvoiceRow_Selected",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    VInvoice Row(string? no, string status) => new()
+    {
+        InvoiceId = 1, InvoiceNo = no, InvoiceDate = new DateOnly(2026, 8, 25),
+        BuyerId = 11, BuyerName = "ABC EXPORTS", Status = status,
+        AmountTotal = 1000m, Outstanding = 1000m, DueDate = new DateOnly(2026, 10, 5),
+    };
+
+    void Select(VInvoice? inv)
+    {
+        grid.ItemsSource = inv is null ? null : new[] { inv };
+        grid.SelectedItem = inv;
+        selected.Invoke(win, [grid, new SelectionChangedEventArgs(
+            Selector.SelectionChangedEvent, Array.Empty<object>(), Array.Empty<object>())]);
+        win.UpdateLayout();
+    }
+
+    // -- ADD -> visible in the grid ----------------------------------------
+    // The grid is what the Invoices tab loads; a posted sale reaches it the same way any row does.
+    Select(Row("INV-2026-00009", InvoiceStatus.POSTED));
+    Check("GRID - a posted sale appears in the existing grid",
+          grid.Items.Count == 1 && ((VInvoice)grid.Items[0]!).InvoiceNo == "INV-2026-00009");
+
+    // -- and can be corrected ----------------------------------------------
+    Check("BUTTON - a POSTED app invoice can be corrected", button.IsEnabled);
+    Check("BUTTON - and says so", (button.Content as string) == "Update invoice", button.Content as string);
+    Check("BUTTON - the tooltip explains what saving will do",
+          (button.ToolTip as string ?? "").Contains("stock movements"), button.ToolTip as string);
+
+    // -- a draft still behaves exactly as before ----------------------------
+    Select(Row(null, InvoiceStatus.DRAFT));
+    Check("BUTTON - a DRAFT is still editable", button.IsEnabled);
+    // "Edit memo" since the rename. The WORD changed and nothing else did: the button is enabled
+    // for the same rows, does the same thing, and the stored status is still DRAFT.
+    Check("BUTTON - and still offers to open it, now called Edit memo",
+          (button.Content as string) == "Edit memo", button.Content as string);
+
+    // -- a type the catalogue does not offer survives being opened ----------
+    // An imported sheet can carry one. Bound to a list without it, the picker found no match,
+    // nulled SelectedItem and wrote that null back down the two-way binding -- so opening the
+    // invoice blanked a field nobody had touched, and saving stored the blank.
+    {
+        var odd = new InvoiceEntry();
+        Check("DOCTYPE - the catalogue's own types are offered",
+              odd.DocTypes.Contains("BILL") && !odd.DocTypes.Contains("JANGAD"));
+
+        odd.KeepDocType("JANGAD");
+        odd.DocType = "JANGAD";
+        Check("DOCTYPE - one the invoice already carries is added to the picker",
+              odd.DocTypes.Contains("JANGAD"));
+        Check("DOCTYPE - and it survives, instead of being nulled on the way in",
+              odd.DocType == "JANGAD", odd.DocType ?? "<null>");
+
+        odd.KeepDocType("JANGAD");
+        Check("DOCTYPE - asking twice does not list it twice",
+              odd.DocTypes.Count(t => t == "JANGAD") == 1);
+        Check("DOCTYPE - and nothing is added for a blank one",
+              !odd.DocTypes.Contains(""));
+    }
+
+    // -- and a blank one does not stay blank --------------------------------
+    // An empty picker is not a neutral display: doc_type is written back on save, so a box showing
+    // nothing would store nothing. BILL is the same default the importer applies.
+    {
+        var blank = new VInvoice { InvoiceId = 4, InvoiceNo = "MIG-4", BuyerName = "FEMINA DIAM",
+            InvoiceDate = new DateOnly(2025, 12, 2), Status = InvoiceStatus.POSTED,
+            TermsDays = 7, DocType = "", BuyerId = 1 };
+        var blankEntry = MainWindow.BuildDraft(blank, [], [new PartyRef(1, "FEMINA DIAM", 7)], [],
+                                               Catalogue.Grades, Catalogue.AllSizes, out _);
+        Check("DOCTYPE - a blank type falls back instead of staying empty",
+              blankEntry.DocType == "BILL", blankEntry.DocType ?? "<null>");
+
+        var odd2 = new VInvoice { InvoiceId = 5, InvoiceNo = "MIG-5", BuyerName = "RAJ IMPEX",
+            InvoiceDate = new DateOnly(2025, 12, 5), Status = InvoiceStatus.POSTED,
+            TermsDays = 15, DocType = "JANGAD", BuyerId = 1 };
+        var kept = MainWindow.BuildDraft(odd2, [], [new PartyRef(1, "RAJ IMPEX", 15)], [],
+                                         Catalogue.Grades, Catalogue.AllSizes, out _);
+        Check("DOCTYPE - but a real one the catalogue lacks is kept, not replaced",
+              kept.DocType == "JANGAD" && kept.DocTypes.Contains("JANGAD"),
+              kept.DocType ?? "<null>");
+    }
+
+    // -- an imported sale can be corrected too, since 0042 -------------------
+    // It was refused for a real reason: an imported invoice carries no stock movements, so 0040's
+    // delete-then-rewrite would have written the FULL new amount on top of an opening balance that
+    // had already taken the original out. 0042 moves only the difference, which is what makes
+    // lighting this button safe rather than merely possible.
+    Select(Row("MIG-1", InvoiceStatus.POSTED));
+    Check("BUTTON - an IMPORTED sale CAN now be corrected", button.IsEnabled);
+    Check("BUTTON - and it is an update, not a memo",
+          (button.Content as string) == "Update invoice", button.Content as string);
+    Check("BUTTON - the tooltip says what is different about it",
+          (button.ToolTip as string ?? "").Contains("difference"), button.ToolTip as string);
+    // The one thing that must never read as ordinary: it does not rewrite movements, it adds an
+    // adjustment for what changed.
+    Check("BUTTON - and does NOT claim to rewrite its stock movements",
+          !(button.ToolTip as string ?? "").Contains("rewrites its stock movements"),
+          button.ToolTip as string);
+
+    // -- a cancelled one is not editable either -----------------------------
+    Select(Row("INV-2026-00009", InvoiceStatus.CANCELLED));
+    Check("BUTTON - a CANCELLED invoice cannot be corrected", !button.IsEnabled);
+    Check("BUTTON - and the tooltip says its stock is already back",
+          (button.ToolTip as string ?? "").Contains("already had its stock returned"),
+          button.ToolTip as string);
+
+    Select(null);
+    Check("BUTTON - nothing selected, nothing enabled", !button.IsEnabled);
+
+    // -- the screen knows which mode it is in -------------------------------
+    var correcting = typeof(MainWindow).GetProperty("CorrectingPosted",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var invoice = typeof(MainWindow).GetField("_invoice",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var entry = invoice.GetValue(win)!;
+
+    Check("MODE - a fresh screen is not correcting anything", !(bool)correcting.GetValue(win)!);
+
+    entry.GetType().GetProperty("InvoiceId")!.SetValue(entry, 77L);
+    entry.GetType().GetProperty("Status")!.SetValue(entry, InvoiceStatus.POSTED);
+    Check("MODE - a posted invoice on the screen IS a correction", (bool)correcting.GetValue(win)!);
+
+    entry.GetType().GetProperty("Status")!.SetValue(entry, InvoiceStatus.DRAFT);
+    Check("MODE - a draft on the screen is not", !(bool)correcting.GetValue(win)!);
+
+    win.Close();
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Console.Out.Flush();
+    Environment.Exit(fail);
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+Environment.Exit(fail);

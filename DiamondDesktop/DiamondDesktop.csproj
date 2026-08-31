@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -16,9 +16,9 @@
     <Company>Solitaire</Company>
     <Description>Diamond Sales &amp; Inventory</Description>
     <Copyright>Copyright © Solitaire</Copyright>
-    <Version>1.3.0</Version>
-    <FileVersion>1.3.0.0</FileVersion>
-    <AssemblyVersion>1.3.0.0</AssemblyVersion>
+    <Version>1.5.0</Version>
+    <FileVersion>1.5.0.0</FileVersion>
+    <AssemblyVersion>1.5.0.0</AssemblyVersion>
 
     <!-- Trimming is off deliberately: Supabase's Postgrest layer resolves models by reflection, so
          a trimmer that cannot see those types strips them and every read fails at runtime rather
@@ -33,6 +33,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DiamondCalc\DiamondCalc.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The printed letterhead's logo. Resource, not Content: it must be INSIDE the exe. The note
+         is printed on machines that get the app as a single published file, and a logo sitting
+         beside it as a loose .png is one copy-paste away from a letterhead with a blank corner. -->
+    <Resource Include="Assets\priya-gems-logo.png" />
   </ItemGroup>
 
   <ItemGroup>

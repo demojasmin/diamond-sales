@@ -53,6 +53,9 @@ var t = new Thread(() =>
     SeedCatalogue();
     SeedParties();
 
+    // A new invoice opens with NO rows now -- the grid holds only the lines you asked for -- so
+    // the probe adds the one it is about to type into.
+    if (invoice.Lines.Count == 0) invoice.Lines.Add(new SaleLine());
     var line = invoice.Lines[0];
     line.GrossWeightCt = 1m;
     line.SelectionCt = 1m;

@@ -51,6 +51,8 @@
          its decimal, sorting and filtering work on that decimal, and the CSV export reads the
          property rather than the cell, so nothing downstream changes. -->
     <local:ShortMoneyConverter x:Key="Money"/>
+    <BooleanToVisibilityConverter x:Key="Bool"/>
+
     <!-- A count and a noun that agrees with it: the Sales entry chip read "1 lines". -->
     <local:CountLabelConverter x:Key="CountLabel"/>
 
@@ -79,6 +81,18 @@
       <Setter Property="Margin" Value="4,0,14,0"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
       <Setter Property="Background" Value="{DynamicResource BorderBrush}"/>
+    </Style>
+
+    <!-- The header's own placeholder. CellPlaceholder is built for a 26px grid cell; these
+         combos are the full 32px field height and sit left-aligned inside a Grid that stretches,
+         so the hint needs its own left inset and must not centre itself across the field. -->
+    <Style x:Key="FieldPlaceholder" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+      <Setter Property="Margin" Value="12,0,0,0"/>
+      <Setter Property="HorizontalAlignment" Value="Left"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="FontSize" Value="12.5"/>
+      <Setter Property="Opacity" Value="0.75"/>
+      <Setter Property="IsHitTestVisible" Value="False"/>
     </Style>
 
     <Style x:Key="CellPlaceholder" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
@@ -431,8 +445,12 @@
                   <StackPanel Orientation="Horizontal">
                     <TextBlock Text="Sales entry" Style="{StaticResource PageHeaderTitle}"/>
                     <Border Style="{StaticResource DashChip}" Margin="10,0,0,0">
+                      <!-- LineCount, not the grid's Items.Count. The grid always carries one row
+                           to type into, so counting rows called an untouched screen "1 line" while
+                           the hint underneath it said nothing had been typed yet. LineCount counts
+                           RealLines, which is the same figure the totals and Confirm sale use. -->
                       <TextBlock Style="{StaticResource DashChipText}"
-                                 Text="{Binding Items.Count, ElementName=Grid,
+                                 Text="{Binding LineCount,
                                                 Converter={StaticResource CountLabel}, ConverterParameter=line}"/>
                     </Border>
                   </StackPanel>
@@ -460,14 +478,26 @@
                      validation message and by HelpText for screen readers — not by making one
                      label look different from the six beside it. -->
                 <TextBlock Text="Buyer" Style="{StaticResource Lbl}"/>
-                <ComboBox x:Name="BuyerPicker" ItemsSource="{Binding Buyers}" SelectedItem="{Binding SelectedBuyer}"
-                          AutomationProperties.Name="Buyer"
-                          AutomationProperties.HelpText="Required" Width="180"/>
+                <!-- The same idiom the Size and Grade cells use: a hint BEHIND the drop-down,
+                     not an entry inside it. An unset combo draws nothing but a chevron, so the
+                     one required field on this header was also the only one that did not say
+                     what it wanted. It disappears the moment a buyer is chosen. -->
+                <Grid>
+                  <ComboBox x:Name="BuyerPicker" ItemsSource="{Binding Buyers}" SelectedItem="{Binding SelectedBuyer}"
+                            AutomationProperties.Name="Buyer"
+                            AutomationProperties.HelpText="Required" Width="180"/>
+                  <TextBlock Text="Select buyer" Style="{StaticResource FieldPlaceholder}"
+                             Visibility="{Binding SelectedBuyer, Converter={StaticResource Empty}}"/>
+                </Grid>
               </StackPanel>
               <StackPanel Style="{StaticResource FieldPair}">
                 <TextBlock Text="Broker" Style="{StaticResource Lbl}"/>
-                <ComboBox x:Name="BrokerPicker" ItemsSource="{Binding Brokers}" SelectedItem="{Binding SelectedBroker}"
-                          AutomationProperties.Name="Broker" Width="160"/>
+                <Grid>
+                  <ComboBox x:Name="BrokerPicker" ItemsSource="{Binding Brokers}" SelectedItem="{Binding SelectedBroker}"
+                            AutomationProperties.Name="Broker" Width="160"/>
+                  <TextBlock Text="Select broker" Style="{StaticResource FieldPlaceholder}"
+                             Visibility="{Binding SelectedBroker, Converter={StaticResource Empty}}"/>
+                </Grid>
               </StackPanel>
               <StackPanel Style="{StaticResource FieldPair}">
                 <TextBlock Text="Broker %" Style="{StaticResource Lbl}"/>
@@ -501,16 +531,13 @@
           </Border>
 
           <Border DockPanel.Dock="Bottom" Style="{StaticResource DashCard}" Margin="0,12,0,0">
-            <!-- Auto column first: the buttons claim their width before the totals get any,
-                 so they can never be clipped off the right edge on a narrow window. -->
+            <!-- Totals only. The actions moved up into the Invoice lines card, beside the work
+                 they act on, where there is room for their full labels. -->
             <Grid>
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
-              </Grid.ColumnDefinitions>
               <!-- Label above figure, not beside it. Three label/value pairs on one line read as
                    six things; stacked they read as three. Same bindings and same names — the
                    figures themselves are untouched. -->
-              <WrapPanel Grid.Column="0" VerticalAlignment="Center">
+              <WrapPanel VerticalAlignment="Center">
                 <StackPanel Margin="0,0,32,0">
                   <TextBlock Text="CARATS" Style="{StaticResource KpiLabel}"/>
                   <TextBlock x:Name="TotalCarats" Margin="0,2,0,0"
@@ -527,19 +554,6 @@
                              Text="{Binding BlendedRate, Converter={StaticResource Money}}" Style="{StaticResource Total}"/>
                 </StackPanel>
               </WrapPanel>
-              <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right"
-                          VerticalAlignment="Center">
-                <!-- The keyboard hints stay in the labels: this screen is driven from the keyboard,
-                     and the shortcut is the point of the button. -->
-                <Button x:Name="AddLineButton" Content="Add line  (Enter)" Click="AddLine_Click"
-                        Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
-                <Button x:Name="New" Content="New" Click="NewInvoice_Click"
-                        Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
-                <Button x:Name="SaveDraft" Content="Save draft  (Ctrl+S)" Click="SaveDraft_Click"
-                        Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
-                <Button x:Name="Post" Content="Post" Click="Post_Click"
-                        Style="{StaticResource DashGoldButton}"/>
-              </StackPanel>
             </Grid>
           </Border>
 
@@ -555,26 +569,139 @@
                   <TextBlock Style="{StaticResource DashSubheading}"
                              Text="Enter adds a line · Rejection and Amount are calculated"/>
                 </StackPanel>
+                <!-- ONE action area, beside the heading that already draws the eye. Everything
+                     that acts on this invoice is here: nothing is per-row any more, which is what
+                     kept the Action column cramped enough to cut its own buttons in half.
+
+                     These carry the x:Names again, so Busy() greys the actual buttons during a
+                     save or a post rather than a set of hidden anchors — the per-button feedback
+                     that was lost while they lived inside a DataTemplate.
+
+                     Icon then label, one style, one spacing, on every one of them. -->
+                <WrapPanel HorizontalAlignment="Right" VerticalAlignment="Center">
+                  <Button x:Name="AddLineButton" Click="AddLine_Click"
+                          Style="{StaticResource DashButton}" Margin="0,0,8,0"
+                          ToolTip="Add another line to this invoice  (Enter)"
+                          AutomationProperties.Name="Add line">
+                    <StackPanel Orientation="Horizontal">
+                      <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconAdd}"/>
+                      <TextBlock Text="Add line" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                  </Button>
+                  <!-- Only on screen while something is ticked. Its label carries the count,
+                       so the text is set in code and only the icon is fixed here. -->
+                  <Button x:Name="DeleteLines" Click="DeleteLines_Click" Visibility="Collapsed"
+                          Style="{StaticResource DashButton}" Margin="0,0,8,0"
+                          Foreground="{DynamicResource DangerBrush}"
+                          ToolTip="Take the ticked lines off this invoice. Nothing is saved and no stock moves."
+                          AutomationProperties.Name="Remove the ticked lines">
+                    <StackPanel Orientation="Horizontal">
+                      <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconRemove}"/>
+                      <TextBlock x:Name="DeleteLinesLabel" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                  </Button>
+                  <Button x:Name="SaveDraft" Click="PrintMemo_Click"
+                          Style="{StaticResource DashButton}" Margin="0,0,8,0"
+                          ToolTip="Print the memo for this invoice  (Ctrl+P). Nothing is saved and no stock moves."
+                          AutomationProperties.Name="Print memo">
+                    <StackPanel Orientation="Horizontal">
+                      <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconMemo}"/>
+                      <TextBlock Text="Print memo" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                  </Button>
+                  <Button x:Name="MoveToStock" Click="MoveToStock_Click"
+                          Style="{StaticResource DashButton}" Margin="0,0,8,0"
+                          ToolTip="Return this invoice&apos;s carats to stock and show the buckets they went back to. It gives back exactly what these lines were holding, never more."
+                          AutomationProperties.Name="Move to stock">
+                    <StackPanel Orientation="Horizontal">
+                      <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconStock}"/>
+                      <TextBlock Text="Move to stock" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                  </Button>
+                  <Button x:Name="Post" Click="Post_Click"
+                          Style="{StaticResource DashGoldButton}" Margin="0,0,0,0"
+                          ToolTip="Confirm this sale: post the invoice and take its carats out of stock, in one step."
+                          AutomationProperties.Name="Confirm sale">
+                    <StackPanel Orientation="Horizontal">
+                      <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconConfirm}"/>
+                      <TextBlock Text="Confirm sale" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                  </Button>
+                </WrapPanel>
               </Grid>
 
+
+          <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                  CornerRadius="{StaticResource RadiusControl}" ClipToBounds="True">
+          <DockPanel>
+
+                        <!-- THE TABLE SCROLLS ITSELF, both ways, and both bars are Auto on the grid below.
+               Sales entry opts into SlimScrollBar in its TabItem.Resources, which is the same
+               style the Stock report sheet uses, so the horizontal bar here looks and behaves
+               exactly like the one under that sheet.
+
+               VerticalAlignment="Top" used to be on the grid, from when the rows scrolled in a
+               ScrollViewer wrapped around it. That wrapper is gone and the attribute was left
+               behind, which is what broke scrolling: content-height inside a fixed frame means
+               the rows below the fold were CLIPPED rather than scrolled, so there was nothing for
+               the wheel to move and no vertical bar to drag. Filling the frame gives the grid a
+               real viewport, and a real viewport is what makes both scrollbars appear.
+
+               Nothing about the columns changes: they keep their star widths and their content
+               floors, so the horizontal bar shows up exactly when the floors (1244px) do not fit
+               the window, at any size, and every right-hand field stays reachable. -->
           <Grid>
             <!-- CanUserAddRows is OFF: WPF's placeholder row carries a sentinel object, so the
                  per-row Size list (which depends on that row's grade) binds to nothing on it.
                  Enter appends a real line instead — which is what SALES-001 asks for anyway.
                  CanUserDeleteRows is OFF too: Delete is handled in code so a typed line cannot
                  vanish without being asked about. -->
-            <!-- Every column is proportional with a floor, so the eleven of them always fit.
-                 They used to be fixed and demanded 1210px; the window's own MinWidth is 1120,
-                 which leaves the grid about 880px, so at any normal size the grid scrolled
-                 sideways. Two symptoms came out of that one cause: reaching Remark scrolled Size
-                 and Grade off the left edge, and freezing that pair then hid Weight behind them.
-                 Sized to fit, nothing scrolls and nothing hides — the floors total 800px, inside
-                 the 808px of viewport the narrowest supported window leaves. -->
+            <!-- A FLOOR PER COLUMN, and each one is what that column's CONTENT needs — not what
+                 is left over after the others have had their share.
+
+                 Star columns divide the space that is free, so squeezing them is silent: they
+                 shrink to whatever fits and the text inside is simply cut. That is what clipped
+                 the Size and Grade dropdowns. With Action holding four buttons, 92* of Size came
+                 out at about 68px, and 68 less 20 of cell padding less the ComboBox's own arrow
+                 leaves under 30px for "−6.5". Trimming the floors to make everything fit at once
+                 did not avoid that — it just moved the cutting from one column to eleven.
+
+                 So the floors say what the content needs and the TABLE SCROLLS when the window
+                 cannot give it that, rather than silently squeezing a column below its content.
+
+                 They also have to leave HEADROOM, which is the other half of the same lesson. At
+                 1072 the floors were within about ten pixels of the card, so the moment enough
+                 lines arrived to raise the VERTICAL scrollbar, its eleven pixels came off the
+                 viewport and tipped the table into needing a horizontal one too — a bar that
+                 scrolled almost nothing and looked like a fault. The numeric columns gave up 72px
+                 between them and the floors now total 1000.
+
+                 Size and Grade were deliberately NOT touched. Those two hold ComboBoxes, and
+                 shaving them is what clipped "-6.5" and "Unknown Grade" the last time the floors
+                 were trimmed to make everything fit at once.
+
+                 The STAR WEIGHTS were rebalanced separately, and they cost nothing: they only
+                 decide how the spare width is shared, so moving weight between columns changes no
+                 total. Remark was the widest column on the row at 168*, from when it was a single
+                 line that could only show what fitted. It wraps now, so it does not need the width
+                 — and Price/ct and Amount do: an invoice in crores runs to fourteen characters,
+                 and both were cutting to "3,84,73,8...". Remark gave 52* to those two. Both keep
+                 their tooltips for anything larger still. -->
+            <!-- CanUserSortColumns="False", below. An invoice's lines are in the order they were
+                 typed, and that is the order that prints and posts. A DataGrid sorts by default,
+                 so one click on a header reordered the rows on screen without touching the
+                 invoice — and Add line, which appends to the LIST, then landed somewhere
+                 other than under the last line the person could see. -->
             <DataGrid x:Name="Grid" ItemsSource="{Binding Lines}" IsReadOnly="False"
                     Visibility="{Binding Source={x:Static local:Catalogue.Grades}, Path=Count, Converter={StaticResource Empty}, ConverterParameter=Invert}"
                     CanUserAddRows="False" CanUserDeleteRows="False" SelectionUnit="Cell"
-                    PreviewKeyDown="Grid_KeyDown" RowHeight="42" ColumnHeaderHeight="40"
-                    HeadersVisibility="Column" GridLinesVisibility="None">
+                    CanUserSortColumns="False"
+                    PreviewKeyDown="Grid_KeyDown" CurrentCellChanged="Grid_CurrentCellChanged"
+                    ColumnHeaderHeight="40"
+                    HeadersVisibility="Column" GridLinesVisibility="None"
+                    ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                    ScrollViewer.VerticalScrollBarVisibility="Auto"
+                    BorderThickness="0" Background="Transparent">
             <!-- A cell takes the first click to become current and only edits on the second, so on
                  a fresh screen the first figure typed goes nowhere. On a keyboard-first entry
                  screen that is a silent data loss, not a nicety. -->
@@ -589,6 +716,11 @@
                    off Error painted the row you were currently typing into red. The tooltip still
                    carries every message, including the not-yet-typed ones. -->
               <Style TargetType="DataGridRow">
+                <!-- MinHeight, not the grid's RowHeight. RowHeight PINS every row at 42 whatever is
+                     in it, which is what stopped a wrapped remark from ever being visible in full.
+                     A floor keeps the rows even while a line has a short remark, and lets the one
+                     with a long one grow to fit it. -->
+                <Setter Property="MinHeight" Value="42"/>
                 <Setter Property="Background" Value="Transparent"/>
                 <Setter Property="ToolTip" Value="{Binding Error}"/>
                 <Style.Triggers>
@@ -599,6 +731,56 @@
               </Style>
             </DataGrid.RowStyle>
             <DataGrid.Columns>
+              <!-- Ticking is for removing several lines at once, and nothing else: it changes no
+                   figure and no total. The header box ticks and unticks the lot. -->
+              <!-- Both boxes centred in the SAME 36px. AppColumnHeader is left-aligned with 10px
+                   of padding while AppCell centres its content, so HorizontalAlignment="Center" on
+                   the header box centred it inside a presenter that was itself pinned left — and
+                   the header tick sat a few px left of every row tick under it. Zero the padding
+                   on both and centre the header's content, and the one column has one centre. -->
+              <DataGridTemplateColumn Width="36" MinWidth="36" CanUserResize="False">
+                <DataGridTemplateColumn.HeaderStyle>
+                  <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource AppColumnHeader}">
+                    <Setter Property="Padding" Value="0"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                  </Style>
+                </DataGridTemplateColumn.HeaderStyle>
+                <DataGridTemplateColumn.CellStyle>
+                  <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
+                    <Setter Property="Padding" Value="0"/>
+                  </Style>
+                </DataGridTemplateColumn.CellStyle>
+                <DataGridTemplateColumn.HeaderTemplate>
+                  <DataTemplate>
+                    <!-- IsThreeState stays FALSE on purpose: a click must toggle all-or-nothing,
+                         never cycle the user into "some". The indeterminate look is set from code
+                         when the rows disagree, which WPF allows whatever IsThreeState says.
+                         Loaded, because a header inside a template cannot be reached by name. -->
+                    <CheckBox x:Name="TickAllLines" Click="TickAllLines_Click" Loaded="TickAllLoaded"
+                              IsThreeState="False"
+                              Style="{StaticResource FieldCheckBox}"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"
+                              ToolTip="Tick every line"
+                              AutomationProperties.Name="Tick every line"/>
+                  </DataTemplate>
+                </DataGridTemplateColumn.HeaderTemplate>
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <!-- No box at all on the empty row you type into: ticking it selected
+                         nothing, because Remove only ever counted real lines. -->
+                    <!-- On EVERY row, an empty one included. A line you have just added is the
+                         one most likely to be a mistake, and hiding its tick until it had figures
+                         in it meant the four blank rows you wanted rid of were the four you could
+                         not select. Ticking is meaningful because Remove acts on whatever is
+                         ticked, blank or not. -->
+                    <CheckBox IsChecked="{Binding Selected, UpdateSourceTrigger=PropertyChanged}"
+                              Click="TickLine_Click"
+                              Style="{StaticResource FieldCheckBox}"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"
+                              AutomationProperties.Name="Select this line"/>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
               <!-- CellComboBox, not a bare ComboBox: the default field style is 32px and these sat a
                    visible 4px taller than every other control in a 36px row. Same defect the
                    Disposition dropdown had (docs/12 §3c). -->
@@ -610,7 +792,7 @@
                    2. These headers are Title Case; every other grid uses UPPERCASE. Purely
                       visual, and equally a design decision.
                    Neither affects what is saved. -->
-              <DataGridTemplateColumn Header="Size" Width="92*" MinWidth="86" CellStyle="{StaticResource ComboCell}">
+              <DataGridTemplateColumn Header="Size" Width="92*" MinWidth="88" CellStyle="{StaticResource ComboCell}">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <!-- ItemTemplate, not DisplayMemberPath. The design's combo template draws its
@@ -631,7 +813,7 @@
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTemplateColumn Header="Grade" Width="152*" MinWidth="120" CellStyle="{StaticResource ComboCell}">
+              <DataGridTemplateColumn Header="Grade" Width="120*" MinWidth="112" CellStyle="{StaticResource ComboCell}">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <Grid>
@@ -646,15 +828,15 @@
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTextColumn Header="Weight" Width="84*" MinWidth="66" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Weight" Width="80*" MinWidth="66" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding GrossWeightCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Selection" Width="84*" MinWidth="68" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Selection" Width="88*" MinWidth="70" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding SelectionCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
               <!-- Read-only and never wider than "999.99", so it can afford the floor that the two
                    Less columns need. -->
-              <DataGridTextColumn Header="Rejection" Width="84*" MinWidth="60" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
+              <DataGridTextColumn Header="Rejection" Width="88*" MinWidth="70" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
                                   Binding="{Binding RejectionCt, StringFormat=N2, Mode=OneWay}" Foreground="{DynamicResource AccentBrush}"/>
-              <DataGridTextColumn Header="Price/ct" Width="148*" MinWidth="78" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Price/ct" Width="128*" MinWidth="96" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding PricePerCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}">
                 <DataGridTextColumn.ElementStyle>
                   <Style TargetType="TextBlock" BasedOn="{StaticResource Num}">
@@ -663,16 +845,16 @@
                   </Style>
                 </DataGridTextColumn.ElementStyle>
               </DataGridTextColumn>
-              <DataGridTextColumn Header="Ex Rate" Width="84*" MinWidth="62" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Ex Rate" Width="66*" MinWidth="50" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding ExRate, UpdateSourceTrigger=LostFocus}"/>
               <!-- 52*/46 gave the editor 13px of text room — one character — so a percentage like
                    12.5 scrolled out of sight as it was typed and the field looked dead. These two
                    hold the same shape of figure as Ex Rate and are sized to match it. -->
-              <DataGridTextColumn Header="Less 1" Width="74*" MinWidth="58" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Less 1" Width="62*" MinWidth="46" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding Less1Pct, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Less 2" Width="74*" MinWidth="58" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Less 2" Width="62*" MinWidth="46" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding Less2Pct, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Amount" Width="165*" MinWidth="96" IsReadOnly="True" HeaderStyle="{StaticResource AppNumericHeader}"
+              <DataGridTextColumn Header="Amount" Width="144*" MinWidth="104" IsReadOnly="True" HeaderStyle="{StaticResource AppNumericHeader}"
                                   Binding="{Binding Amount, StringFormat=N2, Mode=OneWay}" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}">
                 <DataGridTextColumn.ElementStyle>
                   <Style TargetType="TextBlock" BasedOn="{StaticResource Num}">
@@ -699,12 +881,26 @@
                    Intake shows and was the difference being reported. A template column has one
                    state: the box is always there, the way every other cell in this grid and the
                    NOTE cell on Intake behave. -->
-              <DataGridTemplateColumn Header="Remark" Width="162*" MinWidth="50">
+              <DataGridTemplateColumn Header="Remark" Width="116*" MinWidth="88">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <Grid>
+                      <!-- WRAPS, and the row grows with it (see the row style above). A
+                           single-line box can only ever show one column's worth of a remark, so a
+                           long one was cut whichever end you looked at: scrolled to its tail after
+                           typing, and to its head after LostFocus sent it home. Neither is the
+                           value. Wrapping shows all of it, at the cost of a taller row on the lines
+                           that carry one — which is the honest trade, since the alternative is a
+                           field that quietly hides what it holds.
+
+                           AcceptsReturn stays FALSE: Enter belongs to the grid, where it adds the
+                           next line. LostFocus still goes home, which now only matters for a remark
+                           too long even to wrap inside the row. -->
                       <TextBox Text="{Binding Remark, UpdateSourceTrigger=PropertyChanged}"
                                Style="{StaticResource CellTextBox}"
+                               TextWrapping="Wrap" AcceptsReturn="False"
+                               Height="Auto" MinHeight="28" VerticalContentAlignment="Center"
+                               LostFocus="RemarkBox_LostFocus"
                                AutomationProperties.Name="Remark"
                                ToolTip="{Binding Remark}"/>
                       <TextBlock Text="remark" Style="{StaticResource CellPlaceholder}"
@@ -713,18 +909,101 @@
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-            </DataGrid.Columns>
+              <!-- ACTION, last and next to Remark. Four icon buttons, no labels: Print memo,
+                   Move to stock, Confirm sale, Remove. Same icons and the same ActionIcon style as
+                   the header row above, so a glyph means the same thing in both places.
+
+                   Icons rather than words because this repeats on every line. The same four as
+                   text measured over 300px and made Action the widest column in the table, which
+                   starved the star columns and clipped the Size and Grade dropdowns. At 26px each
+                   the column is 136 and the table's floors come to 1072, inside the card at any
+                   normal window.
+
+                   The first three act on the WHOLE invoice and share the header buttons' handlers
+                   exactly — pressing one on any row does the same thing, since none of those
+                   handlers reads sender except to pass it to NewInvoice_Click, which ignores it.
+                   Only Remove is about this line. Their tooltips say which is which; the header
+                   keeps the worded copies for anyone who wants the labels. -->
+              <DataGridTemplateColumn Header="Action" Width="136" MinWidth="136"
+                                      CanUserResize="False">
+                <DataGridTemplateColumn.CellStyle>
+                  <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
+                    <Setter Property="Padding" Value="0"/>
+                  </Style>
+                </DataGridTemplateColumn.CellStyle>
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                      <Button Click="PrintMemo_Click" Style="{StaticResource DashButton}"
+                              Height="26" Width="28" MinWidth="0" Padding="0" Margin="2,0"
+                              ToolTip="Print the memo for this invoice  (Ctrl+P). Nothing is saved and no stock moves."
+                              AutomationProperties.Name="Print memo">
+                        <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconMemo}"/>
+                      </Button>
+                      <Button Click="MoveToStock_Click" Style="{StaticResource DashButton}"
+                              Height="26" Width="28" MinWidth="0" Padding="0" Margin="2,0"
+                              ToolTip="Return this invoice&apos;s carats to stock and show the buckets they went back to. It gives back exactly what these lines were holding, never more."
+                              AutomationProperties.Name="Move to stock">
+                        <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconStock}"/>
+                      </Button>
+                      <Button Click="Post_Click" Style="{StaticResource DashGoldButton}"
+                              Height="26" Width="28" MinWidth="0" Padding="0" Margin="2,0"
+                              ToolTip="Confirm this sale: post the invoice and take its carats out of stock, in one step."
+                              AutomationProperties.Name="Confirm sale">
+                        <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconConfirm}"/>
+                      </Button>
+                      <!-- On EVERY row, with no gate at all. Removable hid it whenever a single
+                           row was left, so the one row you most often want to clear was the one
+                           row that offered no way to clear it. Taking the last line off is not a
+                           special case: RemoveLine_Click puts a fresh blank row back, so the grid
+                           still always has one to type into. -->
+                      <!-- Icon AND the word, matching "Remove n lines" in the header: same
+                           IconRemove, same DangerBrush. Removing a line is the one thing in this
+                           column that cannot be undone, so it is the one that should not be left
+                           to a glyph. The other three are reversible or write nothing, which is
+                           why they stay icon-only and the column still fits. -->
+                      <Button Click="RemoveLine_Click" Tag="{Binding}"
+                              Style="{StaticResource DashButton}"
+                              Height="26" Width="28" MinWidth="0" Padding="0" Margin="2,0"
+                              Foreground="{DynamicResource DangerBrush}"
+                              ToolTip="Take this line off the invoice"
+                              AutomationProperties.Name="Remove this line">
+                        <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconRemove}"/>
+                      </Button>
+                    </StackPanel>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+                          </DataGrid.Columns>
             </DataGrid>
 
-            <!-- Guidance while the invoice is still empty. The grid always shows one row, so it is
-                 never blank — but a single untouched row over a large empty area says nothing about
-                 what to do next.
+            <!-- Guidance while the invoice is still empty. INSIDE the table, in the blank area
+                 under the row, layered over the grid — a third position, and the two it has
+                 already had are why it is pinned the way it is:
+
+                   * EmptyHint's own VerticalAlignment=Center with a 56px top margin centred it in
+                     the whole table, dropping the sentence onto the row being typed into.
+                   * Docked under the grid it landed BELOW the grid's horizontal scrollbar, so the
+                     bar read as belonging to the sentence rather than to the rows.
+                   * Docked outside the frame it sat below the table altogether.
+
+                 Top-aligned with a fixed 96px inset instead: the 40px column header, one 42px row,
+                 and a gap. That clears the row above it and stays well clear of the scrollbar at
+                 the grid's bottom edge, at any window size. Safe as a fixed number because of what
+                 EntriesStarted means — the moment a second row exists this is already hidden, so
+                 there is never a row for it to cover.
+
                  Bound to EntriesStarted, not LineCount: a blank row is not a line, so keying off
                  LineCount left this sitting on top of nine empty rows once Enter had been pressed
-                 nine times. Adding a row counts as starting, typed into or not. -->
+                 nine times. Adding a row counts as starting, typed into or not.
+
+                 IsHitTestVisible is false in the style, so it never eats a click meant for the
+                 cell underneath it. -->
             <TextBlock Style="{StaticResource EmptyHint}"
+                       VerticalAlignment="Top" Margin="12,96,12,0"
                        Visibility="{Binding EntriesStarted, Converter={StaticResource Empty}}"
-                       Text="Pick a grade and size, then type the weight.&#10;Enter adds another line · Ctrl+S saves a draft."/>
+                       Text="Pick a grade and size, then type the weight.&#10;Enter adds another line · Ctrl+S saves a memo."/>
 
             <!-- With no catalogue the Grade and Size dropdowns open onto nothing, which reads as
                  "this app is broken" rather than "it could not reach the database" — and a line can
@@ -744,6 +1023,8 @@
               </StackPanel>
             </Border>
           </Grid>
+          </DockPanel>
+          </Border>
             </DockPanel>
           </Border>
         </DockPanel>
@@ -802,13 +1083,28 @@
                 <ComboBox x:Name="InvoiceStatusFilter" Width="150" Height="34" SelectedIndex="0"
                           SelectionChanged="InvoiceFilter_Changed"
                           AutomationProperties.Name="Filter by status">
-                  <ComboBoxItem Tag="">All statuses</ComboBoxItem>
+                  <!-- TWO different questions, and the list says which is which.
+
+                       The STATUS column beside this shows the invoice's own status: SALE or
+                       CANCELLED. Paid, Pending and Overdue are not statuses at all: they are
+                       where the MONEY stands, derived from what is outstanding and when it fell
+                       due. Filtering by "Paid" left every row still reading SALE, so the control
+                       looked broken.
+
+                       No Memo entry: memos are excluded from this page before any of this is
+                       applied, so it could only ever come back empty. They are listed in full on
+                       Sales entry, the page they are written on. -->
+                  <ComboBoxItem Tag="">All sales</ComboBoxItem>
+                  <ComboBoxItem Tag="Sale">Sale</ComboBoxItem>
+                  <ComboBoxItem Tag="Cancelled">Cancelled</ComboBoxItem>
+                  <!-- A caption, not a choice. IsEnabled=False keeps it out of the keyboard
+                       selection as well as out of the mouse's. -->
+                  <ComboBoxItem IsEnabled="False" FontSize="10.5" Opacity="0.7">— by payment —</ComboBoxItem>
                   <ComboBoxItem Tag="Paid">Paid</ComboBoxItem>
                   <ComboBoxItem Tag="Pending">Pending</ComboBoxItem>
                   <ComboBoxItem Tag="Overdue">Overdue</ComboBoxItem>
-                  <ComboBoxItem Tag="Draft">Draft</ComboBoxItem>
-                  <ComboBoxItem Tag="Cancelled">Cancelled</ComboBoxItem>
                 </ComboBox>
+
               </StackPanel>
 
               <StackPanel Grid.Column="1" Margin="0,0,8,0">
@@ -1003,9 +1299,9 @@
                            only half the rule here, and a local IsEnabled set from code outranks a
                            style trigger anyway — mixing the two would leave the trigger dead and the
                            reason for it invisible. InvoiceRow_Selected owns this button's state. -->
-                      <Button x:Name="EditDraftButton" Content="Edit draft" Click="EditDraft_Click"
+                      <Button x:Name="EditDraftButton" Content="Edit memo" Click="EditDraft_Click"
                               IsEnabled="False" Margin="0,0,8,8" Style="{StaticResource AppButton}"
-                              AutomationProperties.HelpText="Opens the selected draft in Sales entry"/>
+                              AutomationProperties.HelpText="Opens the selected memo in Sales entry"/>
                       <Button x:Name="PrintBill" Content="Print bill" Click="PrintInvoice_Click"
                               Margin="0,0,8,8" Style="{StaticResource NeedsRowButton}"/>
                       <!-- Cancelling reverses stock and cannot be undone. It should not look like
@@ -1872,6 +2168,65 @@
 
           <!-- ── The sheet ────────────────────────────────────────── -->
           <!-- Vertical only. The sheet does its own horizontal scrolling, one level in. -->
+          <!-- Total Stock . Sales . On Hand, above the sheet they describe.
+               The arithmetic holds by construction: Total is On hand plus Sales, so the row cannot
+               disagree with itself whatever the sieve boxes and grade filters are set to.
+
+               Rejections are deliberately NOT in this split. A rejection is carats that left as
+               rejected rather than sold; folding them into Sales would say a parcel was sold when
+               it was thrown back, and adding them to Total would break the identity. The Stock page
+               carries the rejection figure. -->
+          <Border DockPanel.Dock="Top" Style="{StaticResource DashCard}" Margin="0,0,0,12"
+                  Padding="18,14">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+
+              <StackPanel Grid.Column="0" Margin="0,0,24,0"
+                          ToolTip="Everything these grades and sieves held before their sales came out of them: what is on hand now, plus every carat sold out of them to date.">
+                <TextBlock Text="TOTAL STOCK" Style="{StaticResource KpiLabel}"/>
+                <TextBlock x:Name="ReportTotalStock" Style="{StaticResource KpiValue}"
+                           Margin="0,4,0,0" Text="—"/>
+                <TextBlock x:Name="ReportTotalStockNote" Style="{StaticResource KpiCaption}"
+                           Text="On hand plus everything sold"/>
+              </StackPanel>
+
+              <TextBlock Grid.Column="1" Text="−" VerticalAlignment="Center" Margin="0,0,24,14"
+                         FontSize="20" Foreground="{DynamicResource TextMutedBrush}"/>
+
+              <StackPanel Grid.Column="2" Margin="0,0,24,0"
+                          ToolTip="Carats that have left these buckets as SALE movements. The same rows the ledger and the reconciliation report read. Rejections are counted separately, on the Stock page.">
+                <TextBlock Text="SALES" Style="{StaticResource KpiLabel}"/>
+                <TextBlock x:Name="ReportSales" Style="{StaticResource KpiValue}"
+                           Margin="0,4,0,0" Text="—"
+                           Foreground="{DynamicResource WarningBrush}"/>
+                <TextBlock x:Name="ReportSalesNote" Style="{StaticResource KpiCaption}"
+                           Text="Carats sold to date"/>
+              </StackPanel>
+
+              <TextBlock Grid.Column="3" Text="=" VerticalAlignment="Center" Margin="0,0,24,14"
+                         FontSize="20" Foreground="{DynamicResource TextMutedBrush}"/>
+
+              <StackPanel Grid.Column="4"
+                          ToolTip="The position right now: the same figure the sheet below totals.">
+                <TextBlock Text="ON HAND STOCK" Style="{StaticResource KpiLabel}"/>
+                <TextBlock x:Name="ReportOnHand" Style="{StaticResource KpiValue}"
+                           Margin="0,4,0,0" Text="—"
+                           Foreground="{DynamicResource SuccessBrush}"/>
+                <TextBlock x:Name="ReportOnHandNote" Style="{StaticResource KpiCaption}"
+                           Text="Carats on hand"/>
+              </StackPanel>
+
+              <TextBlock Grid.Column="5" x:Name="ReportBandScope"
+                         Style="{StaticResource DashSubheading}"
+                         VerticalAlignment="Bottom" HorizontalAlignment="Right"
+                         TextAlignment="Right"/>
+            </Grid>
+          </Border>
+
           <ScrollViewer x:Name="ReportScroll" VerticalScrollBarVisibility="Auto"
                         HorizontalScrollBarVisibility="Disabled">
             <StackPanel Margin="0,4,0,24">
@@ -2499,8 +2854,13 @@
                            Text="Aliases are the spellings a workbook may use for a grade, separated by ; — an import resolves through them. Double-click a cell to edit. Code, name and order are read-only: they are referenced by imported invoices."/>
 
 
-                <Grid>
-                  <DataGrid x:Name="GradeGrid" BorderThickness="0"
+                <!-- SizeChanged, because the alias column draws a real input box and a table
+                     that ends mid-row therefore ends mid-BOX. Every other grid in the app shows
+                     plain text, where a clipped last row reads as "there is more below"; here it
+                     read as a broken field. GradeArea_SizeChanged caps the grid at a whole number
+                     of rows so the bottom edge always lands between them. -->
+                <Grid x:Name="GradeArea" SizeChanged="GradeArea_SizeChanged">
+                  <DataGrid x:Name="GradeGrid" BorderThickness="0" VerticalAlignment="Top"
                             IsReadOnly="False" CellEditEnding="GradeAlias_Committed"
                             AutomationProperties.Name="Grades">
                     <DataGrid.Columns>
@@ -2511,7 +2871,20 @@
                            spellings of a grade should be visible at once. -->
                       <DataGridTextColumn Header="ON THE SHEET" Binding="{Binding ShortName}" Width="110" IsReadOnly="True"/>
                       <DataGridTextColumn Header="GRADE NAME" Binding="{Binding DisplayName}" Width="150" IsReadOnly="True"/>
-                      <DataGridTextColumn Header="ALIASES" Binding="{Binding Aliases}" Width="*"/>
+                      <!-- The one editable column here, and the only one with a floor under it.
+                           Every other column is a fixed width, so the star column is the single
+                           one that gives when the grid is narrow — and with nothing to stop it, it
+                           gave all of it: rendered at 721px the field measured EIGHT pixels wide,
+                           a sliver between GRADE NAME and ORDER with the aliases invisible inside
+                           it. A field that can be squeezed to nothing is not a field.
+                           "1BB;1 BB;NO1BB;NO 1BB" needs about 220. Past the floor the grid scrolls,
+                           which is the right way to run out of room.
+
+                           CellStyle, not ElementStyle: the frame changes, the binding and the
+                           stored value do not. -->
+                      <DataGridTextColumn Header="ALIASES" Binding="{Binding Aliases}"
+                                          Width="*" MinWidth="240"
+                                          CellStyle="{StaticResource EditableCell}"/>
                       <DataGridTextColumn Header="ORDER" Binding="{Binding SortOrder}" Width="70" IsReadOnly="True"
                                           ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
                       <DataGridTemplateColumn Header="STATUS" Width="100" IsReadOnly="True"
@@ -3094,7 +3467,7 @@
                       <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
                                  VerticalAlignment="Center"/>
-                      <TextBlock Text="Posted invoices" Style="{StaticResource KpiLabel}"/>
+                      <TextBlock Text="Confirmed sales" Style="{StaticResource KpiLabel}"/>
                     </StackPanel>
                     <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                              MaxHeight="27" Margin="0,6,0,0">
@@ -3229,7 +3602,12 @@
                       <Grid Margin="0,3" Height="30">
                         <!-- The row's own figures, not a restatement of the label. -->
                         <Grid.ToolTip>
-                          <ToolTip>
+                          <!-- ContentTemplate cleared: this is the one tooltip in the app whose
+                               content is a composed panel rather than a string, and the implicit
+                               ToolTip style in AppOverrides renders its content as wrapped TEXT.
+                               Left alone it would print the StackPanel's type name. Opting out
+                               here keeps that fix global without a template selector. -->
+                          <ToolTip ContentTemplate="{x:Null}">
                             <StackPanel>
                               <TextBlock Text="{Binding Label}" FontWeight="SemiBold"/>
                               <TextBlock Text="{Binding ValueText}" Margin="0,3,0,0"/>
@@ -3290,7 +3668,27 @@
                 <DataGrid x:Name="DrillGrid" BorderThickness="0" CanUserSortColumns="True"
                           PreviewMouseWheel="InnerWheel">
                   <DataGrid.Columns>
-                    <DataGridTextColumn Header="INVOICE NO" Binding="{Binding InvoiceNo}" Width="118"/>
+                    <!-- Auto, not 118. "INV-2026-00004" is fourteen characters, which at this
+                         font comes to about 101px, and the cell charges 10px of padding on each
+                         side: 121. At 118 the last digit was cut off, so every invoice on the
+                         card read as INV-2026-0000 and two of them looked like the same invoice.
+                         Auto measures the real values, so it stays right when the year rolls over
+                         or the numbering passes five digits. MinWidth keeps the header from
+                         setting the floor on an empty card. -->
+                    <DataGridTextColumn Header="INVOICE NO" Binding="{Binding InvoiceNo}"
+                                        Width="Auto" MinWidth="132">
+                      <DataGridTextColumn.ElementStyle>
+                        <!-- Only for a value genuinely longer than Auto can place: it ellipsises
+                             rather than cutting mid-character, and the whole number is on hover.
+                             With Auto this should never fire; it is here so that if it ever does,
+                             it reads as truncated rather than as a different invoice. -->
+                        <Style TargetType="TextBlock">
+                          <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                          <Setter Property="VerticalAlignment" Value="Center"/>
+                          <Setter Property="ToolTip" Value="{Binding InvoiceNo}"/>
+                        </Style>
+                      </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
                     <DataGridTextColumn Header="BUYER" Binding="{Binding BuyerName}" Width="*"/>
                     <!-- ScopedAmount, not AmountTotal: with a grade filter set this is that
                          grade's share of the invoice, so the column adds up to the tile above it.
@@ -3556,16 +3954,45 @@
                           SelectionChanged="AuditRow_Selected"
                           PreviewMouseWheel="InnerWheel">
                   <DataGrid.Columns>
-                    <DataGridTextColumn Header="WHEN (UTC)" Binding="{Binding When}" Width="150"/>
-                    <DataGridTextColumn Header="ENTITY" Binding="{Binding Entity}" Width="140"/>
-                    <DataGridTemplateColumn Header="ACTION" Width="112"
+                    <!-- Widths trimmed to what each column actually needs. WHAT HAPPENED is the
+                         star column, so it gets only what the fixed five leave — and at 642px
+                         of them it was left about 150, which cut "Sale confirmed, stock moved out"
+                         to "Sale confirmed - stock r". Every figure below is measured against its
+                         own longest real value: a timestamp, "Stock reservation", the widest
+                         badge, "#1030", and a login name. -->
+                    <!-- Local, not UTC: see AuditRow.LocalAt. The desk reads this against the
+                         clock on its own wall. -->
+                    <DataGridTextColumn Header="WHEN" Binding="{Binding When}" Width="132"/>
+                    <DataGridTextColumn Header="ENTITY" Binding="{Binding EntityName}" Width="118"/>
+                    <DataGridTemplateColumn Header="ACTION" Width="94"
                                             SortMemberPath="Action"
                                             CellTemplate="{StaticResource AuditActionBadge}"/>
-                    <DataGridTextColumn Header="RECORD" Binding="{Binding Record}" Width="90"/>
+                    <DataGridTextColumn Header="RECORD" Binding="{Binding Record}" Width="62"/>
                     <!-- The page is titled "Every change, who and when" and showed only the when.
                          changed_by was captured and mapped all along; nothing bound it. -->
-                    <DataGridTextColumn Header="WHO" Binding="{Binding By}" Width="150" MinWidth="90"/>
-                    <DataGridTextColumn Header="CHANGES" Binding="{Binding Summary}" Width="*"/>
+                    <DataGridTextColumn Header="WHO" Binding="{Binding By}" Width="116" MinWidth="80"/>
+                    <!-- What happened, not which columns moved. Summary is still the field list
+                         and still carries the detail drawer; this column answers the question the
+                         page is opened with.
+
+                         MinWidth so a narrow window steals from the others rather than from this;
+                         ellipsis and a tooltip so that when it IS cut the reader can see that it
+                         was, and read the rest without opening the drawer. It was clipping bare,
+                         which reads as a value that ends there. -->
+                    <DataGridTextColumn Header="WHAT HAPPENED" Binding="{Binding What}"
+                                        Width="*" MinWidth="240">
+                      <DataGridTextColumn.ElementStyle>
+                        <!-- No BasedOn: a DataGridTextColumn's ElementStyle overrides the grid's
+                             own cell text, so inheriting from a named style here would drop the
+                             alignment and padding the other columns get from the cell. These two
+                             setters are all this column needs on top of that. -->
+                        <Style TargetType="TextBlock">
+                          <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                          <Setter Property="VerticalAlignment" Value="Center"/>
+                          <Setter Property="ToolTip" Value="{Binding What}"/>
+                        </Style>
+                      </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
                   </DataGrid.Columns>
 
                 </DataGrid>

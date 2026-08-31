@@ -2,7 +2,8 @@
 -- Empty the ledger for handover. Keep the setup.
 --
 -- GOES:  invoices, sales lines, receipts, stock movements, intake parcels,
---        rejection dispositions, the audit trail, lockout counters
+--        rejection dispositions, stock reservations, the price list,
+--        the audit trail, lockout counters
 --
 -- STAYS: 27 grades, 9 sizes, 218 pairings, 2 currencies, 10 settings,
 --        both logins and their profiles
@@ -46,6 +47,13 @@ delete from public.rough_intake;
 delete from public.price_list;
 delete from public.login_attempt;
 
+-- Carats a half-typed sales entry was holding (0043). Not a ledger row -- it never reached
+-- stock_movement -- but it is netted out of v_stock_position, so a hold left behind would make
+-- the handover database open reading short against an invoice that no longer exists and a screen
+-- nobody can reach. The one row of state that survives the app being closed, so the one that a
+-- reset has to be told about.
+delete from public.stock_reservation;
+
 -- ── the audit trail LAST, and this order is not arbitrary ──────────────────
 -- Every delete above fires the audit trigger, which writes a DELETE row for
 -- each one. Clearing this first would leave roughly four thousand fresh rows
@@ -64,6 +72,7 @@ select setval(pg_get_serial_sequence('public.receipt',        'receipt_id'),  1,
 select setval(pg_get_serial_sequence('public.stock_movement', 'movement_id'), 1, false);
 select setval(pg_get_serial_sequence('public.rough_intake',   'intake_id'),   1, false);
 select setval(pg_get_serial_sequence('public.audit_log',      'audit_id'),    1, false);
+select setval(pg_get_serial_sequence('public.stock_reservation', 'reservation_id'), 1, false);
 
 commit;
 
@@ -78,6 +87,7 @@ union all select 'stock movements', count(*) from public.stock_movement
 union all select 'intake parcels', count(*) from public.rough_intake
 union all select 'rejection dispositions', count(*) from public.rejection_disposition
 union all select 'price list', count(*) from public.price_list
+union all select 'stock reservations', count(*) from public.stock_reservation
 union all select 'audit rows', count(*) from public.audit_log
 union all select 'lockout rows', count(*) from public.login_attempt;
 
@@ -89,4 +99,9 @@ union all select 'settings', count(*) from public.app_config
 union all select 'logins', count(*) from public.profiles
 union all select 'active owners', count(*) from public.profiles where role = 'owner' and active;
 
-select round(sum(balance_ct), 4) as carats_now, count(*) as buckets from public.v_stock_position;
+-- Both must be 0.0000. ledger_ct alongside balance_ct because they can only differ by a
+-- reservation (0044), so reading them together proves the holds went as well as the movements.
+select round(sum(balance_ct), 4) as available_now,
+       round(sum(ledger_ct), 4)  as ledger_now,
+       count(*)                  as buckets
+  from public.v_stock_position;

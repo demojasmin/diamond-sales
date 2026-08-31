@@ -80,7 +80,16 @@ public partial class MainWindow : Window
     private async Task TrySyncAsync()
     {
         if (await Outbox.PendingCountAsync() == 0) { ShowPending(0); return; }
-        if (!Db.IsOnline) { await ShowPendingAsync(); return; }
+
+        // No !Db.IsOnline guard. That flag only returns to true when a read SUCCEEDS
+        // (Db.NoteTransport, called from Read), so skipping the attempt while it is false meant the
+        // one thing that could clear it never ran: a queued import sat there every 45 seconds until
+        // the user happened to open a tab that read successfully. For a feature whose whole promise
+        // is "it goes when the connection returns", waiting to be told the connection returned by
+        // something else is the wrong way round.
+        //
+        // Attempting costs one timeout. SendAsync already catches the transport exceptions and
+        // returns a message, and a failed replay leaves every queued row on disk untouched.
 
         // The verifier the outbox uses to decide whether a queued REPLACE is still safe to apply.
         var (sent, _) = await Outbox.ReplayAsync(op =>
@@ -135,10 +144,40 @@ public partial class MainWindow : Window
         InitializeComponent();
         DataContext = _invoice;
 
+        // The FIRST invoice needs watching too. _invoice is created at its field initialiser, so
+        // the two places that call WatchHolds -- Clear, and opening a memo -- both run only after
+        // one has already been replaced. Without this the screen you land on holds no stock at all,
+        // and typing a line moved nothing until you had started a second invoice.
+        WatchHolds(null, _invoice);
+
+        // The last word on what was on screen. The per-line saves below only fire for grade, size
+        // and weight -- the fields that move stock -- so a price or a remark typed after the last
+        // of those would otherwise not be in the file. Closing catches the lot.
+        //
+        // It SAVES on close. It does not release: the holds are meant to outlive the process, and
+        // this is what lets the entry come back to them.
+        //
+        // ONLY ONCE THE RESTORE HAS RUN. _invoice starts as a fresh blank entry and the restore is
+        // several round trips away; closing the window before it lands would have saved that blank
+        // over the file -- and a save with no lines DELETES it. One quick close after launch was
+        // enough to lose the stored entry and strand every carat it was holding, which is exactly
+        // the failure this whole mechanism exists to prevent.
+        Closing += (_, _) => { if (_entryRestored) SaveEntry(); };
+
         // Ctrl+S goes through the same busy scope as the button — it is the same operation and was
         // the one route that left the buttons live mid-save.
         InputBindings.Add(new KeyBinding(
-            new RelayCommand(async () => { using (Busy(SaveDraft, "Saving…", AddLineButton, New, SaveDraft, Post)) await SaveDraftAsync(); }),
+            // Ctrl+P, not Ctrl+S. Nothing on this screen saves any more: Print memo prints, and
+            // Confirm sale is the only thing that writes. A Ctrl+S that quietly printed would be
+            // the worst of both, and one that did nothing would be worse still.
+            new RelayCommand(() => PrintMemo_Click(this, new RoutedEventArgs())),
+            Key.P, ModifierKeys.Control));
+
+        // Ctrl+S back alongside it, because the two are different jobs: Ctrl+P puts paper in the
+        // buyer's hand and writes nothing, Ctrl+S parks the invoice so the desk can come back to
+        // it. Same handler as the button, so it goes through the same busy scope.
+        InputBindings.Add(new KeyBinding(
+            new RelayCommand(() => SaveDraft_Click(this, new RoutedEventArgs())),
             Key.S, ModifierKeys.Control));
         _statusTimer.Tick += (_, _) => { _statusTimer.Stop(); Status.Text = ""; Status.ToolTip = null; };
 
@@ -256,6 +295,10 @@ public partial class MainWindow : Window
 
             // An empty picker looks like a broken screen. Say which it is.
             if (buyers.Count == 0) Say("No buyers came back from Supabase — add one on the Master data tab");
+
+            // LAST, and only here: a stored line names its grade and size by id, and until the
+            // catalogue is loaded there is nothing to resolve them against.
+            await RestoreEntryAsync();
         }
         catch (Exception ex)
         {
@@ -309,7 +352,134 @@ public partial class MainWindow : Window
         }
     }
 
-    private void AddLine_Click(object sender, RoutedEventArgs e) => AddLine();
+    /// <summary>
+    /// Ticking is for removing several lines in one go. It changes no figure: the totals, the
+    /// summary and what posts are identical whether anything is ticked or not.
+    /// </summary>
+    /// The header tick box. Held by reference because it lives inside a column's HeaderTemplate,
+    /// where FindName cannot reach it.
+    private CheckBox? _tickAll;
+
+    private void TickAllLoaded(object sender, RoutedEventArgs e)
+    {
+        _tickAll = sender as CheckBox;
+        TickCountChanged();
+    }
+
+    private void TickLine_Click(object sender, RoutedEventArgs e) => TickCountChanged();
+
+    /// <summary>
+    /// All or nothing. The box shows "some" when the rows disagree, but a CLICK never lands on
+    /// that state -- from indeterminate it ticks everything, which is what a half-ticked list
+    /// makes you want. Cycling a user into "some" would be a third meaning nobody asked for.
+    /// </summary>
+    private void TickAllLines_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not CheckBox box) return;
+
+        // EVERY line, blank ones included: they are removable, so they are tickable.
+        // From indeterminate WPF hands us true, which is already the answer we want.
+        bool on = box.IsChecked == true;
+        foreach (var line in _invoice.Lines) line.Selected = on;
+        TickCountChanged();
+    }
+
+    /// <summary>
+    /// Keeps the header box and the Remove button honest about what is ticked.
+    ///
+    /// Three states, and the middle one is the point: with two of five lines ticked, a header box
+    /// showing plain unticked is a lie, and showing plain ticked is a worse one.
+    /// </summary>
+    /// <summary>The row's own Remove. The same question the Delete key asks, for hands on a mouse.</summary>
+    /// <summary>
+    /// Shows a remark from its beginning once the caret has moved on.
+    ///
+    /// A TextBox keeps the scroll position typing left it at. Type a remark longer than the column
+    /// and the box stays scrolled to the END, so every later glance at that row shows the tail of
+    /// the sentence with no start to it -- which reads as a mangled value rather than a long one.
+    /// Losing focus is the moment it stops being something being typed and becomes something being
+    /// read, so that is where it goes home. The value itself is never touched; the tooltip carries
+    /// the whole of it for anything the column cannot fit.
+    /// </summary>
+    private void RemarkBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox box) return;
+        box.CaretIndex = 0;
+        box.ScrollToHome();
+    }
+
+    private void RemoveLine_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: SaleLine line }) return;
+
+        // Only asked when there is typing to lose. Clearing a row that is entirely empty is not a
+        // decision worth interrupting for, and now that Remove is on every row it is the commonest
+        // thing the button does.
+        if (!line.IsBlank)
+        {
+            string what = line.Grade is null ? $"line {_invoice.Lines.IndexOf(line) + 1}"
+                                             : $"{line.Grade.ShortName} · {line.GrossWeightCt:N2} ct";
+
+            if (MessageBox.Show(this, $"Remove {what}?", "Remove line",
+                    MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                return;
+        }
+
+        _invoice.Lines.Remove(line);
+
+        // The grid always keeps one row to type into, so taking the last line off is not a special
+        // case -- it clears that row rather than emptying the table. Same rule the screen opens
+        // with, and the same one OpenInvoiceAsync applies to an invoice that came back with none.
+        if (_invoice.Lines.Count == 0) AddLine();
+        TickCountChanged();
+    }
+
+    private void TickCountChanged()
+    {
+        var lines = _invoice.Lines;
+        int n = lines.Count(l => l.Selected);
+
+        if (_tickAll is not null)
+            _tickAll.IsChecked = lines.Count == 0 || n == 0 ? false
+                               : n == lines.Count ? true
+                               : null;                       // some, but not all
+
+        // Called from the constructor's path too, before the template has produced the button.
+        if (DeleteLines is null) return;
+
+        // The label is a TextBlock inside the button now, because the button holds an icon beside
+        // it. Content is left alone -- Busy() swaps Content for "Saving…" and puts it back, and it
+        // must find the whole icon-and-label panel there, not a bare string.
+        DeleteLinesLabel.Text = n == 1 ? "Remove 1 line" : $"Remove {n} lines";
+        DeleteLines.Visibility = n == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>
+    /// Removes every ticked line at once, after one question naming how many.
+    ///
+    /// Blank rows count. Four empty lines added by mistake are exactly what this is for, and the
+    /// per-row Remove would mean four confirmations. The grid always keeps one row to type into.
+    /// </summary>
+    private void DeleteLines_Click(object sender, RoutedEventArgs e)
+    {
+        var doomed = _invoice.Lines.Where(l => l.Selected).ToList();
+        if (doomed.Count == 0) return;
+
+        // Only asked when there is typing to lose. Removing rows that are entirely empty is not
+        // a decision worth interrupting for.
+        if (doomed.Any(l => !l.IsBlank)
+            && MessageBox.Show(this,
+                   doomed.Count == 1 ? "Remove 1 line from this invoice?"
+                                     : $"Remove {doomed.Count} lines from this invoice?",
+                   "Remove lines", MessageBoxButton.YesNo, MessageBoxImage.Question)
+               != MessageBoxResult.Yes)
+            return;
+
+        foreach (var line in doomed) _invoice.Lines.Remove(line);
+
+        TickCountChanged();
+        Say($"Removed {doomed.Count} line(s)", ok: true);
+    }
 
     /// <summary>
     /// A ComboBox living inside a DataGrid cell never sees the first click — the cell eats it to
@@ -342,15 +512,242 @@ public partial class MainWindow : Window
         Grid.BeginEdit(e);
     }
 
+    private void AddLine_Click(object sender, RoutedEventArgs e) => AddLine();
+
+    /// <summary>
+    /// Scrolls a line into view, whichever control owns the offset.
+    ///
+    /// ScrollIntoView alone is enough while the grid is its own scroller, and it is the call that
+    /// realises the row's container. It goes silently dead the moment the grid is content-sized
+    /// inside a scroller instead -- which this screen has been both ways -- and a line appended
+    /// past the fold then stays off screen with the caret sitting in it. BringIntoView on the row's
+    /// own container walks up to whatever actually scrolls, so both layouts behave the same.
+    ///
+    /// A dispatcher pass first, because a row added a moment ago has no container until layout
+    /// has run.
+    /// </summary>
+    private void ShowRow(object row)
+    {
+        Grid.ScrollIntoView(row);
+        Dispatcher.BeginInvoke(
+            () => (Grid.ItemContainerGenerator.ContainerFromItem(row) as FrameworkElement)?.BringIntoView(),
+            DispatcherPriority.Loaded);
+    }
+
     private void AddLine()
     {
         var line = new SaleLine();
         _invoice.Lines.Add(line);
-        Grid.ScrollIntoView(line);
+        TickCountChanged();
+        ShowRow(line);
         Grid.CurrentCell = new DataGridCellInfo(line, Grid.Columns[0]);
     }
 
-    private void NewInvoice_Click(object sender, RoutedEventArgs e)
+    // ── Stock is held as the invoice is typed (0043) ────────────────────────
+
+    /// <summary>
+    /// Listens to the invoice on screen, so every line change reaches the reservation.
+    ///
+    /// Called wherever _invoice is replaced. The old entry is unsubscribed first: an abandoned
+    /// InvoiceEntry still raising into these handlers would hold carats for an invoice nobody can
+    /// see any more.
+    /// </summary>
+    private void WatchHolds(InvoiceEntry? previous, InvoiceEntry current)
+    {
+        if (previous is not null)
+        {
+            previous.LineHoldChanged -= OnLineHoldChanged;
+            previous.LineDropped -= OnLineDropped;
+        }
+        current.LineHoldChanged += OnLineHoldChanged;
+        current.LineDropped += OnLineDropped;
+    }
+
+    /// <summary>
+    /// Writes the entry to disk after anything that could have changed what it holds.
+    ///
+    /// It exists because the holds outlive the process. Nothing releases a reservation when the app
+    /// closes -- deliberately, on the desk's word -- so the entry that made those holds has to come
+    /// back with them, or the carats are spoken for by an invoice no longer on any screen.
+    /// </summary>
+    /// <summary>
+    /// True once RestoreEntryAsync has run -- whether it found an entry or not. Until then the
+    /// screen holds a fresh blank entry that must never be written over the stored one. See the
+    /// Closing handler in the constructor.
+    /// </summary>
+    private bool _entryRestored;
+
+    private void SaveEntry()
+    {
+        var e = _invoice;
+        EntryStore.Save(new EntryStore.StoredEntry(
+            e.ClientRef, e.InvoiceDate, e.Buyer, e.Broker, e.BrokerPct, e.TermsDays, e.DocType,
+            // Blank rows are not saved. The opening row is scaffolding, not work, and a file holding
+            // only scaffolding would restore a screen indistinguishable from a fresh one.
+            [.. e.Lines.Where(l => !l.IsBlank).Select(l => new EntryStore.StoredLine(
+                l.LineKey, l.Grade?.GradeId, l.Size?.SizeId, l.GrossWeightCt, l.SelectionCt,
+                l.PricePerCt, l.ExRate, l.Less1Pct, l.Less2Pct, l.Remark))]));
+    }
+
+    /// <summary>
+    /// Puts back the Sales entry the app was closed on, and re-states its holds.
+    ///
+    /// RE-STATING IS NOT RE-RESERVING. reserve_line upserts on (client_ref, line_key); the restored
+    /// entry carries the same pair, so each call corrects the hold that is already there. That is
+    /// what makes it safe to send them rather than trusting the file: if the app died between a
+    /// keystroke and its round trip, this is the pass that repairs it.
+    ///
+    /// Called after the catalogue and the buyer list have loaded, because a stored line names a
+    /// grade and a size by id and there is nothing to resolve them against until then.
+    /// </summary>
+    private async Task RestoreEntryAsync()
+    {
+        // Set FIRST, and on both paths: nothing to restore is a settled state too, and the window
+        // may be saved on close from here on either way.
+        _entryRestored = true;
+
+        if (EntryStore.Load() is not { } stored) return;
+
+        var leaving = _invoice;
+        var entry = new InvoiceEntry { ClientRef = stored.ClientRef };
+        foreach (var b in leaving.Buyers) entry.Buyers.Add(b);
+        foreach (var b in leaving.Brokers) entry.Brokers.Add(b);
+
+        entry.InvoiceDate = stored.InvoiceDate;
+        entry.BrokerPct   = stored.BrokerPct;
+        entry.TermsDays   = stored.TermsDays;
+        if (stored.DocType is { Length: > 0 } doc) entry.DocType = doc;
+        entry.SelectedBuyer  = entry.Buyers.FirstOrDefault(p => p.Name == stored.Buyer);
+        entry.SelectedBroker = entry.Brokers.FirstOrDefault(p => p.Name == stored.Broker);
+        entry.Buyer  = stored.Buyer;
+        entry.Broker = stored.Broker;
+
+        entry.Lines.Clear();                                   // drop the constructor's opening row
+        foreach (var l in stored.Lines)
+            entry.Lines.Add(new SaleLine
+            {
+                LineKey        = l.LineKey,
+                Grade          = Catalogue.Grades.FirstOrDefault(g => g.GradeId == l.GradeId),
+                Size           = Catalogue.AllSizes.FirstOrDefault(z => z.SizeId == l.SizeId),
+                GrossWeightCt  = l.GrossWeightCt,
+                SelectionCt    = l.SelectionCt,
+                PricePerCt     = l.PricePerCt,
+                ExRate         = l.ExRate,
+                Less1Pct       = l.Less1Pct,
+                Less2Pct       = l.Less2Pct,
+                Remark         = l.Remark,
+            });
+        entry.Lines.Add(new SaleLine());                       // and a fresh one to carry on typing
+
+        _invoice = entry;
+        WatchHolds(leaving, _invoice);
+        DataContext = _invoice;
+
+        // _held is empty, so every line is sent. See the summary: this is the repair pass, and the
+        // unique key is what makes it cost nothing when there was nothing to repair.
+        foreach (var line in _invoice.Lines) await HoldLineAsync(line);
+
+        Say($"Picked up where you left off — {_invoice.RealLines.Count} line(s) still holding stock",
+            ok: true);
+    }
+
+    // async void, and deliberately: these are event handlers on a view model, there is no caller to
+    // await them, and the work must not block the keystroke that raised it. Both callees swallow
+    // their own failures into the status bar rather than throwing.
+    private async void OnLineHoldChanged(SaleLine line) => await HoldLineAsync(line);
+    private async void OnLineDropped(SaleLine line) => await DropLineAsync(line);
+
+
+
+    /// The lines whose reservation is already what the line says, so an edit that changed nothing
+    /// worth holding does not go back to the database. Keyed by LineKey, valued by what was sent.
+    private readonly Dictionary<Guid, (long Grade, long Size, decimal Ct)> _held = [];
+
+    /// <summary>
+    /// Holds this line's carats, or corrects the hold it already has.
+    ///
+    /// Called whenever a line changes. The database keys on (client_ref, line_key), so this is an
+    /// UPDATE of the same hold rather than a second one -- correcting 10.00 to 1.00 leaves one
+    /// reservation holding 1.00, which is what stops the bucket falling by 11.
+    ///
+    /// NOT awaited by the caller, and it must not be: this runs while somebody is typing, and a
+    /// round trip between keystrokes would make the grid unusable. A refusal reaches the status
+    /// bar; it does not interrupt.
+    /// </summary>
+    private async Task HoldLineAsync(SaleLine line)
+    {
+        if (line.Grade is not { } grade || line.Size is not { } size)
+        {
+            // Not a bucket yet. If this line was holding something under an earlier grade or size,
+            // that hold has to go -- otherwise clearing the grade would strand the carats.
+            await DropLineAsync(line);
+            return;
+        }
+
+        var want = (grade.GradeId, size.SizeId, line.GrossWeightCt);
+        if (_held.TryGetValue(line.LineKey, out var have) && have == want) return;
+
+        string? failure = await Repo.ReserveLineAsync(
+            _invoice.ClientRef, line.LineKey, grade.GradeId, size.SizeId, line.GrossWeightCt);
+
+        if (failure is not null) { Say(failure); return; }
+
+        if (line.GrossWeightCt <= 0) _held.Remove(line.LineKey);
+        else _held[line.LineKey] = want;
+
+        SaveEntry();
+
+        RefreshStockIfShowing();
+    }
+
+    /// <summary>Gives one line's carats back. The row was removed, or emptied of its bucket.</summary>
+    private async Task DropLineAsync(SaleLine line)
+    {
+        if (!_held.ContainsKey(line.LineKey)) return;      // it was holding nothing
+
+        string? failure = await Repo.ReleaseLineAsync(_invoice.ClientRef, line.LineKey);
+        if (failure is not null) { Say(failure); return; }
+
+        // AFTER the round trip, never before. Forgetting the hold first meant a refused release
+        // left the carats held in the database with nothing on this side that knew about them.
+        _held.Remove(line.LineKey);
+        SaveEntry();
+
+        RefreshStockIfShowing();
+    }
+
+    /// <summary>
+    /// Gives back everything this entry holds. Move to stock, and starting a new invoice.
+    ///
+    /// It cannot return more than was taken -- the database deletes only the rows this entry
+    /// holds -- so there is no figure here for this side to get wrong.
+    /// </summary>
+    private async Task<decimal> DropEntryAsync()
+    {
+        var (failure, returned, _) = await Repo.ReleaseEntryAsync(_invoice.ClientRef);
+        if (failure is not null) { Say(failure); return 0m; }
+
+        // ONLY once the database has actually let go. This ran first, and a release that was
+        // refused -- offline, or a server error -- then left the carats held with the local record
+        // of them already deleted: no file, no cache, no client_ref, and so no way back to them
+        // from any screen. Keeping the record until the release succeeds means a failure is
+        // retryable rather than permanent.
+        _held.Clear();
+        EntryStore.Clear();
+
+        RefreshStockIfShowing();
+        return returned;
+    }
+
+    /// The Stock page reads a balance that a reservation has just changed. Reloaded only when it
+    /// is the page on screen: a round trip per keystroke to repaint a tab nobody is looking at is
+    /// a cost with no reader.
+    private void RefreshStockIfShowing()
+    {
+        if (Tabs.SelectedItem is TabItem { Header: "Stock" }) LoadStock_Click(this, new RoutedEventArgs());
+    }
+
+    private async void NewInvoice_Click(object sender, RoutedEventArgs e)
     {
         // Starting a new invoice throws away whatever is on screen. Typed lines that were never
         // saved are gone with no way back, so they are worth one question first. Only asked when
@@ -363,6 +760,27 @@ public partial class MainWindow : Window
                    "Unsaved invoice", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
 
+        // Whatever this entry was holding goes back. An abandoned invoice must not keep carats
+        // spoken for -- nobody would ever come back to release them, and the bucket would read
+        // short for ever with nothing on screen to explain it.
+        //
+        // Before the entry is replaced, because DropEntryAsync releases against _invoice.ClientRef
+        // and a new InvoiceEntry carries a different one.
+        await DropEntryAsync();
+
+        ResetEntry();
+    }
+
+    /// <summary>
+    /// Puts a fresh invoice on screen. Shared by Clear and by Move to stock, which both END the
+    /// entry -- one abandons it, the other hands its carats back -- and leaving the finished rows
+    /// on screen after either said the invoice was still holding stock when it was holding nothing.
+    ///
+    /// Releases nothing itself. Both callers give the carats back before they get here, and they
+    /// must: the release goes against the OLD ClientRef, and this is the line that replaces it.
+    /// </summary>
+    private void ResetEntry()
+    {
         // Active only. Reopening a draft written to a since-deactivated buyer adds that buyer to
         // THAT invoice's picker so the name stays on screen -- carrying it into a brand new invoice
         // would make it selectable for new trade, which is the one thing deactivating it meant to
@@ -370,17 +788,84 @@ public partial class MainWindow : Window
         var buyers = _invoice.Buyers.Where(b => b.Active).ToList();
         var brokers = _invoice.Brokers.Where(b => b.Active).ToList();
 
+        var leaving = _invoice;
         _invoice = new InvoiceEntry();
+        WatchHolds(leaving, _invoice);
         foreach (var b in buyers) _invoice.Buyers.Add(b);
         foreach (var b in brokers) _invoice.Brokers.Add(b);
 
         DataContext = _invoice;
+        TickCountChanged();
         Status.Text = "";
+    }
+
+    /// <summary>
+    /// Prints the invoice ON SCREEN. It saves nothing.
+    ///
+    /// That is the whole distinction from Confirm sale: this is the piece of paper that goes out
+    /// with the parcel while the deal is still being agreed, and it must not book anything. No
+    /// invoice row, no invoice number, no stock movement, and nothing to undo if the buyer walks
+    /// away -- so there is also no record it could duplicate.
+    ///
+    /// The note is built from _invoice, never from the database, because there is nothing in the
+    /// database to build it from. VInvoice and VSalesLine here are carriers for the printer, not
+    /// rows: they are never saved, and their ids are deliberately zero.
+    /// </summary>
+    private void PrintMemo_Click(object sender, RoutedEventArgs e)
+    {
+        Grid.CommitEdit();
+
+        var lines = _invoice.RealLines;
+        if (lines.Count == 0) { Say("Nothing to print — add a line first"); return; }
+
+        var memo = new VInvoice
+        {
+            InvoiceNo    = "MEMO",
+            InvoiceDate  = DateOnly.FromDateTime(_invoice.InvoiceDate),
+            BuyerName    = _invoice.Buyer ?? "",
+            BrokerName   = _invoice.SelectedBroker?.Name,
+            BrokerPct    = _invoice.BrokerPct,
+            TermsDays    = _invoice.TermsDays,
+            DocType      = _invoice.DocType ?? "",
+            Status       = InvoiceStatus.DRAFT,
+            AmountTotal  = _invoice.TotalAmount,
+            CaratsSold   = _invoice.TotalCarats,
+            Outstanding  = _invoice.TotalAmount,
+            BlendedRate  = _invoice.BlendedRate,
+        };
+
+        var rows = lines.Select(l => new VSalesLine
+        {
+            GradeCode     = l.Grade?.ShortName ?? "",
+            SizeCode      = l.Size?.Code ?? "",
+            GrossWeightCt = l.GrossWeightCt,
+            SelectionCt   = l.SelectionCt,
+            RejectionCt   = l.RejectionCt,
+            PricePerCt    = l.PricePerCt,
+            ExRate        = l.ExRate,
+            Less1Pct      = l.Less1Pct,
+            Less2Pct      = l.Less2Pct,
+            BrokerPct     = _invoice.BrokerPct,
+            Amount        = l.Amount,
+            Remark        = l.Remark,
+        }).ToList();
+
+        Say(Reports.PrintInvoice(memo, rows) ?? "", ok: true);
     }
 
     private async void SaveDraft_Click(object sender, RoutedEventArgs e)
     {
-        using (Busy(SaveDraft, "Saving…", AddLineButton, New, SaveDraft, Post)) await SaveDraftAsync();
+        // Saving a correction IS the correction. SaveDraftAsync filters its UPDATE on
+        // status = DRAFT, so letting this through would answer "no longer an editable draft" for
+        // an invoice the screen has deliberately opened for correction.
+        if (CorrectingPosted)
+        {
+            if (await SaveCorrectionAsync()) NewInvoice_Click(sender, e);
+            return;
+        }
+
+        using (Busy(SaveDraft, "Saving…", AddLineButton, SaveDraft, MoveToStock, Post))
+            await SaveDraftAsync();
     }
 
     /// <summary>
@@ -413,16 +898,28 @@ public partial class MainWindow : Window
 
         return new Scope(() =>
         {
-            Mouse.OverrideCursor = null;
+            // MARSHALLED, for the same reason Say is. Every caller here is the using-block of an
+            // `async void` handler, and if the await inside it resumed anywhere but the UI thread
+            // this runs there too -- where Mouse.OverrideCursor throws "the calling thread must be
+            // STA" from a finally block, turning a handled failure into an unhandled one that ends
+            // the process.
+            if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(Release); return; }
+            Release();
 
-            // Only the last holder puts a caption back, and it puts back the one the FIRST holder
-            // found. Whoever finishes first leaves the button saying what is still happening.
-            if (_busy.Release(button, out object? original)) button.Content = original;
+            void Release()
+            {
+                Mouse.OverrideCursor = null;
 
-            foreach (var b in row)
-                if (_busy.Enable(b)) b.IsEnabled = true;
+                // Only the last holder puts a caption back, and it puts back the one the FIRST
+                // holder found. Whoever finishes first leaves the button saying what is still
+                // happening.
+                if (_busy.Release(button, out object? original)) button.Content = original;
 
-            EndBusy();
+                foreach (var b in row)
+                    if (_busy.Enable(b)) b.IsEnabled = true;
+
+                EndBusy();
+            }
         });
     }
 
@@ -446,9 +943,9 @@ public partial class MainWindow : Window
         Grid.CommitEdit();
         FieldError.ClearAll();
 
-        // Saying what is wrong and then leaving the user to find it is half a message. Send the
-        // caret to the field that has to change.
-        if (_invoice.Validate() is { } error) { FocusFirstProblem(error); return false; }
+        // The same list Confirm sale uses, shown the same way: everything wrong at once, in a
+        // dialog, with the caret sent to the first of them afterwards.
+        if (!Complete("This memo cannot be saved")) return false;
         if (_invoice.BuyerId is not { } buyerId) { Field(BuyerPicker, "Pick a buyer from the list"); return false; }
         if (Catalogue.BaseCurrencyId == 0) { Say("No INR row in the currency table — an invoice cannot be priced without it"); return false; }
 
@@ -471,7 +968,7 @@ public partial class MainWindow : Window
 
         // No amount here on purpose: the saved invoice's total is Postgres', and it is shown on the
         // Invoices tab where it comes from v_invoice.
-        Say($"Draft saved · {_invoice.RealLines.Count} line(s)", ok: true);
+        Say($"Saved · {_invoice.RealLines.Count} line(s)", ok: true);
         return true;
     }
 
@@ -545,11 +1042,302 @@ public partial class MainWindow : Window
         finally { button.IsEnabled = true; }
     }
 
+    /// <summary>
+    /// True while the entry screen is holding a POSTED invoice opened for correction.
+    ///
+    /// A draft on this screen is unfinished work; a posted invoice on it is a document the office
+    /// has already acted on. The buttons say which, and Post routes to a different call entirely.
+    /// </summary>
+    private bool CorrectingPosted =>
+        _invoice.InvoiceId is not null && _invoice.Status == InvoiceStatus.POSTED;
+
+    /// <summary>
+    /// Saves a correction to a POSTED invoice: 0040 gives the stock back, replaces the lines,
+    /// re-checks the negative-stock policy against the new figures and writes the movements
+    /// again, all in one transaction. A refusal anywhere in that leaves the invoice and its stock
+    /// exactly as they were.
+    ///
+    /// Not SaveDraftAsync + PostAsync. Two calls would mean a window in which the carats had been
+    /// returned but the corrected lines had not landed, and a crash in the gap would leave stock
+    /// that no invoice accounts for.
+    /// </summary>
+    private async Task<bool> SaveCorrectionAsync()
+    {
+        if (_invoice.Validate() is { } error) { FocusFirstProblem(error); return false; }
+        if (_invoice.BuyerId is not { } buyerId) { Field(BuyerPicker, "Pick a buyer from the list"); return false; }
+        if (_invoice.InvoiceId is not { } id) return false;
+        if (Catalogue.BaseCurrencyId == 0) { Say("No INR row in the currency table — an invoice cannot be priced without it"); return false; }
+
+        // Asked before anything is sent. The database requires it too, but a refusal after the
+        // round trip would be a worse way to learn it.
+        var answer = AppFormDialog.Show(this,
+            "Update this invoice",
+            $"Why is {_invoice.Buyer}'s invoice being updated?",
+            "The reason is stored on every stock movement this update writes, so the ledger "
+            + "says why the figures moved.",
+            [new FormFieldSpec("Reason", "")],
+            v => string.IsNullOrWhiteSpace(v[0]) ? "A reason is required." : null,
+            "Save the update");
+
+        if (answer is null) { Say("Update cancelled — nothing was changed"); return false; }
+
+        var draft = new DraftInvoice(
+            id, _invoice.ClientRef, DateOnly.FromDateTime(_invoice.InvoiceDate),
+            buyerId, _invoice.BrokerId, _invoice.BrokerPct, _invoice.TermsDays, _invoice.DocType,
+            Catalogue.BaseCurrencyId,
+            _invoice.RealLines.Select(l => new DraftLine(
+                l.Grade!.GradeId, l.Size!.SizeId, l.GrossWeightCt, l.SelectionCt,
+                l.PricePerCt, l.ExRate, l.Less1Pct, l.Less2Pct, l.Remark)).ToList());
+
+        WriteResult result;
+        try
+        {
+            _saving = true;
+            using (Busy(Post, "Updating…", AddLineButton, SaveDraft, MoveToStock, Post))
+                result = await Repo.EditPostedAsync(draft, answer[0]);
+        }
+        finally { _saving = false; }
+
+        if (!result.Ok)
+        {
+            // The database's own sentence, which names the buckets when the refusal is about stock.
+            AppDialog.Refused(this,
+                title: "Update refused",
+                headline: "The invoice and its stock are exactly as they were",
+                subhead: _invoice.Buyer,
+                facts: [],
+                listTitle: "What the database said",
+                bullets: [Friendly.Message(result.Failure ?? "The update was refused.")],
+                note: "Nothing was written. The whole update is one transaction, so the stock "
+                    + "it would have returned was returned only inside it.");
+            Say(result.Failure ?? "Update refused");
+            return false;
+        }
+
+        Say("Update saved · stock rewritten to match", ok: true);
+        return true;
+    }
+
+    /// <summary>
+    /// What the confirmation shows: the figures, and one line per parcel.
+    ///
+    /// Pure and static so the summary can be checked without a dialog on screen. The numbers here
+    /// are the ones the carats will move by, so they are worth a test of their own -- a summary
+    /// that agrees with the screen but not with what posts is worse than no summary.
+    ///
+    /// GROSS is the headline, not selection. The whole parcel leaves the bucket: what is sold and
+    /// what is rejected both come out of the stock they were counted in, and post_invoice checks
+    /// the balance against gross for exactly that reason. A summary leading with "2.00 ct sold"
+    /// would understate what the desk is about to give up.
+    /// </summary>
+    public static (List<(string Label, string Value)> Facts, List<string> Lines) SaleSummary(InvoiceEntry invoice)
+    {
+        var lines = invoice.RealLines;
+        decimal gross = lines.Sum(l => l.GrossWeightCt);
+        decimal sold = lines.Sum(l => l.SelectionCt);
+        decimal rejected = lines.Sum(l => l.RejectionCt);
+
+        var facts = new List<(string, string)>
+        {
+            ("Buyer", invoice.Buyer ?? "—"),
+            ("Leaving stock", $"{gross:N2} ct"),
+            ("of which sold", $"{sold:N2} ct"),
+            ("of which rejected", $"{rejected:N2} ct"),
+            ("Amount", Money.Short(invoice.TotalAmount)),
+            ("Due", invoice.DueDate.ToString("dd MMM yyyy")),
+        };
+
+        var bullets = lines.Select(l =>
+            $"{l.Grade?.ShortName ?? "?"} × {l.Size?.Code ?? "?"}  —  {l.GrossWeightCt:N2} ct out"
+            + $"  ({l.SelectionCt:N2} sold, {l.RejectionCt:N2} rejected)"
+            + $"  @ {l.PricePerCt:N2}").ToList();
+
+        return (facts, bullets);
+    }
+
+    /// <summary>
+    /// The sign-off before any carat moves. Cancel here writes nothing at all -- not a draft, not
+    /// a movement -- because it is asked before SaveDraftAsync runs.
+    /// </summary>
+    private bool ConfirmSale()
+    {
+        var (facts, bullets) = SaleSummary(_invoice);
+        int n = bullets.Count;
+
+        return AppDialog.Confirm(this,
+            title: "Confirm this sale",
+            headline: $"{_invoice.RealLines.Sum(l => l.GrossWeightCt):N2} ct will leave stock",
+            subhead: _invoice.Buyer,
+            facts: facts,
+            emphasis: "The WHOLE parcel leaves the bucket it was counted in — what is sold and what "
+                    + "is rejected both. Nothing moves until you confirm, and the stock is taken in "
+                    + "the same transaction that posts the invoice.",
+            listTitle: n == 1 ? "The line" : $"The {n} lines",
+            bullets: bullets,
+            primaryText: "Confirm & move to stock",
+            secondaryText: "Cancel");
+    }
+
+    /// <summary>
+    /// The gate in front of the summary. True when the invoice can be confirmed; otherwise it says
+    /// so and NOTHING is written -- this runs before SaveDraftAsync, so a refusal costs no draft,
+    /// no movement and no invoice number.
+    ///
+    /// A dialog rather than the status bar alone. The bar is a single line at the very bottom edge
+    /// of the window, a long way from the button that was just pressed, and it was the only thing
+    /// answering a click on Confirm sale that could not go through -- so the click read as having
+    /// done nothing at all. The bar and the field marker still happen underneath, because knowing
+    /// WHERE the first problem is matters once the dialog closes.
+    /// </summary>
+    private bool ReadyToConfirm() => Complete("This sale cannot be confirmed");
+
+    /// <summary>
+    /// One gate, two doors. Save memo and Confirm sale enforce the same rules and report them the
+    /// same way -- the only difference between the two is what happens after they pass.
+    /// </summary>
+    private bool Complete(string title)
+    {
+        var problems = _invoice.Problems();
+        if (problems.Count == 0) return true;
+
+        // UNDER THE FIELDS, not in a dialog. A modal listing "Buyer is required" states the fault
+        // somewhere the fault is not: it covers the form, and the desk has to read it, remember it,
+        // dismiss it, and then go hunting for which box it meant. Written under the box instead,
+        // the message and the thing to fix are the same place, and nothing has to be memorised.
+        //
+        // EVERY problem at once, one per field, which is what the dialog was right about: being
+        // told "Buyer is required", fixing it, and then being told about line 2 is two refusals for
+        // one click. The dialog's other promise -- that nothing was saved -- goes to the status bar,
+        // since it is about the press rather than about any one box.
+        FieldError.ClearAll();
+        foreach (var problem in problems) MarkProblem(problem);
+
+        Say($"{title} — nothing has been saved and no stock has moved");
+
+        // The caret lands on the first one, so the keyboard is already where the work is.
+        FocusFirstProblem(problems[0]);
+        return false;
+    }
+
+    /// <summary>
+    /// Writes ONE problem under the field it is about, without moving the caret.
+    ///
+    /// Split from FocusFirstProblem, which does the same matching and then also focuses and scrolls.
+    /// Doing that for every problem would leave the caret wherever the LAST one happened to be;
+    /// the two jobs are shown-all and focus-first, and only the second one moves anything.
+    /// </summary>
+    private void MarkProblem(string problem)
+    {
+        if (problem.StartsWith("Buyer")) { FieldError.Show(BuyerPicker, problem); return; }
+        if (problem.StartsWith("Terms")) { FieldError.Show(TermsBox, problem); return; }
+        if (problem.StartsWith("Broker %")) { FieldError.Show(BrokerPctBox, problem); return; }
+
+        // A line problem names its row, and the row colours itself and carries the text on its
+        // tooltip already. FocusFirstProblem pins the first of them to its actual cell.
+    }
+
+    /// The grade x size this invoice draws on, remembered across the reset that follows a post.
+    private List<(string Grade, string Size)> _lastSaleBuckets = [];
+
+    /// What a "Move to stock" press asked to see. Consumed by the Stock filter rebuild, once.
+    private string? _pendingStockGrade, _pendingStockSize;
+
+    /// <summary>
+    /// PUTS THE CARATS BACK. This invoice's lines have been holding stock since they were typed
+    /// (0043); this returns every one of those holds and then shows the buckets they went back to.
+    ///
+    /// It cannot return more than was taken. release_entry deletes only the rows this entry holds,
+    /// and each holds exactly what its line last said -- no figure is sent for the database to get
+    /// wrong. Pressing it twice returns the carats once and then nothing.
+    ///
+    /// It does NOT touch a confirmed sale. Once Confirm sale has run, the holds are gone and the
+    /// carats are out on SALE and REJECTION movements instead; reversing one of those is Cancel
+    /// invoice's job, and it writes its own reasoned entries on the ledger.
+    ///
+    /// One grade or one size only for the filter. A sale spanning four buckets cannot be expressed
+    /// by two combo boxes, and guessing one of the four would be worse than showing the lot.
+    /// </summary>
+    private async void MoveToStock_Click(object sender, RoutedEventArgs e)
+    {
+        Grid.CommitEdit();
+        var buckets = _invoice.RealLines.Count > 0
+            ? _invoice.RealLines.Where(l => l.Grade is not null && l.Size is not null)
+                                .Select(l => (Grade: l.Grade!.Code, Size: l.Size!.Code)).ToList()
+            : _lastSaleBuckets;
+
+        // Nothing to look up. This button exists to open Stock ALREADY FILTERED to the buckets on
+        // the invoice, so with no line and no remembered sale there is no filter to carry -- it
+        // used to switch tabs anyway and land on the whole unfiltered position, which looks like
+        // the button did something and did it wrong. Said out loud instead, on the screen the press
+        // came from, and the tab does not move.
+        if (buckets.Count == 0)
+        {
+            // Under the Grade cell of the row it is about, not in the status bar. The bar is for
+            // things that belong to the screen rather than to a control -- a transport failure, a
+            // saved memo -- and it sits at the very bottom of the window, a long way from the empty
+            // row that caused this. The message and the box to fix are the same place now.
+            const string fix = "Pick a grade and size on this line first — there is nothing to look up in stock yet";
+
+            FieldError.ClearAll();
+            if (_invoice.Lines.FirstOrDefault() is { } first) ShowLineError(first, fix);
+            else Say(fix);                       // no row at all: nothing to pin it to
+            return;
+        }
+
+        var grades = buckets.Select(b => b.Grade).Distinct().ToList();
+        var sizes = buckets.Select(b => b.Size).Distinct().ToList();
+        _pendingStockGrade = grades.Count == 1 ? grades[0] : null;
+        _pendingStockSize = sizes.Count == 1 ? sizes[0] : null;
+
+        // THE RETURN, before the navigation. Read the buckets first (above) because releasing the
+        // holds is what makes the lines stop pointing at them.
+        decimal returned;
+        using (Busy(MoveToStock, "Returning\u2026", AddLineButton, SaveDraft, MoveToStock, Post))
+            returned = await DropEntryAsync();
+
+        // The rows go with the carats. Leaving them on screen after the stock has gone back read
+        // as an invoice still holding something, and the next thing typed would have joined an
+        // entry whose earlier lines had already been returned.
+        //
+        // Only when something actually came back. A refused release must leave the lines exactly
+        // where they are, or the one screen that could retry it has just been cleared.
+        if (returned > 0) ResetEntry();
+
+        Say(returned <= 0
+                ? "Nothing was being held \u2014 this invoice has moved no stock"
+                : $"{returned:N4} ct returned to stock — the entry is cleared",
+            ok: true);
+
+        // Selecting the tab is what loads the page -- Tabs_SelectionChanged calls LoadStock_Click.
+        // Setting the filters here instead would only have them rebuilt over by that load.
+        foreach (var tab in Tabs.Items.OfType<TabItem>())
+            if (tab.Header as string == "Stock") { tab.IsSelected = true; return; }
+    }
+
     private async void Post_Click(object sender, RoutedEventArgs e)
     {
+        // A posted invoice on this screen is a correction, not a post. One call, one transaction.
+        if (CorrectingPosted)
+        {
+            if (await SaveCorrectionAsync()) NewInvoice_Click(sender, e);
+            return;
+        }
+
+        // Validated BEFORE the summary, not after. A summary built from figures that cannot post
+        // shows the desk a sale it is about to make and then refuses it, which reads as the app
+        // changing its mind.
+        if (!ReadyToConfirm()) return;
+
+        // Asked before SaveDraftAsync, so Cancel writes nothing at all: no draft, no movement,
+        // no invoice number consumed.
+        if (!ConfirmSale()) { Say("Not confirmed — nothing was posted and no stock moved"); return; }
+
         // Post saves first, so the whole save-then-post round trip sits inside one busy scope —
-        // otherwise the buttons came back to life in the gap between the two calls.
-        using var busy = Busy(Post, "Posting…", AddLineButton, New, SaveDraft, Post);
+        // otherwise the buttons came back to life in the gap between the two calls. That scope is
+        // also what stops a second click landing while the first is in flight; post_invoice is
+        // idempotent besides (it answers 'already_posted' rather than deducting twice), so a
+        // duplicate movement is not expressible from here.
+        using var busy = Busy(Post, "Posting…", AddLineButton, SaveDraft, MoveToStock, Post);
 
         if (!await SaveDraftAsync() || _invoice.InvoiceId is not { } id) return;
 
@@ -573,16 +1361,37 @@ public partial class MainWindow : Window
                 MessageBox.Show(this,
                     $"{outcome.Message}{Environment.NewLine}{Environment.NewLine}"
                     + $"{short_}{Environment.NewLine}{Environment.NewLine}"
-                    + "Take the stock in, or reduce the invoice, then post again.",
+                    + "Take the stock in, or reduce the invoice, then confirm again.",
                     "Not enough stock", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
-            Say(outcome.Message ?? "Post failed");
+            Say(outcome.Message ?? "The sale was not confirmed");
             return;
         }
 
+        // Captured before NewInvoice_Click clears the screen, so "Move to stock" can still show
+        // the buckets the carats came out of.
+        _lastSaleBuckets = _invoice.RealLines
+            .Where(l => l.Grade is not null && l.Size is not null)
+            .Select(l => (Grade: l.Grade!.Code, Size: l.Size!.Code)).Distinct().ToList();
+
+        // The holds are gone: release_on_post (0043) deletes them in the same transaction that set
+        // the invoice POSTED, so the carats are now out on SALE and REJECTION movements instead.
+        // This side's cache has to agree, or a later edit would think it still held something and
+        // skip the reservation it needs to make.
+        _held.Clear();
+        EntryStore.Clear();   // it is a sale now, not an entry to pick back up
+
+        // It is a sale now, so it must leave the memo list and appear among the invoices. Both come
+        // from the same list, so one reload settles both -- and a reload rather than a local edit,
+        // so what is on screen is what the database actually holds.
+        //
+        // AWAITED, and before the dialog: the desk clicks OK and looks straight at a list that has
+        // already caught up, rather than at one still a round trip behind.
+        await LoadInvoicesAsync();
+
         // The invoice number is assigned at post, by post_invoice() — never by this app.
-        Say($"Posted as {outcome.InvoiceNo} · stock deducted", ok: true);
-        MessageBox.Show(this, $"Posted as {outcome.InvoiceNo}.", "Invoice posted",
+        Say($"Sale {outcome.InvoiceNo} confirmed · stock deducted", ok: true);
+        MessageBox.Show(this, $"Recorded as sale {outcome.InvoiceNo}.", "Sale confirmed",
                         MessageBoxButton.OK, MessageBoxImage.Information);
         NewInvoice_Click(sender, e);
     }
@@ -592,7 +1401,15 @@ public partial class MainWindow : Window
     /// Every invoice the screen shows. Repo.InvoicesAsync is unchanged.
     private List<VInvoice> _invoices = [];
 
-    private async void LoadInvoices_Click(object sender, RoutedEventArgs e)
+    private async void LoadInvoices_Click(object sender, RoutedEventArgs e) => await LoadInvoicesAsync();
+
+    /// <summary>
+    /// The same reload, awaitable. Confirm Sale has to KNOW both lists have come back before it
+    /// announces the sale: until this returns, the memo it just posted is still sitting in the memo
+    /// list on Sales entry and still missing from the invoices. Fired and forgotten, that gap was
+    /// whatever the round trip took -- and if the read failed it never closed at all.
+    /// </summary>
+    private async Task LoadInvoicesAsync()
     {
         List<VInvoice>? rows;
         using (Busy(RefreshCatalogue, Loading))
@@ -600,7 +1417,9 @@ public partial class MainWindow : Window
         if (rows is null) return;
 
         _invoices = rows;
-        InvoiceChip.Text = Plural(_invoices.Count, "invoice");
+        // Sales, to agree with the list underneath. Counting _invoices counted the memos too,
+        // so the chip said "5 invoices" over a table showing 4.
+        InvoiceChip.Text = Plural(_invoices.Count(i => i.Status != InvoiceStatus.DRAFT), "invoice");
 
         // The buyer list can only offer buyers that actually appear.
         object? keep = InvoiceBuyer.SelectedItem;
@@ -644,7 +1463,24 @@ public partial class MainWindow : Window
         string term = InvoiceSearch?.Text.Trim() ?? "";
 
         var shown = _invoices
-            .Where(i => status.Length == 0 || InvoiceStateConverter.State(i) == status)
+            // BEFORE the status filter, not as one of its arms. A memo is work in progress, not a
+            // sale, and this page lists sales -- so there is no setting that brings drafts back,
+            // which is the point: "Everything" and a "Memo" entry both used to, and a memo shown
+            // among the invoices reads as a sale that was never confirmed and never moved stock.
+            // Unconfirmed memos are listed in full on Sales entry, which is where they are written.
+            .Where(i => i.Status != InvoiceStatus.DRAFT)
+            // Sale and Cancelled are read off the invoice's own status, the same value the STATUS
+            // column prints. Paid, Pending and Overdue are where the money stands, which is what
+            // InvoiceStateConverter derives. Answering both from State() made "Sale" impossible to
+            // ask for at all: State never returns it, because a posted invoice is always described
+            // by its payment instead.
+            .Where(i => status switch
+            {
+                "" => true,
+                "Sale" => i.Status == InvoiceStatus.POSTED,
+                "Cancelled" => i.Status == InvoiceStatus.CANCELLED,
+                _ => InvoiceStateConverter.State(i) == status,
+            })
             .Where(i => buyer.Length == 0 || i.BuyerName == buyer)
             .Where(i => term.Length == 0
                         || (i.InvoiceNo ?? "").Contains(term, StringComparison.OrdinalIgnoreCase)
@@ -714,11 +1550,35 @@ public partial class MainWindow : Window
         // has already moved stock and reopening it would let the same carats go out twice.
         if (EditDraftButton is not null)
         {
-            bool draft = InvoiceGrid.SelectedItem is VInvoice d && d.Status == InvoiceStatus.DRAFT;
-            EditDraftButton.IsEnabled = draft;
-            EditDraftButton.ToolTip = draft
-                ? "Open this draft in Sales entry"
-                : "Only a draft can be edited — a posted invoice has already moved stock.";
+            var sel = InvoiceGrid.SelectedItem as VInvoice;
+            bool draft = sel is { Status: InvoiceStatus.DRAFT };
+
+            // Any POSTED invoice can be corrected, imported ones included (0040, 0042). An
+            // imported invoice carries no stock movements of its own -- its carats are already
+            // out of the imported opening balance -- so the database moves only the DIFFERENCE
+            // its correction makes, as a signed ADJUST. That is what makes this safe to enable;
+            // before 0042 it would have deducted every carat on the invoice a second time.
+            bool imported = Repo.IsImported(sel?.InvoiceNo);
+            bool posted = sel is { Status: InvoiceStatus.POSTED };
+
+            EditDraftButton.IsEnabled = draft || posted;
+            // Off DRAFT, not off "is it enabled". posted is already false for an imported
+            // invoice -- so keying the caption off it called MIG-2, a SALE, an "Edit memo",
+            // which is the one thing it is not. The status decides the word; whether the
+            // button is lit is a separate question the tooltip answers.
+            EditDraftButton.Content = draft ? "Edit memo" : "Update invoice";
+            EditDraftButton.ToolTip = posted && imported
+                ? "Open this imported sale to update it. Its carats are already in the opening "
+                  + "balance, so saving moves only the difference the correction makes."
+                : posted
+                ? "Open this posted invoice to update it. Saving rewrites its stock movements in one step."
+                : draft
+                ? "Open this memo in Sales entry"
+                // Cancelled, and anything else that is neither. Names the path that DOES work:
+                // the old text said only what was refused, which is no help to somebody holding
+                // an invoice with a wrong figure on it.
+                : "Only a memo or a posted sale can be edited. A cancelled invoice has already "
+                  + "had its stock returned, so there is nothing to correct.";
         }
 
         // Hand the layout to the size handler rather than setting the two column widths here.
@@ -1192,7 +2052,18 @@ public partial class MainWindow : Window
         foreach (var b in brokers) entry.Brokers.Add(b);
 
         entry.InvoiceDate = inv.InvoiceDate.ToDateTime(TimeOnly.MinValue);
-        entry.DocType = inv.DocType;
+        // Before the assignment, not after: the picker must already hold the value or the binding
+        // nulls it on the way in.
+        //
+        // A blank falls back to the catalogue's first type rather than staying blank. An empty
+        // picker is not a neutral display: sales_invoice.doc_type is written back on save, so a
+        // box showing nothing would store nothing, and an invoice that merely arrived without a
+        // type would lose the chance of having one. BILL is the same default the importer itself
+        // applies (0022: coalesce(doc_type, 'BILL')), so this agrees with how the row was made.
+        entry.KeepDocType(inv.DocType);
+        entry.DocType = string.IsNullOrWhiteSpace(inv.DocType)
+                      ? entry.DocTypes.FirstOrDefault()
+                      : inv.DocType;
 
         // If the party has been deactivated since the draft was written it is not in the picker's
         // list -- correctly, nothing NEW may be billed to it. But this invoice already was, and a
@@ -1255,33 +2126,136 @@ public partial class MainWindow : Window
     /// filters its UPDATE on status = DRAFT and treats zero rows as the refusal — so this is the
     /// second lock rather than the only one.
     /// </summary>
+    /// <summary>
+    /// Update a confirmed sale: load it, show it in its own modal pre-filled, and on Save hand the
+    /// corrected figures to 0040 in one transaction.
+    ///
+    /// Nothing is written unless Save is pressed, and a refusal inside that transaction rolls the
+    /// whole of it back -- the invoice, its lines and every stock movement stay as they were.
+    /// </summary>
+    private async Task UpdateSaleAsync(VInvoice inv)
+    {
+        List<VSalesLine>? lines;
+        using (Busy(EditDraftButton, "Opening…", EditDraftButton, PrintBill, RecordReceipt, CancelInvoiceButton))
+            lines = await Read(() => Repo.LinesAsync(inv.InvoiceId));
+        if (lines is null) return;
+
+        var entry = BuildDraft(inv, lines, _invoice.Buyers, _invoice.Brokers,
+                               Catalogue.Grades, Catalogue.AllSizes, out var unresolved);
+
+        // The same refusal opening a memo gets, for the same reason: correcting what DID resolve
+        // would rewrite the invoice without the lines that did not, and silently drop them.
+        if (unresolved.Count > 0)
+        {
+            AppDialog.Refused(this,
+                title: "Sale cannot be updated",
+                headline: $"{unresolved.Count} line(s) name a grade or sieve the catalogue no longer has",
+                subhead: inv.BuyerName,
+                facts: [],
+                listTitle: "Which lines",
+                bullets: unresolved,
+                note: "Restore them on Master data, then update the sale again. Nothing was changed.");
+            return;
+        }
+
+        var form = new UpdateInvoiceDialog(entry, inv.InvoiceNo ?? "this invoice", Resources) { Owner = this };
+        if (form.ShowDialog() != true)
+        {
+            return;
+        }
+
+        entry.InvoiceId = inv.InvoiceId;
+
+        if (entry.BuyerId is not { } buyerId) { Say("Pick a buyer"); return; }
+        if (Catalogue.BaseCurrencyId == 0)
+        {
+            Say("No INR row in the currency table — an invoice cannot be priced without it");
+            return;
+        }
+
+        var draft = new DraftInvoice(
+            inv.InvoiceId, entry.ClientRef, DateOnly.FromDateTime(entry.InvoiceDate),
+            buyerId, entry.BrokerId, entry.BrokerPct, entry.TermsDays, entry.DocType,
+            Catalogue.BaseCurrencyId,
+            entry.RealLines.Select(l => new DraftLine(
+                l.Grade!.GradeId, l.Size!.SizeId, l.GrossWeightCt, l.SelectionCt,
+                l.PricePerCt, l.ExRate, l.Less1Pct, l.Less2Pct, l.Remark)).ToList());
+
+        WriteResult result;
+        using (Busy(EditDraftButton, "Saving…", EditDraftButton, PrintBill, RecordReceipt, CancelInvoiceButton))
+            result = await Repo.EditPostedAsync(draft, form.Reason);
+
+        if (!result.Ok)
+        {
+            // The database's own sentence, which names the buckets when the refusal is about stock.
+            AppDialog.Refused(this,
+                title: "Update refused",
+                headline: "The invoice and its stock are exactly as they were",
+                subhead: inv.BuyerName,
+                facts: [],
+                listTitle: "What the database said",
+                bullets: [Friendly.Message(result.Failure ?? "The update was refused.")],
+                note: "Nothing was written. The whole update is one transaction, so the stock it "
+                    + "would have returned was returned only inside it.");
+            Say(result.Failure ?? "Update refused");
+            return;
+        }
+
+        Say($"{inv.InvoiceNo} updated · stock adjusted to match", ok: true);
+        LoadInvoices_Click(this, new RoutedEventArgs());
+    }
+
     private async void EditDraft_Click(object sender, RoutedEventArgs e)
     {
         if (InvoiceGrid.SelectedItem is not VInvoice inv) { Field(InvoiceGrid, "Select an invoice first"); return; }
 
-        if (inv.Status != InvoiceStatus.DRAFT)
+        if (inv.Status is not (InvoiceStatus.DRAFT or InvoiceStatus.POSTED))
         {
             AppDialog.Refused(this,
-                title: "Not a draft",
-                headline: $"{inv.InvoiceNo ?? "This invoice"} is {inv.Status}, so it cannot be edited",
+                title: "Not a memo",
+                headline: $"{inv.InvoiceNo ?? "This invoice"} is {StatusWordConverter.Word(inv.Status)}, so it cannot be edited",
                 subhead: inv.BuyerName,
                 facts: [],
                 listTitle: null,
                 bullets: null,
-                note: "A posted invoice has already taken its carats out of stock. Editing and "
-                    + "posting it again would take them out a second time. Nothing was opened.");
+                note: "This invoice has already taken its carats out of stock. Editing and confirming it "
+                    + "again would take them out a second time. Nothing was opened.");
             return;
         }
+
+        // A confirmed sale is corrected in its own modal, pre-filled, with Save and Cancel. It is
+        // not the same act as opening a memo: its carats have already left stock, so saving means
+        // giving them back and taking the new figures out again, and that belongs in a window that
+        // says so rather than in the entry screen quietly changing under the user.
+        if (inv.Status == InvoiceStatus.POSTED) { await UpdateSaleAsync(inv); return; }
 
         // The same question New asks, for the same reason: typed lines that were never saved are
         // gone with no way back. A draft already on screen has an InvoiceId and is safe to replace.
         if (_invoice.InvoiceId is null && _invoice.RealLines.Count > 0
             && MessageBox.Show(this,
                    $"The invoice on screen has {_invoice.RealLines.Count} line(s) that have not been saved.\n\n"
-                   + $"Open the draft for {inv.BuyerName} and lose them?",
+                   + $"Open the memo for {inv.BuyerName} and lose them?",
                    "Unsaved invoice", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
 
+        // Whatever the entry being replaced was holding goes back, exactly as Clear does. Without
+        // this, typing a line and then opening a different memo left the carats spoken for by an
+        // invoice no longer on any screen -- the same stranding, reached by a different door.
+        //
+        // Before the swap, because DropEntryAsync releases against _invoice.ClientRef and the memo
+        // about to be opened carries a different one.
+        if (_invoice.InvoiceId is null) await DropEntryAsync();
+
+        await OpenInvoiceAsync(inv);
+    }
+
+    /// <summary>
+    /// Loads an invoice into Sales entry. Shared by Edit memo and the memo picker, because they
+    /// are one act reached two ways -- and a second copy of this would be a second place for the
+    /// unresolved-line refusal to be forgotten.
+    /// </summary>
+    private async Task OpenInvoiceAsync(VInvoice inv)
+    {
         List<VSalesLine>? lines;
         using (Busy(EditDraftButton, "Opening…", EditDraftButton, PrintBill, RecordReceipt, CancelInvoiceButton))
             lines = await Read(() => Repo.LinesAsync(inv.InvoiceId));
@@ -1295,25 +2269,28 @@ public partial class MainWindow : Window
         if (unresolved.Count > 0)
         {
             AppDialog.Refused(this,
-                title: "Draft cannot be reopened",
+                title: "Memo cannot be reopened",
                 headline: $"{unresolved.Count} line(s) name a grade or sieve the catalogue no longer has",
                 subhead: inv.BuyerName,
                 facts: [],
                 listTitle: "Which lines",
                 bullets: unresolved,
-                note: "Restore them on Master data, then open the draft again. Nothing was opened "
-                    + "and the draft is untouched.");
-            Say($"Draft not opened — {unresolved.Count} line(s) reference a missing grade or size");
+                note: "Restore them on Master data, then open the memo again. Nothing was opened "
+                    + "and the memo is untouched.");
+            Say($"Memo not opened — {unresolved.Count} line(s) reference a missing grade or size");
             return;
         }
 
+        var leaving = _invoice;
         _invoice = entry;
+        WatchHolds(leaving, _invoice);
         DataContext = _invoice;
+        TickCountChanged();
 
         Tabs.SelectedItem = SalesEntryTab;
 
-        Say($"Draft for {inv.BuyerName} opened · {_invoice.RealLines.Count} line(s) · "
-            + "Post when ready", ok: true);
+        Say($"{(inv.Status == InvoiceStatus.DRAFT ? "Memo" : "Sale")} for {inv.BuyerName} opened · "
+            + $"{_invoice.RealLines.Count} line(s)", ok: true);
     }
 
     private async void PrintInvoice_Click(object sender, RoutedEventArgs e)
@@ -1323,7 +2300,7 @@ public partial class MainWindow : Window
         var lines = await Read(() => Repo.LinesAsync(invoice.InvoiceId));
         if (lines is null) return;
 
-        Say(Reports.PrintInvoice(invoice, lines, "Diamond Sales & Inventory") ?? "", ok: true);
+        Say(Reports.PrintInvoice(invoice, lines) ?? "", ok: true);
     }
 
     // ── Stock ───────────────────────────────────────────────────────────────
@@ -1353,6 +2330,7 @@ public partial class MainWindow : Window
         List<VStockPosition>? rows;
         List<VStockMovement>? rejections;
         List<VStockMovement>? imported;
+        List<VStockMovement>? sold;
         using (Busy(RefreshCatalogue, Loading, RefreshCatalogue, StockExport, RunInvariants))
         {
             rows = await Read(Repo.StockAsync);
@@ -1361,6 +2339,7 @@ public partial class MainWindow : Window
             // as the figure correcting itself.
             rejections = await Read(Repo.RejectionsAsync);
             imported = await Read(Repo.ImportedStockAsync);
+            sold = await Read(Repo.SalesAsync);
         }
 
         if (rows is null) return;
@@ -1368,6 +2347,7 @@ public partial class MainWindow : Window
         _stock = rows;
         _rejections = rejections ?? [];
         _importedStock = imported ?? [];
+        _sales = sold ?? [];
 
         StockChip.Text = Plural(rows.Count, "bucket");
 
@@ -1395,6 +2375,12 @@ public partial class MainWindow : Window
             _stockGradeCodes[_stockGradeCodes.ContainsKey(label) ? $"{label} ({x.Code})" : label] = x.Code;
         }
 
+        // A "Move to stock" press asked for one bucket. Honoured once, then forgotten, so the next
+        // visit to this page keeps whatever the user themselves last chose.
+        if (_pendingStockGrade is { } wantGrade)
+            keepGrade = _stockGradeCodes.FirstOrDefault(kv => kv.Value == wantGrade).Key ?? keepGrade;
+        _pendingStockGrade = null;
+
         StockGradeFilter.ItemsSource = new[] { "All grades" }.Concat(_stockGradeCodes.Keys).ToList();
         StockGradeFilter.SelectedItem =
             keepGrade is string kg && StockGradeFilter.Items.Contains(kg) ? kg : "All grades";
@@ -1420,6 +2406,10 @@ public partial class MainWindow : Window
             string label = SizeNames.Short(code);
             _stockSizeCodes[_stockSizeCodes.ContainsKey(label) ? $"{label} ({code})" : label] = code;
         }
+
+        if (_pendingStockSize is { } wantSize)
+            keepSize = _stockSizeCodes.FirstOrDefault(kv => kv.Value == wantSize).Key ?? keepSize;
+        _pendingStockSize = null;
 
         StockSizeFilter.ItemsSource = new[] { "All sizes" }.Concat(_stockSizeCodes.Keys).ToList();
         StockSizeFilter.SelectedItem =
@@ -1569,11 +2559,22 @@ public partial class MainWindow : Window
                         || m.SizeCode.Contains(term, StringComparison.OrdinalIgnoreCase))
             .Sum(m => m.WeightCt);
 
-        decimal moved = held - atImport;
+        // "Out since" counts MOVEMENTS, and reservations are not movements. Measured against the
+        // available balance it read 26.0000 ct out where 21.0000 had actually left the ledger, and
+        // the office reconciles this line against their own sheet -- so the five held carats made
+        // the reconciliation fail against a figure nothing had shipped.
+        //
+        // The hold is named separately instead, which also closes the arithmetic on screen:
+        // at import, less what moved, less what is spoken for, is the total above.
+        decimal reserved = show.Sum(r => r.ReservedCt);
+        decimal moved = held + reserved - atImport;
+
         StockBreakdownTotalNote.Text = atImport == 0m
             ? (filtered ? "Carats on hand · filtered" : "Carats on hand")
             : $"Workbook at import: {atImport:N4} ct · {Math.Abs(moved):N4} ct "
-              + (moved < 0 ? "out since" : "in since") + (filtered ? " · filtered" : "");
+              + (moved < 0 ? "out since" : "in since")
+              + (reserved > 0 ? $" · {reserved:N4} ct reserved" : "")
+              + (filtered ? " · filtered" : "");
 
         decimal ct = rejected.Sum(m => m.WeightCt);
         StockBreakdownRejection.Text = $"{ct:N4} ct";
@@ -2240,6 +3241,36 @@ public partial class MainWindow : Window
     /// Below this width the two cards cannot both hold their content, and the alternative is a
     /// horizontal scrollbar across the whole page. The sidebar drops underneath instead.
     /// </summary>
+    /// <summary>
+    /// Caps the Grades table at a WHOLE number of rows, so its bottom edge never lands mid-row.
+    ///
+    /// Every other grid in the app renders plain text, and a last row clipped by the viewport
+    /// reads as exactly what it is -- there is more below. The alias column is the one editable
+    /// cell in the app, and EditableCell draws it as a real input box (32 high inside a 4px
+    /// margin). Cut that in half and it does not read as a row continuing past the edge; it reads
+    /// as a broken field, which is how it was reported.
+    ///
+    /// Measured off the grid's OWN properties rather than the numbers in AppDataGrid, so restyling
+    /// a row taller cannot leave this arithmetic quietly wrong.
+    ///
+    /// The cost is up to one row's worth of space above the hint text. That is the honest trade:
+    /// a table that stops where a row stops, rather than one that appears to contain half a box.
+    /// </summary>
+    private void GradeArea_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        double row = GradeGrid.RowHeight;
+        if (double.IsNaN(row) || row <= 0) return;      // rows sized to content: nothing to snap to
+
+        // The chrome above the rows: the column header, and the grid's own top and bottom border.
+        double chrome = GradeGrid.ColumnHeaderHeight + GradeGrid.BorderThickness.Top
+                                                     + GradeGrid.BorderThickness.Bottom;
+
+        // At least one row, however cramped the card gets -- a table showing none of its rows is
+        // worse than one showing a single row and scrolling.
+        int rows = Math.Max(1, (int)Math.Floor((e.NewSize.Height - chrome) / row));
+        GradeGrid.MaxHeight = chrome + rows * row;
+    }
+
     private void MasterSplit_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         if (SidebarCard is null) return;
@@ -4070,6 +5101,10 @@ public partial class MainWindow : Window
     /// beside the current position instead of leaving the office to wonder why they differ.
     private List<VStockMovement> _importedStock = [];
 
+    /// Every SALE movement. Summed on the Stock report to say what has been sold out of the
+    /// buckets on screen; the ledger and v_reconciliation read the same rows.
+    private List<VStockMovement> _sales = [];
+
     /// <summary>
     /// The sieve columns the last imported stock sheet CARRIED, which is not the same thing as
     /// the sieves holding stock.
@@ -4367,6 +5402,19 @@ public partial class MainWindow : Window
         if (rows is null) return;
         _reportRows = rows;
 
+        // The SALE movements this sheet's own SALES figure is summed from.
+        //
+        // They used to be fetched only by LoadStock_Click, on the STOCK page, and _sales starts
+        // empty -- so the report's SALES read "0.00 ct - Nothing sold from these buckets" until
+        // somebody happened to open a different screen first, and TOTAL STOCK (on-hand plus sales)
+        // silently came out short by the same amount. A figure this page prints is a figure this
+        // page has to read.
+        //
+        // Not fatal if it fails: the sheet itself is drawn from `rows`, so the table and ON HAND
+        // still stand. Only the two derived figures would be understated, and Read has already put
+        // the failure in the status bar.
+        if (await Read(Repo.SalesAsync) is { } sold) _sales = sold;
+
         // The size tick-boxes are built once, from the catalogue, so a size added to the Size
         // Master appears here without this report knowing about it in advance.
         //
@@ -4426,7 +5474,7 @@ public partial class MainWindow : Window
     /// </summary>
     private bool ReportSizeOnByDefault(string code) =>
         ReportSizeTicked(code, _reportSheetSizes ?? [],
-                         [.. _reportRows.Where(r => r.BalanceCt != 0).Select(r => r.SizeCode)]);
+                         [.. _reportRows.Where(r => r.LedgerCt != 0).Select(r => r.SizeCode)]);
 
     /// <summary>
     /// The printed rates as one config value: "grade,size,rate;grade,size,rate". Codes carry no
@@ -4641,7 +5689,7 @@ public partial class MainWindow : Window
         // counted in the total with no row to account for it. A picker may hide an inactive grade.
         // A stock report may not.
         var grades = Catalogue.Grades.Select(g => g.Code)
-            .Concat(_reportRows.Where(r => r.BalanceCt != 0).Select(r => r.GradeCode))
+            .Concat(_reportRows.Where(r => r.LedgerCt != 0).Select(r => r.GradeCode))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(code =>
             {
@@ -4650,8 +5698,12 @@ public partial class MainWindow : Window
             })
             .ToList();
 
+        // LedgerCt, not BalanceCt. This sheet is a ledger document: TOTAL - SALES = ON HAND, and
+        // reserved carats are in neither term, so reading the available balance made the moment a
+        // sales entry held 5 ct look like 5 ct that had ceased to exist. A parcel spoken for is
+        // still in the safe, and a stock take would still count it. See 0044.
         decimal Weight(string grade, string size) =>
-            _reportRows.FirstOrDefault(r => r.GradeCode == grade && r.SizeCode == size)?.BalanceCt ?? 0m;
+            _reportRows.FirstOrDefault(r => r.GradeCode == grade && r.SizeCode == size)?.LedgerCt ?? 0m;
         // Cost where there is stock to have a cost; otherwise what the sheet printed.
         //
         // The two are different facts and the fallback only ever fires where the first cannot
@@ -4660,7 +5712,7 @@ public partial class MainWindow : Window
         // screen that shows nothing where the paper shows a figure reads as an import that lost it.
         decimal Rate(string grade, string size) =>
             _reportRows.FirstOrDefault(r => r.GradeCode == grade && r.SizeCode == size)
-                is { BalanceCt: not 0m, AvgCost: { } cost }
+                is { LedgerCt: not 0m, AvgCost: { } cost }
                     ? cost
                     : SheetRate(grade, size);
 
@@ -4673,7 +5725,16 @@ public partial class MainWindow : Window
         bool anything = sizes.Count > 0 && grades.Count > 0;
         ReportEmpty.Visibility = anything ? Visibility.Collapsed : Visibility.Visible;
         ReportTitleBox.Visibility = anything ? Visibility.Visible : Visibility.Collapsed;
-        if (!anything) { ReportChip.Text = "Nothing to show"; return; }
+        if (!anything)
+        {
+            ReportChip.Text = "Nothing to show";
+            // Zeroed, not left as they were. A band still reading 145 ct over an empty sheet is a
+            // figure describing a set that is no longer on screen, which is worse than a dash.
+            ReportTotalStock.Text = ReportSales.Text = ReportOnHand.Text = "0.00 ct";
+            ReportSalesNote.Text = "Nothing sold from these buckets";
+            ReportBandScope.Text = "";
+            return;
+        }
 
         // 1 label + 2 per size + 1 label, as the sheet prints it.
         int columns = 1 + sizes.Count * 2 + 1;
@@ -4866,6 +5927,28 @@ public partial class MainWindow : Window
             ReportCell(grandWeight == 0m ? ReportFigure(0m, ReportShowingZeros, "N0")
                                          : (grandValue / grandWeight).ToString("N0"),
                        true, TextAlignment.Right, none, figure: true, secondary: true), totalRow, 2));
+
+        // Total Stock . Sales . On Hand, for exactly the grades and sieves this sheet is showing.
+        //
+        // grandWeight is the sheet's own total, so ON HAND is the figure the table below adds up to
+        // and cannot drift from it. TOTAL is derived as on-hand plus sales, which is what makes
+        // TOTAL - SALES = ON HAND true whatever the filters are set to, rather than an identity
+        // that happens to hold until someone rejects a parcel.
+        //
+        // Filtered on the SAME grade and sieve lists the sheet was drawn from, so narrowing the
+        // sieves narrows all three figures together.
+        var shownGrades = grades.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var shownSizes = sizes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        decimal soldCt = _sales
+            .Where(m => shownGrades.Contains(m.GradeCode) && shownSizes.Contains(m.SizeCode))
+            .Sum(m => m.WeightCt);
+
+        ReportOnHand.Text = $"{grandWeight:N2} ct";
+        ReportSales.Text = $"{soldCt:N2} ct";
+        ReportTotalStock.Text = $"{grandWeight + soldCt:N2} ct";
+        ReportSalesNote.Text = soldCt == 0m ? "Nothing sold from these buckets"
+                                            : "Carats sold to date";
+        ReportBandScope.Text = $"{grades.Count} grade(s) × {sizes.Count} sieve(s)";
 
         ReportChip.Text = $"{grandWeight:N2} ct";
         ReportSubtitle.Text = $"{grades.Count} grade(s) × {sizes.Count} size(s) · "
@@ -6339,7 +7422,11 @@ public partial class MainWindow : Window
     /// </summary>
     private async void RefreshCatalogue_Click(object sender, RoutedEventArgs e)
     {
-        if (!Db.IsOnline) { Say("Not connected — the catalogue cannot be reloaded right now"); return; }
+        // No !Db.IsOnline guard, for the reason above TrySyncAsync. This is the button somebody
+        // presses when the wifi comes back, and refusing to try was how it answered -- so the flag
+        // it was consulting could never be cleared by the one control that looks like it should
+        // clear it. LoadPartiesAsync has its own try/catch and reports failure through Pill and
+        // Say, so the guard was duplicating protection that already existed a layer down.
 
         // Busy rather than a bare IsEnabled: it swaps the caption too, so the button says what is
         // happening instead of just going dead. Sign out is disabled alongside it — signing out
@@ -6432,7 +7519,9 @@ public partial class MainWindow : Window
             // focusable control on the page — the date picker — every time you come back. That lit
             // its focus ring on a field nobody had chosen, and put the caret on the one header
             // value that is already correct. Focus belongs where the work starts.
-            case "Sales entry": FocusWhereEntryResumes(); break;
+            case "Sales entry":
+                FocusWhereEntryResumes();
+                break;
             case "Invoices": LoadInvoices_Click(this, e); break;
             case "Receivables": LoadReceivables_Click(this, e); break;
             case "Stock": LoadStock_Click(this, e); break;
@@ -6485,6 +7574,9 @@ public partial class MainWindow : Window
     /// </summary>
     private static string ColumnHeaderFor(string message) =>
         message.Contains("Grade is required") ? "Grade"
+        // Move to stock's refusal. It is about the empty line rather than one bad value, and Grade
+        // is where that line gets filled in from, so it is written there.
+        : message.Contains("Pick a grade and size") ? "Grade"
         : message.Contains("Size is required") || message.Contains("does not use size") ? "Size"
         : message.Contains("Weight") ? "Weight"
         : message.Contains("Price") ? "Price/ct"
@@ -6501,7 +7593,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void ShowLineError(SaleLine bad, string error)
     {
-        Grid.ScrollIntoView(bad);
+        ShowRow(bad);
         Grid.UpdateLayout();
 
         int column = Grid.Columns
@@ -6514,16 +7606,44 @@ public partial class MainWindow : Window
         var row = Grid.ItemContainerGenerator.ContainerFromItem(bad) as DataGridRow;
         var cells = VisualTree.FindChild<System.Windows.Controls.Primitives.DataGridCellsPresenter>(row);
         if (cells?.ItemContainerGenerator.ContainerFromIndex(column) is DataGridCell cell)
+        {
             FieldError.Show(cell, error);
+            _lineErrorCell = cell;
+        }
         else
             Say(error);
+    }
+
+    /// The cell a line message is pinned to, while it is up.
+    private DataGridCell? _lineErrorCell;
+
+    /// <summary>
+    /// Takes the line message down as soon as the grid moves on.
+    ///
+    /// Every other field clears its message the moment the user acts on it -- a TextBox on
+    /// TextChanged, a picker on SelectionChanged (see FieldError.Show). A DataGridCell is neither,
+    /// so a line message had nothing to clear it and stayed on screen. That alone would be untidy;
+    /// what made it a bug is that a DataGrid RECYCLES its cell containers, and the adorner belongs
+    /// to the container, not to the row. Fix the line and press Enter and the container the message
+    /// was written on is re-bound to the blank line that Enter just added -- so the new line came up
+    /// wearing the old line's "... is required", drawn over the cell being typed into.
+    ///
+    /// Moving the current cell is the grid's equivalent of typing in a box, and it covers the case
+    /// above exactly: AddLine sets CurrentCell to the new row, which clears the message before that
+    /// row is ever drawn.
+    /// </summary>
+    private void Grid_CurrentCellChanged(object? sender, EventArgs e)
+    {
+        if (_lineErrorCell is null) return;
+        FieldError.Clear(_lineErrorCell);
+        _lineErrorCell = null;
     }
 
     /// <summary>
     /// A validation message shown under the field it is about, with the caret sent there.
     ///
     /// This replaces Say for FIELD problems only. Say still carries everything that is about the
-    /// screen rather than about one control -- "Import cancelled", "Draft saved", a transport
+    /// screen rather than about one control -- "Import cancelled", "Memo saved", a transport
     /// failure -- because those belong to no field and a message pinned under an arbitrary box
     /// would be worse than one in the status bar.
     ///

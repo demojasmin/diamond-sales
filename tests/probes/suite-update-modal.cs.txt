@@ -1,0 +1,172 @@
+﻿using System.IO;
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+string outDir = @"C:\Users\jbc\AppData\Local\Temp\claude\d--diamond-inventory\f589c178-ac6f-46af-813b-facbf945a589\scratchpad";
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    Catalogue.Grades.Clear(); Catalogue.AllSizes.Clear();
+    var g = new Grade { GradeId = 1, Code = "1BB" };
+    var sz = new SizeBucket { SizeId = 1, Code = "-6.5" };
+    Catalogue.Grades.Add(g); Catalogue.AllSizes.Add(sz);
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1420 };
+    win.Show();
+
+    var e2 = new InvoiceEntry();
+    e2.Buyers.Add(new PartyRef(1, "KIRAN EXPORTS", 0));
+    e2.SelectedBuyer = e2.Buyers[0];
+    e2.Lines.Clear();
+    e2.Lines.Add(new SaleLine { Grade = g, Size = sz, GrossWeightCt = 10m, SelectionCt = 8m, PricePerCt = 45893m });
+    e2.Lines.Add(new SaleLine { Grade = g, Size = sz, GrossWeightCt = 4m, SelectionCt = 4m, PricePerCt = 1000m });
+
+    var dlg = new UpdateInvoiceDialog(e2, "INV-2026-00003", win.Resources)
+    { WindowStartupLocation = WindowStartupLocation.Manual, Left = -4000, Top = -4000, ShowInTaskbar = false };
+    dlg.Show();
+    var f = new System.Windows.Threading.DispatcherFrame();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+        System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+    System.Windows.Threading.Dispatcher.PushFrame(f);
+
+    var page = (DataGrid)win.FindName("Grid")!;
+    var modal = (DataGrid)dlg.FindName("LineGrid")!;
+    string Cols(DataGrid gr) => string.Join(", ", gr.Columns.Select(c => c.Header as string ?? "(tick)"));
+
+    Check("SAME - the modal's columns match the entry grid's, tick column included",
+          Cols(modal) == Cols(page), $"modal [{Cols(modal)}]  page [{Cols(page)}]");
+    Check("SAME - the same header fields", 
+          dlg.FindName("BuyerPicker") is ComboBox && dlg.FindName("BrokerPicker") is ComboBox
+          && dlg.FindName("BrokerPctBox") is TextBox && dlg.FindName("TermsBox") is TextBox
+          && dlg.FindName("DocTypePicker") is ComboBox && dlg.FindName("InvoiceDatePicker") is DatePicker);
+    Check("SAME - Add line, as the page has it", dlg.FindName("AddLineButton") is Button);
+
+    var del = (Button)dlg.FindName("DeleteLines")!;
+    Check("TICK - Remove is out of the way until something is ticked",
+          del.Visibility == Visibility.Collapsed, del.Visibility.ToString());
+
+    var tickAll = typeof(UpdateInvoiceDialog)
+        .GetField("_tickAll", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dlg) as CheckBox;
+    var count = typeof(UpdateInvoiceDialog).GetMethod("TickCountChanged",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    e2.Lines[0].Selected = true;
+    count.Invoke(dlg, null);
+    Check("TICK - some ticked reads indeterminate", tickAll?.IsChecked is null,
+          tickAll?.IsChecked?.ToString() ?? "null");
+    Check("TICK - and the Remove button counts them",
+          del.Visibility == Visibility.Visible
+          && ((TextBlock)dlg.FindName("DeleteLinesLabel")!).Text == "Remove 1 line",
+          ((TextBlock)dlg.FindName("DeleteLinesLabel")!).Text);
+
+    var box = new CheckBox { IsChecked = true };
+    typeof(UpdateInvoiceDialog).GetMethod("TickAllLines_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(dlg, [box, new RoutedEventArgs()]);
+    Check("TICK - tick-all takes every row", e2.Lines.All(l => l.Selected));
+
+    // Blank rows, so no confirmation is raised -- clearing rows that are entirely empty is not a
+    // decision worth interrupting for, and a modal dialog is something this probe cannot answer.
+    e2.Lines.Clear();
+    e2.Lines.Add(new SaleLine());
+    e2.Lines.Add(new SaleLine());
+    foreach (var l in e2.Lines) l.Selected = true;
+    count.Invoke(dlg, null);
+    typeof(UpdateInvoiceDialog).GetMethod("DeleteLines_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(dlg, [del, new RoutedEventArgs()]);
+    Check("TICK - and Remove takes the ticked lines off", e2.Lines.Count == 0, $"{e2.Lines.Count} left");
+    Check("TICK - the button puts itself away again",
+          del.Visibility == Visibility.Collapsed, del.Visibility.ToString());
+
+    e2.Lines.Add(new SaleLine { Grade = g, Size = sz, GrossWeightCt = 10m, SelectionCt = 8m, PricePerCt = 45893m });
+
+    // The two actions an update cannot have.
+    var settle = new System.Windows.Threading.DispatcherFrame();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+        System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+        new Action(() => settle.Continue = false));
+    System.Windows.Threading.Dispatcher.PushFrame(settle);
+
+    static IEnumerable<T> All<T>(DependencyObject? d) where T : DependencyObject
+    {
+        if (d is null) yield break;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+        {
+            var c = VisualTreeHelper.GetChild(d, i);
+            if (c is T hit) yield return hit;
+            foreach (var deep in All<T>(c)) yield return deep;
+        }
+    }
+
+    var actionCell = All<DataGridCell>(modal).FirstOrDefault(c => c.Column?.Header as string == "Action");
+    var tips = actionCell is null ? []
+             : All<Button>(actionCell).Select(b => b.ToolTip as string ?? "").ToList();
+
+    // THREE, not four. Move to stock was taken off this window: it moved nothing -- it closed the
+    // update and opened the Stock page -- while the button of the same name on Sales entry really
+    // does return carats. One name doing two jobs, and on a POSTED invoice the returning one is not
+    // even possible: the carats left as a movement, and only Save changes or Cancel invoice can
+    // bring them back.
+    Check("ROW - three icons on every line",
+          tips.Count == 3, tips.Count == 0 ? "<no action cell realised>"
+                         : string.Join(" | ", tips.Select(x => x.Split('.')[0])));
+    Check("ROW - Print memo", tips.Any(x => x.Contains("Print the memo")));
+    Check("ROW - and NO Move to stock, which never moved anything here",
+          !tips.Any(x => x.Contains("Open the Stock page")),
+          tips.FirstOrDefault(x => x.Contains("Stock")) ?? "<gone>");
+    // The tick does not post. Posting an invoice that is already posted is not on offer here, and
+    // the tooltip says what it does instead rather than leaving the glyph to be guessed at.
+    Check("ROW - the tick SAVES rather than posting",
+          tips.Any(x => x.Contains("Save these figures") && x.Contains("confirming the sale means")),
+          tips.FirstOrDefault(x => x.Contains("Save these")));
+    Check("ROW - and Remove", tips.Any(x => x.Contains("Take this line off")));
+
+    // The remark behaves as it does on the entry screen: it wraps, and the row grows with it.
+    var remarkCell = All<DataGridCell>(modal).FirstOrDefault(c => c.Column?.Header as string == "Remark");
+    var remarkBox = remarkCell is null ? null : All<TextBox>(remarkCell).FirstOrDefault();
+    Check("REMARK - wraps, as it does on the entry screen",
+          remarkBox?.TextWrapping == TextWrapping.Wrap,
+          remarkBox?.TextWrapping.ToString() ?? "<no box>");
+    Check("REMARK - and Enter still belongs to the grid, not the box",
+          remarkBox?.AcceptsReturn == false);
+    // Row height comes from the shared DataGrid style, not from either markup, so the test that
+    // matters is that the modal and the page agree -- and that the row style carrying MinHeight
+    // came across, since that is what lets a row grow past the pinned height.
+    Check("REMARK - the modal's rows behave as the page's do",
+          modal.RowHeight.Equals(page.RowHeight), $"modal {modal.RowHeight} vs page {page.RowHeight}");
+    var rowStyle = modal.RowStyle;
+    Check("REMARK - and the row style that lets one grow came across",
+          rowStyle is not null
+          && rowStyle.Setters.OfType<Setter>().Any(x => x.Property == FrameworkElement.MinHeightProperty),
+          rowStyle is null ? "<no row style>" : $"{rowStyle.Setters.Count} setter(s)");
+
+    var bmp = new RenderTargetBitmap((int)dlg.ActualWidth, (int)dlg.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+    bmp.Render(dlg);
+    var enc = new PngBitmapEncoder(); enc.Frames.Add(BitmapFrame.Create(bmp));
+    using (var fs = File.Create(Path.Combine(outDir, "modal2.png"))) enc.Save(fs);
+    dlg.Close();
+
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Environment.Exit(fail);
+});
+t.SetApartmentState(ApartmentState.STA); t.Start(); t.Join();

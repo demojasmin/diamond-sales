@@ -338,6 +338,9 @@ DiamondDesktop.Data.Grade GradeOf(string code) =>
     DiamondDesktop.Catalogue.Grades.First(g => g.Code == code);
 
 var inv = new DiamondDesktop.InvoiceEntry { Buyer = "Z K ENTERPRISE", BrokerPct = 1m, TermsDays = 45 };
+// A new invoice opens with NO rows -- the grid holds only the lines you asked for -- so the
+// first line is added here rather than assumed.
+inv.Lines.Add(new DiamondDesktop.SaleLine());
 var line = inv.Lines[0];
 line.Grade = GradeOf("NO 1");
 line.Size = uiPlus65;

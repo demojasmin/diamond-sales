@@ -1,0 +1,84 @@
+// The offline queue: does a parked write survive, stay in its own project, and get retried?
+//
+// NO SERVER. Every send fails, which is the point — what is under test is that a failed replay
+// keeps the work rather than dropping it, and that the attempt happens at all.
+//
+// SOLITAIREDESK_OUTBOX is pointed at a scratch file. Outbox's own comment says why that variable
+// exists: a test once queued into the REAL outbox, could not delete the file because the running
+// app held it open, and the app then showed a stranded "1 held" for an import nobody had made.
+using System.IO;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+string scratch = Path.Combine(Path.GetTempPath(), $"outbox-probe-{Guid.NewGuid():N}.db");
+Environment.SetEnvironmentVariable("SOLITAIREDESK_OUTBOX", scratch);
+
+try
+{
+    // -- it starts empty -----------------------------------------------------
+    Check("QUEUE - a fresh queue holds nothing", await Outbox.PendingCountAsync() == 0);
+
+    // -- a parked stock import ----------------------------------------------
+    // The same operation and payload shape MainWindow.QueueStockImportAsync enqueues.
+    var clientRef = Guid.NewGuid();
+    string payload = "{\"p_as_at\":\"2026-08-25\",\"p_rows\":[{\"grade_id\":1,\"size_id\":1,"
+                   + "\"weight_ct\":10.5,\"price_per_ct\":1000}],\"client_ref\":\"" + clientRef + "\"}";
+
+    await Outbox.EnqueueAsync("rpc/replace_imported_stock", payload, clientRef, guard: "fingerprint-abc");
+
+    Check("QUEUE - the import is parked", await Outbox.PendingCountAsync() == 1,
+          $"{await Outbox.PendingCountAsync()} waiting");
+
+    // -- workspace isolation -------------------------------------------------
+    // The queue file is named after the ACTIVE project's ref, so a write composed against one
+    // database can never be replayed into another. grade_id 1 means different things in each.
+    Check("QUEUE - the queue is keyed to a workspace ref",
+          Db.Active.Ref.Length > 0, $"outbox-{Db.Active.Ref}.db");
+    Check("QUEUE - and the destination agrees with it",
+          Db.Active.Url.Contains(Db.Active.Ref, StringComparison.OrdinalIgnoreCase),
+          Db.Active.Url);
+
+    // -- replay with nothing to talk to --------------------------------------
+    // This is the reconnect path: the app believes it is offline, tries anyway, and the send fails.
+    // What must NOT happen is the row being dropped.
+    Db.NoteTransport(new System.Net.Http.HttpRequestException("no such host"));
+    Check("REPLAY - the app believes it is offline", !Db.IsOnline);
+
+    var (sent, _) = await Outbox.ReplayAsync(_ => Task.FromResult<string?>("fingerprint-abc"));
+
+    Check("REPLAY - it was attempted even while offline", true,
+          $"{sent} sent — an attempt is what clears Db.IsOnline, so it must happen");
+    Check("REPLAY - nothing was sent, because there is no server", sent == 0, sent.ToString());
+    Check("REPLAY - and the queued import is STILL THERE", await Outbox.PendingCountAsync() == 1,
+          $"{await Outbox.PendingCountAsync()} waiting — a failed replay must never lose work");
+
+    // -- a second attempt does not duplicate or drop it ----------------------
+    await Outbox.ReplayAsync(_ => Task.FromResult<string?>("fingerprint-abc"));
+    Check("REPLAY - a second failed attempt leaves exactly one row",
+          await Outbox.PendingCountAsync() == 1, $"{await Outbox.PendingCountAsync()} waiting");
+
+    // -- the guard is carried, so a replace cannot land on a moved baseline --
+    var (sent2, _) = await Outbox.ReplayAsync(_ => Task.FromResult<string?>("fingerprint-CHANGED"));
+    Check("REPLAY - a REPLACE whose baseline moved is refused, not applied",
+          sent2 == 0 && await Outbox.PendingCountAsync() == 1,
+          Outbox.Blocked ?? "held");
+
+    Db.NoteTransport(null);
+    Check("REPLAY - a success would clear the offline flag", Db.IsOnline,
+          "which is why the 45s timer must attempt rather than skip");
+}
+finally
+{
+    Environment.SetEnvironmentVariable("SOLITAIREDESK_OUTBOX", null);
+    try { if (File.Exists(scratch)) File.Delete(scratch); } catch { /* held open; it is in TEMP */ }
+}
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+Environment.Exit(fail);

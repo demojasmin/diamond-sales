@@ -1,0 +1,307 @@
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    Catalogue.Grades.Clear(); Catalogue.AllSizes.Clear();
+    var g1 = new Grade { GradeId = 1, Code = "NO 1" };
+    var g2 = new Grade { GradeId = 2, Code = "NO 2" };
+    var s1 = new SizeBucket { SizeId = 1, Code = "+11" };
+    Catalogue.Grades.Add(g1); Catalogue.Grades.Add(g2); Catalogue.AllSizes.Add(s1);
+
+    // ── a line's handle is stable, and unique per line ─────────────────────
+    var a = new SaleLine();
+    var b = new SaleLine();
+    var wasA = a.LineKey;
+    a.Grade = g1; a.Size = s1; a.GrossWeightCt = 10m; a.GrossWeightCt = 1m;
+    Check("KEY - a line keeps one handle however often it changes",
+          a.LineKey == wasA, $"{wasA} -> {a.LineKey}");
+    Check("KEY - and two lines never share one", a.LineKey != b.LineKey);
+    // This is what makes re-reserving an UPDATE: the database keys on (client_ref, line_key).
+    Check("KEY - it is not the default, so it is really being set",
+          a.LineKey != Guid.Empty);
+
+    // ── the entry announces only what moves carats ────────────────────────
+    var inv = new InvoiceEntry();
+    inv.Lines.Clear();
+    var held = new List<string>();
+    var dropped = new List<Guid>();
+    inv.LineHoldChanged += l => held.Add($"{l.Grade?.Code}/{l.Size?.Code}/{l.GrossWeightCt}");
+    inv.LineDropped += l => dropped.Add(l.LineKey);
+
+    var line = new SaleLine();
+    inv.Lines.Add(line);
+    held.Clear();
+
+    line.Grade = g1;
+    Check("EVENT - picking a grade asks for a hold", held.Count == 1, string.Join(" | ", held));
+    line.Size = s1;
+    line.GrossWeightCt = 10m;
+    Check("EVENT - so does a size and a weight", held.Count == 3, string.Join(" | ", held));
+
+    int before = held.Count;
+    line.PricePerCt = 5000m;
+    line.Remark = "anything";
+    line.Less1Pct = 2m;
+    Check("EVENT - but a price, a remark or a discount move no carats",
+          held.Count == before, string.Join(" | ", held.Skip(before)));
+
+    line.GrossWeightCt = 1m;
+    Check("EVENT - correcting the weight asks again, with the NEW figure",
+          held.Count == before + 1 && held[^1].EndsWith("/1"), held[^1]);
+
+    var key = line.LineKey;
+    inv.Lines.Remove(line);
+    Check("EVENT - and removing the line asks for its carats back",
+          dropped.Count == 1 && dropped[0] == key);
+
+    // ── the window's cache: one call per real change, none for a repeat ────
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1420 };
+    win.Show();
+
+    var heldField = typeof(MainWindow).GetField("_held", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var cache = heldField.GetValue(win)!;
+    int Count() => (int)cache.GetType().GetProperty("Count")!.GetValue(cache)!;
+    Check("CACHE - nothing is held on a fresh screen", Count() == 0, $"{Count()}");
+
+    // THE FIRST invoice must be watched, not just the ones that replace it. _invoice is created at
+    // its field initialiser, and both WatchHolds call sites run only when one is REPLACED -- so
+    // without a subscription in the constructor the screen you land on held nothing, and typing a
+    // line moved no stock until you had started a second invoice. Found on Demo, not by a test.
+    var live = (InvoiceEntry)typeof(MainWindow).GetField("_invoice",
+        BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(win)!;
+    var watched = typeof(InvoiceEntry)
+        .GetField("LineHoldChanged", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?.GetValue(live) as Delegate;
+    Check("WATCH - the invoice on screen at startup is listened to",
+          watched is not null && watched.GetInvocationList().Length > 0,
+          watched is null ? "<nobody is listening>" : $"{watched.GetInvocationList().Length} listener(s)");
+
+    var dropWatched = typeof(InvoiceEntry)
+        .GetField("LineDropped", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?.GetValue(live) as Delegate;
+    Check("WATCH - and so is the line it loses",
+          dropWatched is not null && dropWatched.GetInvocationList().Length > 0,
+          dropWatched is null ? "<nobody is listening>" : "ok");
+
+    // ── Move to stock RETURNS, it does not navigate only ──────────────────
+    var move = (Button)win.FindName("MoveToStock")!;
+    var moveHandler = typeof(MainWindow).GetMethod("MoveToStock_Click",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    Check("RETURN - Move to stock is asynchronous, because it now writes",
+          moveHandler.ReturnType == typeof(void)
+          && moveHandler.GetCustomAttributes(true)
+                .Any(x => x.GetType().Name.Contains("AsyncStateMachine")),
+          moveHandler.ReturnType.Name);
+    // The tooltip used to promise "no stock moves", which stopped being true the moment this
+    // button started returning carats. A button that lies about writing is worse than one with no
+    // tooltip at all.
+    string moveTip = move.ToolTip as string ?? "";
+    Check("RETURN - and it says it RETURNS, not that nothing moves",
+          moveTip.Contains("Return") && !moveTip.Contains("no stock moves"), moveTip);
+
+    Check("RETURN - DropEntryAsync exists and returns the amount",
+          typeof(MainWindow).GetMethod("DropEntryAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+              ?.ReturnType == typeof(Task<decimal>));
+    Check("CLEAR - starting a new invoice releases first",
+          typeof(MainWindow).GetMethod("NewInvoice_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
+              .GetCustomAttributes(true).Any(x => x.GetType().Name.Contains("AsyncStateMachine")));
+
+    // ── NO DOUBLE DEDUCTION, on this side of the wire ─────────────────────
+    // The database releases the holds in the same transaction that sets the invoice POSTED
+    // (release_on_post, 0043 -- verified on Demo, row 12). This side must agree: a cache still
+    // claiming to hold something would skip the reservation a later edit needs to make.
+    var src = System.IO.File.ReadAllText(@"d:\diamond inventory\DiamondDesktop\MainWindow.xaml.cs");
+
+    // The rows go with the carats. Leaving them on screen after the stock had gone back read as an
+    // invoice still holding something, and the next line typed would have joined an entry whose
+    // earlier lines were already returned.
+    Check("RETURN - and the entry is cleared once the carats are back",
+          src.Contains("if (returned > 0) ResetEntry();"),
+          "Move to stock resets the screen");
+    // Only on a real return: a refused release must leave the lines where they are, or the one
+    // screen that could retry it has just been wiped. The guard IS that promise.
+    Check("RETURN - but a refused release leaves the lines alone to be retried",
+          !src.Contains("returned = await DropEntryAsync();" + Environment.NewLine
+                        + Environment.NewLine + "        ResetEntry();"),
+          "the reset is guarded, not unconditional");
+    // One reset, shared, so Clear and Move to stock cannot drift apart.
+    Check("RETURN - Clear and Move to stock reset the same way",
+          src.Split("ResetEntry();").Length - 1 == 2
+          && src.Contains("private void ResetEntry()"),
+          $"{src.Split("ResetEntry();").Length - 1} call(s) of one shared reset");
+    int post = src.IndexOf("outcome.InvoiceNo} confirmed", StringComparison.Ordinal);
+    int clear = src.LastIndexOf("_held.Clear();", post, StringComparison.Ordinal);
+    Check("NO-DOUBLE - a confirmed sale clears this side's holds too",
+          post > 0 && clear > 0 && post - clear < 900,
+          post <= 0 ? "<no post path>" : $"{post - clear} chars before the message");
+
+    Check("NO-DOUBLE - and Confirm sale still writes no stock of its own here",
+          !src.Contains("ReserveLineAsync(_invoice.ClientRef, Guid.Empty"),
+          "posting deducts in post_invoice only");
+
+    // ── the holds outlive the process, so the entry that made them has to ──
+    // Nothing releases a reservation on close, by the desk's decision. That only works if the entry
+    // comes back to its holds -- and it comes back through this file.
+    string entryFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                                              $"solitaire-entry-probe-{Guid.NewGuid():N}.json");
+    Environment.SetEnvironmentVariable("SOLITAIREDESK_ENTRY", entryFile);
+    try
+    {
+        var saved = new InvoiceEntry();
+        saved.Lines.Clear();
+        var kept = new SaleLine { Grade = g1, Size = s1, GrossWeightCt = 4.5m, PricePerCt = 900m,
+                                  Remark = "held" };
+        saved.Lines.Add(kept);
+        saved.Lines.Add(new SaleLine());                       // the opening row: scaffolding, not work
+
+        EntryStore.Save(new EntryStore.StoredEntry(
+            saved.ClientRef, saved.InvoiceDate, saved.Buyer, saved.Broker, saved.BrokerPct,
+            saved.TermsDays, saved.DocType,
+            [.. saved.Lines.Where(l => !l.IsBlank).Select(l => new EntryStore.StoredLine(
+                l.LineKey, l.Grade?.GradeId, l.Size?.SizeId, l.GrossWeightCt, l.SelectionCt,
+                l.PricePerCt, l.ExRate, l.Less1Pct, l.Less2Pct, l.Remark))]));
+
+        var back = EntryStore.Load();
+        Check("PERSIST - the entry survives the process", back is not null);
+
+        // THE WHOLE POINT. A different client_ref would reserve a second time and strand the first.
+        Check("PERSIST - carrying the same client_ref the holds were made under",
+              back!.ClientRef == saved.ClientRef, $"{back.ClientRef} vs {saved.ClientRef}");
+        Check("PERSIST - and the same line key, so re-sending CORRECTS the hold",
+              back.Lines.Single().LineKey == kept.LineKey);
+
+        Check("PERSIST - with the bucket and the weight it was holding",
+              back.Lines[0].GradeId == 1 && back.Lines[0].SizeId == 1
+              && back.Lines[0].GrossWeightCt == 4.5m,
+              $"g{back.Lines[0].GradeId} s{back.Lines[0].SizeId} {back.Lines[0].GrossWeightCt} ct");
+        Check("PERSIST - and the rest of what was typed on it",
+              back.Lines[0].PricePerCt == 900m && back.Lines[0].Remark == "held");
+
+        // Scaffolding is not work: a file holding only a blank row would restore a screen no
+        // different from a fresh one, and say "picked up where you left off" about nothing.
+        Check("PERSIST - blank rows are not saved", back.Lines.Count == 1, $"{back.Lines.Count} line(s)");
+
+        EntryStore.Save(new EntryStore.StoredEntry(saved.ClientRef, saved.InvoiceDate, null, null,
+                                                   0m, 0, "BILL", []));
+        Check("PERSIST - an entry with nothing on it leaves no file", EntryStore.Load() is null);
+
+        // Confirm sale, Move to stock and Clear all end the entry; none of them should leave
+        // something for the next start to pick up and re-reserve.
+        EntryStore.Save(new EntryStore.StoredEntry(saved.ClientRef, saved.InvoiceDate, null, null,
+            0m, 0, "BILL", [new EntryStore.StoredLine(kept.LineKey, 1, 1, 4.5m, 0, 0, 0, 0, 0, null)]));
+        EntryStore.Clear();
+        Check("PERSIST - and Clear forgets it outright", EntryStore.Load() is null);
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("SOLITAIREDESK_ENTRY", null);
+        if (System.IO.File.Exists(entryFile)) System.IO.File.Delete(entryFile);
+    }
+
+    // A save with no lines DELETES the file, so closing before the restore has landed would have
+    // wiped the stored entry and stranded every carat it held -- one quick close after launch was
+    // enough. Found in live testing, not by a test.
+    Check("PERSIST - closing before the restore lands cannot wipe the stored entry",
+          src.Contains("Closing += (_, _) => { if (_entryRestored) SaveEntry(); };")
+          && src.Contains("_entryRestored = true;"),
+          "guarded on the restore having run");
+    Check("PERSIST - and the flag is set whether or not there was anything to restore",
+          src.IndexOf("_entryRestored = true;") < src.IndexOf("if (EntryStore.Load() is not { } stored) return;"),
+          "set before the early return");
+
+    // A refused release must be RETRYABLE, not permanent. Forgetting the hold before the round
+    // trip left the carats held in the database with no file, no cache and no client_ref on this
+    // side -- unreachable from any screen. The order is what makes it recoverable.
+    int relIdx = src.IndexOf("var (failure, returned, _) = await Repo.ReleaseEntryAsync");
+    Check("PERSIST - the entry is forgotten only once the database has let go",
+          relIdx > 0 && relIdx < src.IndexOf("EntryStore.Clear();", relIdx),
+          "release, then forget");
+    Check("PERSIST - and one line's hold likewise",
+          src.Contains("if (!_held.ContainsKey(line.LineKey)) return;")
+          && !src.Contains("if (!_held.Remove(line.LineKey)) return;"));
+
+    // Opening a different memo abandons the entry on screen, so it must give its carats back --
+    // the same stranding as Clear, reached by a different door.
+    Check("PERSIST - opening another memo releases what the abandoned entry held",
+          src.Contains("if (_invoice.InvoiceId is null) await DropEntryAsync();"));
+
+    // The three ends of an entry all forget it; nothing else does, and closing SAVES.
+    Check("PERSIST - Move to stock and Confirm sale both forget the entry",
+          src.Split("EntryStore.Clear()").Length - 1 >= 2,
+          $"{src.Split("EntryStore.Clear()").Length - 1} call(s)");
+    Check("PERSIST - closing the window saves it and releases nothing",
+          src.Contains("Closing += (_, _) => { if (_entryRestored) SaveEntry(); };")
+          && !src.Contains("Closing += (_, _) => DropEntry"),
+          "no release on exit");
+
+    // ── a reset has to know about the holds ───────────────────────────────
+    // The handover reset predates 0043. A reservation is not a ledger row, so clearing every
+    // ledger table still left the hold behind -- and v_stock_position nets it, so the client would
+    // have opened a "cleared" database reading short against an invoice that no longer exists.
+    string reset = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "supabase", "reset_priya_for_handover.sql"));
+
+    Check("RESET - clearing the ledger clears the reservations with it",
+          reset.Contains("delete from public.stock_reservation;"));
+    // Before audit_log, for the reason the script already gives about ordering: 0045 audits this
+    // table, so clearing it afterwards would leave the trail recording its own wipe.
+    Check("RESET - and before the audit trail, so the wipe is not the only history left",
+          reset.IndexOf("delete from public.stock_reservation;")
+            < reset.IndexOf("delete from public.audit_log;"));
+    // The guard is the whole safety story: two databases both called some form of Priya.
+    Check("RESET - it still refuses to run against the wrong database",
+          reset.Contains("'Priya Sales'") && reset.Contains("raise exception"),
+          "company_name guard intact");
+
+    // ── the pickers offer the catalogue and nothing else ──────────────────
+    string entryXaml = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "MainWindow.xaml"));
+    bool entryXamlHas(string want) => entryXaml.Contains(want);
+
+    // A blank first entry was tried and taken out again on the desk's word: it read as a fault at
+    // the top of the list, and the cells already carry their own grey hint when nothing is picked.
+    var choosy = new SaleLine { Grade = g1 };
+    Check("PICKER - the grade list is the catalogue, with no blank entry",
+          !entryXamlHas("GradeChoices") && !entryXamlHas("FallbackValue=Select grade"),
+          "no blank in Grade");
+    Check("PICKER - and the size list is the sizes that grade allows",
+          !entryXamlHas("SizeChoices") && !entryXamlHas("FallbackValue=Select size")
+          && choosy.AllowedSizes.All(z => z is not null),
+          "no blank in Size");
+
+    // Buyer and Broker had NO hint at all -- an unset combo draws a chevron and nothing else, so
+    // the one required field on the header was the only one that never said what it wanted.
+    Check("PICKER - Buyer says what it wants when nothing is chosen",
+          entryXamlHas("Text=\"Select buyer\"")
+          && entryXamlHas("Visibility=\"{Binding SelectedBuyer, Converter={StaticResource Empty}}\""));
+    Check("PICKER - and so does Broker",
+          entryXamlHas("Text=\"Select broker\"")
+          && entryXamlHas("Visibility=\"{Binding SelectedBroker, Converter={StaticResource Empty}}\""));
+
+    win.Close();
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Environment.Exit(fail);
+});
+t.SetApartmentState(ApartmentState.STA); t.Start(); t.Join();

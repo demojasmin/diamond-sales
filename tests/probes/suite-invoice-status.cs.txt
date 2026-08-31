@@ -1,0 +1,90 @@
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1420 };
+    win.Show();
+
+    var filter = (ComboBox)win.FindName("InvoiceStatusFilter")!;
+    var items = filter.Items.OfType<ComboBoxItem>().ToList();
+    string Label(ComboBoxItem i) => i.Content as string ?? "";
+
+    Check("LIST - the app's own statuses are offered",
+          items.Any(i => Label(i) == "Sale") && items.Any(i => Label(i) == "Cancelled"),
+          string.Join(", ", items.Select(Label)));
+    Check("LIST - and the payment states are still there, under a caption",
+          items.Any(i => Label(i) == "Paid") && items.Any(i => Label(i) == "Pending")
+          && items.Any(i => Label(i) == "Overdue"));
+    Check("LIST - the caption cannot be chosen",
+          items.Single(i => Label(i).Contains("payment")).IsEnabled == false);
+    Check("LIST - and it still opens on All sales",
+          Label(items[0]) == "All sales" && filter.SelectedIndex == 0);
+    Check("LIST - no Memo entry, which could only come back empty",
+          !items.Any(i => Label(i) == "Memo"));
+
+    typeof(MainWindow).GetField("_invoices", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .SetValue(win, new List<VInvoice>
+        {
+            new() { InvoiceId = 1, InvoiceNo = "INV-1", BuyerName = "ABC", Status = InvoiceStatus.POSTED,
+                    AmountTotal = 100m, Outstanding = 100m, DueDate = new DateOnly(2030, 1, 1) },
+            new() { InvoiceId = 2, InvoiceNo = "INV-2", BuyerName = "ABC", Status = InvoiceStatus.POSTED,
+                    AmountTotal = 100m, Outstanding = 0m, DueDate = new DateOnly(2030, 1, 1) },
+            new() { InvoiceId = 3, InvoiceNo = "INV-3", BuyerName = "ABC", Status = InvoiceStatus.CANCELLED },
+            new() { InvoiceId = 4, InvoiceNo = null,    BuyerName = "ABC", Status = InvoiceStatus.DRAFT },
+        });
+    var apply = typeof(MainWindow).GetMethod("ApplyInvoiceFilter",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var grid = (DataGrid)win.FindName("InvoiceGrid")!;
+    List<VInvoice> Shown(string label)
+    {
+        filter.SelectedItem = items.First(i => Label(i) == label);
+        apply.Invoke(win, null);
+        return ((IEnumerable<VInvoice>)grid.ItemsSource).ToList();
+    }
+
+    // "Sale" was impossible to ask for before: State() never returns it, because a posted invoice
+    // is always described by its payment instead.
+    var sales = Shown("Sale");
+    Check("FILTER - Sale gives the posted sales, and only those",
+          sales.Count == 2 && sales.All(i => i.Status == InvoiceStatus.POSTED),
+          string.Join(", ", sales.Select(i => i.Status)));
+
+    var cancelled = Shown("Cancelled");
+    Check("FILTER - Cancelled gives the cancelled one",
+          cancelled.Count == 1 && cancelled[0].Status == InvoiceStatus.CANCELLED);
+
+    Check("FILTER - Paid still works off the money", Shown("Paid").Count == 1);
+    Check("FILTER - and Pending too", Shown("Pending").Count == 1);
+
+    Check("FILTER - All sales shows every sale and no memo",
+          Shown("All sales").Count == 3);
+    foreach (var label in new[] { "All sales", "Sale", "Cancelled", "Paid", "Pending", "Overdue" })
+        if (Shown(label).Any(i => i.Status == InvoiceStatus.DRAFT))
+        { Check($"FILTER - no setting brings a memo back ({label})", false); break; }
+    Check("FILTER - and no setting brings a memo back", true);
+
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Environment.Exit(fail);
+});
+t.SetApartmentState(ApartmentState.STA); t.Start(); t.Join();

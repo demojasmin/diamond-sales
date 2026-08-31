@@ -202,7 +202,21 @@ public sealed class SaleLine : Notifier
     private decimal _exRate = 1m;
     private decimal _rejectionCt, _amount;
     private string? _remark, _error;
-    private bool _incomplete;
+    private bool _incomplete, _selected;
+
+    /// <summary>
+    /// Ticked in the grid's first column, for deleting several lines at once.
+    ///
+    /// SELECTION ONLY. It is never saved, never posted and never counted -- IsBlank ignores it, so
+    /// ticking an empty row does not turn it into a line, and RealLines is the same list whether
+    /// anything is ticked or not. A tick that changed what sells would be a second, invisible way
+    /// to alter an invoice.
+    /// </summary>
+    public bool Selected
+    {
+        get => _selected;
+        set => Set(ref _selected, value);
+    }
 
     public Grade? Grade
     {
@@ -216,6 +230,8 @@ public sealed class SaleLine : Notifier
     }
 
     public IReadOnlyList<SizeBucket> AllowedSizes => Catalogue.SizesFor(_grade);
+
+
 
     /// <summary>
     /// The catalogue was reloaded underneath this line.
@@ -298,11 +314,47 @@ public sealed class SaleLine : Notifier
     /// </summary>
     public bool HasConflict => _error is not null && !_incomplete;
 
+    /// <summary>
+    /// This row's handle, for the reservation it holds against stock (0043).
+    ///
+    /// Created with the line and never changed, which is what makes re-reserving an EDIT rather
+    /// than a second hold: the database keys on (client_ref, line_key), so correcting 10.00 to
+    /// 1.00 updates the same row instead of holding 11.
+    ///
+    /// Not the line_id -- a line being typed has no sales_line row yet, and the whole point is
+    /// that stock moves before anything is saved.
+    /// </summary>
+    /// <summary>
+    /// This line's half of the reservation key. init, not get-only, so a Sales entry restored from
+    /// disk carries the keys its holds were made under -- re-sending them corrects those holds
+    /// instead of adding a second set (EntryStore).
+    /// </summary>
+    public Guid LineKey { get; init; } = Guid.CreateVersion7();
+
     public bool IsBlank => _grade is null && _size is null && _grossWeightCt == 0 && _selectionCt == 0 && _pricePerCt == 0;
+
+    /// <summary>
+    /// Whether this row can be ticked. FALSE for the empty row at the bottom.
+    ///
+    /// Ticking a blank row did nothing -- Remove counts real lines only -- so the box sat there
+    /// filled in, claiming to have selected something, while the Remove button stayed away. A
+    /// control that accepts a click and then ignores it is worse than one that is not there.
+    /// </summary>
+    public bool Selectable => !IsBlank;
+
 
     internal void Recalculate(decimal brokerPct)
     {
-        if (IsBlank) { Error = null; IsIncomplete = false; RejectionCt = 0; Amount = 0; return; }
+        Raise(nameof(Selectable));
+
+        if (IsBlank)
+        {
+            // A row that has just been emptied cannot stay ticked, or the count would include a
+            // line Remove will not touch.
+            Selected = false;
+            Error = null; IsIncomplete = false; RejectionCt = 0; Amount = 0;
+            return;
+        }
 
         // Field rules first. The engine throws on the same bad input, but its message names a C#
         // parameter — a half-typed line used to read "grossWeightCt is out of range" instead of
@@ -395,6 +447,15 @@ public sealed class InvoiceEntry : Notifier
     public InvoiceEntry()
     {
         Lines.CollectionChanged += OnLinesChanged;
+
+        // ONE OPENING ROW, on the desk's word: a keyboard-first screen should be typeable the
+        // moment it appears, not after a click on Add line.
+        //
+        // It was taken out for a fair reason -- an untouched screen still read "1 line", and a
+        // finished invoice trailed an empty row under its last parcel. That cost is real but it is
+        // cosmetic, and it is already paid for elsewhere: the chip counts RealLines, so a blank row
+        // is not counted, and Problems() refuses an invoice that has no real line on it. The row
+        // costs nothing and saves a click on every invoice.
         Lines.Add(new SaleLine());
     }
 
@@ -445,7 +506,28 @@ public sealed class InvoiceEntry : Notifier
     public ObservableCollection<SaleLine> Lines { get; } = [];
 
     public IReadOnlyList<Grade> Grades => Catalogue.Grades;
-    public IReadOnlyList<string> DocTypes => Catalogue.DocTypes;
+    /// <summary>
+    /// The document types this invoice may carry.
+    ///
+    /// PER INVOICE, not the static catalogue list, for the same reason the buyer list is: an
+    /// imported sheet can carry a type this app does not offer. Bound to a list without it, the
+    /// ComboBox finds no match, leaves SelectedItem null, and writes that null straight back down
+    /// the two-way binding -- so merely opening the invoice blanked a field nobody had touched,
+    /// and saving stored the blank. The picker carries whatever the invoice already says.
+    /// </summary>
+    public IReadOnlyList<string> DocTypes => _docTypes;
+
+    private readonly System.Collections.ObjectModel.ObservableCollection<string> _docTypes = new(Catalogue.DocTypes);
+
+    /// <summary>
+    /// Puts a document type this invoice already carries into the picker, if the catalogue does
+    /// not offer it. Call BEFORE setting DocType, or the binding has already nulled it.
+    /// </summary>
+    public void KeepDocType(string? docType)
+    {
+        if (!string.IsNullOrWhiteSpace(docType) && !_docTypes.Contains(docType))
+            _docTypes.Add(docType);
+    }
 
     public ObservableCollection<PartyRef> Buyers { get; } = [];
     public ObservableCollection<PartyRef> Brokers { get; } = [];
@@ -482,7 +564,7 @@ public sealed class InvoiceEntry : Notifier
     public long? BrokerId { get; private set; }
 
     /// Client-generated and offline-safe: it survives a retry whose response never arrived.
-    public Guid ClientRef { get; } = Guid.CreateVersion7();
+    public Guid ClientRef { get; init; } = Guid.CreateVersion7();
 
     /// The real primary key. Null until the first save comes back from Postgres.
     public long? InvoiceId { get; set; }
@@ -539,41 +621,86 @@ public sealed class InvoiceEntry : Notifier
     }
 
     /// Null when the invoice can be saved; otherwise the first thing wrong with it.
-    public string? Validate()
+    public string? Validate() => Problems().FirstOrDefault();
+
+    /// <summary>
+    /// EVERYTHING wrong with the invoice, header first, then the lines in the order they sit on
+    /// screen. Validate() is the first of these, so every existing caller sees exactly what it saw
+    /// before -- one rule set, two shapes, rather than a second list that drifts out of step.
+    ///
+    /// The list exists because Confirm sale is a sign-off. Being told "Buyer is required", fixing
+    /// it, being told "Line 2: Selection is above weight", fixing that, and being told about line 4
+    /// is three refusals for one click. The desk should see the whole of what is wrong at once.
+    /// </summary>
+    public IReadOnlyList<string> Problems()
     {
-        if (string.IsNullOrWhiteSpace(Buyer)) return "Buyer is required";
+        var found = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(Buyer)) found.Add("Buyer is required");
 
         // The same 0-365 rule the Add buyer dialog enforces (MainWindow.ValidateBuyer). It was
         // missing here, so terms of 9,999 days were accepted on the invoice itself and put the due
         // date decades out. One rule, both places.
-        if (TermsDays is < 0 or > 365) return "Terms must be between 0 and 365 days";
+        if (TermsDays is < 0 or > 365) found.Add("Terms must be between 0 and 365 days");
 
         // Broker % is a header field, but the only thing checking it was Calc.Pct() throwing once
         // per line — so an out-of-range percentage reddened every row with "Broker % is out of
         // range" and sent the user hunting through the grid for a fault in the header.
-        if (BrokerPct is < 0 or > 100) return "Broker % must be between 0 and 100";
+        if (BrokerPct is < 0 or > 100) found.Add("Broker % must be between 0 and 100");
 
-        if (RealLines.Count == 0) return "An invoice needs at least one line";
+        if (RealLines.Count == 0)
+            found.Add("An invoice needs at least one line");
+        else
+            // Not FirstOrDefault: a half-filled row three lines down is as much a reason to refuse
+            // as the first one, and hiding it until the first is fixed makes the refusal look new.
+            found.AddRange(RealLines.Where(l => l.Error is not null)
+                                    .Select(l => $"Line {Lines.IndexOf(l) + 1}: {l.Error}"));
 
-        var bad = RealLines.FirstOrDefault(l => l.Error is not null);
-        return bad is null ? null : $"Line {Lines.IndexOf(bad) + 1}: {bad.Error}";
+        return found;
     }
 
     private void OnLinesChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        foreach (SaleLine line in e.OldItems ?? Array.Empty<object>()) line.PropertyChanged -= OnLineChanged;
+        foreach (SaleLine line in e.OldItems ?? Array.Empty<object>())
+        {
+            line.PropertyChanged -= OnLineChanged;
+            LineDropped?.Invoke(line);
+        }
+
         foreach (SaleLine line in e.NewItems ?? Array.Empty<object>()) line.PropertyChanged += OnLineChanged;
+
         Recalculate();
     }
 
+    /// <summary>
+    /// A line's bucket or weight changed, so what it holds against stock has to change with it
+    /// (0043). Raised for grade, size and weight only -- a price or a remark moves no carats.
+    /// </summary>
+    public event Action<SaleLine>? LineHoldChanged;
+
+    /// <summary>A line left the invoice, so whatever it was holding must go back.</summary>
+    public event Action<SaleLine>? LineDropped;
+
     private void OnLineChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (sender is SaleLine changed
+            && e.PropertyName is nameof(SaleLine.Grade) or nameof(SaleLine.Size)
+                              or nameof(SaleLine.GrossWeightCt))
+            LineHoldChanged?.Invoke(changed);
+
         // Derived properties are set by Recalculate itself — reacting to them would recurse.
         // IsIncomplete and HasConflict belong on this list for the same reason: Error's setter
         // raises HasConflict, so leaving it off sent Recalculate straight back into itself.
         if (e.PropertyName is nameof(SaleLine.RejectionCt) or nameof(SaleLine.Amount)
             or nameof(SaleLine.Error) or nameof(SaleLine.AllowedSizes)
-            or nameof(SaleLine.IsIncomplete) or nameof(SaleLine.HasConflict)) return;
+            or nameof(SaleLine.IsIncomplete) or nameof(SaleLine.HasConflict)
+            // Ticking a row is not an edit. Recalculating on it would rebuild every total on the
+            // screen for a checkbox that changes no figure.
+            or nameof(SaleLine.Selected)
+            // Selectable is derived from IsBlank and raised BY Recalculate, so reacting to it sent
+            // the whole invoice straight back into Recalculate -- a stack overflow, not a slow
+            // screen. Same reason RejectionCt and Amount are on this list.
+            or nameof(SaleLine.Selectable)) return;
         Recalculate();
     }
 }

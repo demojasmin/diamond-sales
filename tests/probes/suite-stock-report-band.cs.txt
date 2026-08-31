@@ -1,0 +1,151 @@
+using System.IO;
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+string outDir = @"C:\Users\jbc\AppData\Local\Temp\claude\d--diamond-inventory\f589c178-ac6f-46af-813b-facbf945a589\scratchpad";
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    Catalogue.Grades.Clear(); Catalogue.AllSizes.Clear();
+    Catalogue.Grades.Add(new Grade { GradeId = 1, Code = "NO 1", SortOrder = 1 });
+    Catalogue.Grades.Add(new Grade { GradeId = 2, Code = "NO 2", SortOrder = 2 });
+    Catalogue.AllSizes.Add(new SizeBucket { SizeId = 1, Code = "+11", SortOrder = 1 });
+    Catalogue.AllSizes.Add(new SizeBucket { SizeId = 2, Code = "+6.5", SortOrder = 2 });
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1500, Height = 900 };
+    win.Show();
+    void Set(string f, object v) => typeof(MainWindow)
+        .GetField(f, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(win, v);
+
+    // NO 1 x +11: 65 on hand, 30 sold.  NO 2 x +6.5: 40 on hand, 10 sold.
+    Set("_reportRows", new List<VStockPosition>
+    {
+        // LedgerCt, because that is what the sheet prints since 0044. BalanceCt is set alongside
+        // it and deliberately LOWER on the first row: a 5 ct hold must not move any of the three
+        // figures, and a fixture where the two are equal could not tell the difference.
+        new() { GradeCode = "NO 1", SizeCode = "+11",  LedgerCt = 65m, ReservedCt = 5m,
+                BalanceCt = 60m, AvgCost = 1000m },
+        new() { GradeCode = "NO 2", SizeCode = "+6.5", LedgerCt = 40m, BalanceCt = 40m,
+                AvgCost = 1000m },
+    });
+    Set("_sales", new List<VStockMovement>
+    {
+        new() { GradeCode = "NO 1", SizeCode = "+11",  WeightCt = 30m, MovementType = Movement.SALE },
+        new() { GradeCode = "NO 2", SizeCode = "+6.5", WeightCt = 10m, MovementType = Movement.SALE },
+        // a bucket the sheet is not showing: must not be counted
+        new() { GradeCode = "NO 9", SizeCode = "-2",   WeightCt = 99m, MovementType = Movement.SALE },
+    });
+
+    Set("_reportSheetSizes", new List<string> { "+11", "+6.5" });
+    typeof(MainWindow).GetMethod("BuildReportSizeBoxes", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, null);
+    typeof(MainWindow).GetMethod("DrawStockReport", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, null);
+
+    string Val(string n) => ((TextBlock)win.FindName(n)!).Text;
+    decimal Num(string n) => decimal.Parse(Val(n).Replace(" ct", "").Replace(",", ""));
+
+    Check("ON HAND is the sheet's own total", Num("ReportOnHand") == 105m, Val("ReportOnHand"));
+    Check("SALES is what left these buckets as SALE", Num("ReportSales") == 40m, Val("ReportSales"));
+    Check("TOTAL is on hand plus sales", Num("ReportTotalStock") == 145m, Val("ReportTotalStock"));
+    Check("TOTAL - SALES = ON HAND",
+          Num("ReportTotalStock") - Num("ReportSales") == Num("ReportOnHand"),
+          $"{Num("ReportTotalStock")} - {Num("ReportSales")} = {Num("ReportOnHand")}");
+    Check("a bucket the sheet is not showing is not counted",
+          Num("ReportSales") == 40m, "the 99 ct NO 9 sale stayed out");
+    Check("ON HAND agrees with the chip the sheet already showed",
+          Val("ReportOnHand") == ((TextBlock)win.FindName("ReportChip")!).Text,
+          $"{Val("ReportOnHand")} vs {((TextBlock)win.FindName("ReportChip")!).Text}");
+
+    // narrow the sieves: all three must narrow together
+    var boxes = (System.Collections.IEnumerable)typeof(MainWindow)
+        .GetField("_reportSizeBoxes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(win)!;
+    foreach (CheckBox b in boxes)
+        b.IsChecked = (b.Content as string ?? b.Tag as string) == "+11";
+    typeof(MainWindow).GetMethod("DrawStockReport", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, null);
+    Check("FILTER - narrowing the sieves narrows all three together",
+          Num("ReportTotalStock") - Num("ReportSales") == Num("ReportOnHand"),
+          $"{Val("ReportTotalStock")} - {Val("ReportSales")} = {Val("ReportOnHand")}");
+
+    Set("_sales", new List<VStockMovement>());
+    foreach (CheckBox b in boxes) b.IsChecked = true;
+    typeof(MainWindow).GetMethod("DrawStockReport", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, null);
+    Check("NO SALES - total equals on hand when nothing has sold",
+          Num("ReportTotalStock") == Num("ReportOnHand") && Num("ReportSales") == 0m,
+          Val("ReportSalesNote"));
+
+    Set("_sales", new List<VStockMovement>
+    {
+        new() { GradeCode = "NO 1", SizeCode = "+11", WeightCt = 30m, MovementType = Movement.SALE },
+        new() { GradeCode = "NO 2", SizeCode = "+6.5", WeightCt = 10m, MovementType = Movement.SALE },
+    });
+    typeof(MainWindow).GetMethod("DrawStockReport", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, null);
+    var tab = (TabControl)win.FindName("Tabs")!;
+    foreach (var item in tab.Items.OfType<TabItem>())
+        if (item.Header as string == "Stock report") { item.IsSelected = true; break; }
+    var f = new System.Windows.Threading.DispatcherFrame();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+        System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+    System.Windows.Threading.Dispatcher.PushFrame(f);
+    var bmp = new RenderTargetBitmap((int)win.ActualWidth, 420, 96, 96, PixelFormats.Pbgra32);
+    bmp.Render(win);
+    var enc = new PngBitmapEncoder(); enc.Frames.Add(BitmapFrame.Create(bmp));
+    using (var fs = File.Create(Path.Combine(outDir, "band.png"))) enc.Save(fs);
+
+    // ── a hold must not move a ledger document (0044) ─────────────────────
+    // TOTAL - SALES = ON HAND, and reserved carats are in neither term. Reading the AVAILABLE
+    // balance made 5 ct spoken for look like 5 ct that had ceased to exist -- and holds now
+    // survive a restart, so a forgotten entry would have understated TOTAL indefinitely.
+    string win_src = File.ReadAllText(Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "MainWindow.xaml.cs"));
+
+    Check("LEDGER - the report's weights come from the ledger, not the available balance",
+          win_src.Contains("r.SizeCode == size)?.LedgerCt ?? 0m")
+          && !win_src.Contains("r.SizeCode == size)?.BalanceCt ?? 0m"));
+    Check("LEDGER - and so does every row it decides to print",
+          !win_src.Contains("_reportRows.Where(r => r.BalanceCt != 0)"),
+          "no available-balance read left in the report");
+
+    // The Stock page is the opposite: it shows what is left to SELL, so it keeps netting holds.
+    Check("LEDGER - but the Stock page still shows what is available",
+          win_src.Contains("decimal held = show.Sum(r => r.BalanceCt);"));
+    // ... and names the hold, so at-import less moved less reserved still comes to the total.
+    Check("LEDGER - naming the reserved carats rather than calling them shipped",
+          win_src.Contains("decimal moved = held + reserved - atImport;")
+          && win_src.Contains("ct reserved"));
+
+    var pos = new VStockPosition { LedgerCt = 105.7895m, ReservedCt = 5m, BalanceCt = 100.7895m };
+    Check("LEDGER - the three figures agree: ledger less reserved is available",
+          pos.LedgerCt - pos.ReservedCt == pos.BalanceCt,
+          $"{pos.LedgerCt} - {pos.ReservedCt} = {pos.BalanceCt}");
+
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Environment.Exit(fail);
+});
+t.SetApartmentState(ApartmentState.STA); t.Start(); t.Join();

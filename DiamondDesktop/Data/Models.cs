@@ -1,4 +1,4 @@
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 using Supabase.Postgrest.Attributes;
 using Supabase.Postgrest.Models;
 
@@ -376,7 +376,15 @@ public class VStockPosition : BaseModel
     [Column("grade_name")] public string? GradeName { get; set; }
     [Column("size_id")] public long SizeId { get; set; }
     [Column("size_code")] public string SizeCode { get; set; } = "";
+    /// What is AVAILABLE: movements less the carats a sales entry has spoken for (0043).
     [Column("balance_ct")] public decimal BalanceCt { get; set; }
+
+    /// What is HELD: the movement ledger alone. The Stock report prints this, so that a parcel
+    /// being reserved never moves a ledger document (0044).
+    [Column("ledger_ct")] public decimal LedgerCt { get; set; }
+
+    /// The difference between the two, named -- so the gap is never a mystery on screen.
+    [Column("reserved_ct")] public decimal ReservedCt { get; set; }
     [Column("avg_cost")] public decimal? AvgCost { get; set; }
     [Column("stock_value")] public decimal StockValue { get; set; }
     [Column("oldest_intake")] public DateOnly? OldestIntake { get; set; }

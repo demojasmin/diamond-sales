@@ -1,0 +1,436 @@
+﻿<Window x:Class="DiamondDesktop.UpdateInvoiceDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:DiamondDesktop"
+        Width="1320" Height="780" MinWidth="1040" MinHeight="620"
+        WindowStartupLocation="CenterOwner"
+        Icon="{StaticResource AppIcon}"
+        ShowInTaskbar="False" WindowStyle="SingleBorderWindow"
+        Background="{DynamicResource BgBrush}"
+        TextElement.Foreground="{DynamicResource TextBrush}"
+        TextElement.FontFamily="{StaticResource UiFont}"
+        TextElement.FontSize="13.5" TextOptions.TextFormattingMode="Ideal">
+
+  <!-- The Sales entry screen, in a window.
+
+       The header fields and the invoice-line grid are lifted from that page unchanged and bound to
+       the same InvoiceEntry, so Rejection, Amount, every total and the due date are computed by
+       exactly the code that computes them there. Two implementations of an invoice would be two
+       sets of figures to keep in step, and the one that drifts is always the one nobody looks at.
+
+       What differs is only what a correction needs and an entry does not: Save changes in place of
+       Confirm sale, and the reason 0040 stamps on every stock movement it writes.
+
+       Handlers belonging to MainWindow are stripped on the way in. What is left is binding, which
+       is the point: the same fields, the same columns, the same styles.
+
+       Styles resolve from the application dictionaries. Anything living in MainWindow.Resources is
+       invisible here, which is why the figures at the foot are plain TextBlocks. -->
+  <DockPanel Margin="16">
+
+    <Border DockPanel.Dock="Bottom" Style="{StaticResource DashCard}" Margin="0,12,0,0">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <WrapPanel Grid.Column="0" VerticalAlignment="Center">
+          <StackPanel Margin="0,0,32,0">
+            <TextBlock Text="CARATS" Style="{StaticResource KpiLabel}"/>
+            <TextBlock Margin="0,2,0,0" FontSize="16" FontWeight="SemiBold"
+                       Text="{Binding TotalCarats, StringFormat=N2}"/>
+          </StackPanel>
+          <StackPanel Margin="0,0,32,0">
+            <TextBlock Text="AMOUNT" Style="{StaticResource KpiLabel}"/>
+            <TextBlock Margin="0,2,0,0" FontSize="16" FontWeight="SemiBold"
+                       Text="{Binding TotalAmount, StringFormat=N2}"/>
+          </StackPanel>
+          <StackPanel>
+            <TextBlock Text="DUE" Style="{StaticResource KpiLabel}"/>
+            <TextBlock Margin="0,2,0,0" FontSize="16" FontWeight="SemiBold"
+                       Text="{Binding DueDate, StringFormat=dd-MM-yyyy}"/>
+          </StackPanel>
+        </WrapPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="CancelButton" Content="Cancel" Margin="0,0,10,0" IsCancel="True"
+                  Style="{StaticResource DashButton}" Click="Cancel_Click"
+                  ToolTip="Close without changing the invoice or the stock"/>
+          <Button x:Name="SaveButton" Style="{StaticResource DashGoldButton}" Click="Save_Click"
+                  ToolTip="Save these figures. The carats this sale took out are returned and the corrected ones taken out again, in one transaction.">
+            <StackPanel Orientation="Horizontal">
+              <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconConfirm}"/>
+              <TextBlock Text="Save changes" Margin="7,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+          </Button>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- The reason, and any refusal, immediately above the button that needs them. -->
+    <Border DockPanel.Dock="Bottom" Style="{StaticResource DashCard}" Margin="0,12,0,0">
+      <StackPanel>
+        <TextBlock Text="Why is this invoice being updated?" Margin="0,0,0,6"
+                   Style="{StaticResource DashSubheading}"/>
+        <TextBox x:Name="ReasonBox" Style="{StaticResource FieldTextBox}"
+                 TextChanged="Dismiss"
+                 AutomationProperties.Name="Reason for the update"/>
+        <!-- Plain text under the box, not a panel. FieldErrorAdorner writes every other refusal
+             in this app as one line of 11px DangerBrush directly beneath the control, and a
+             bordered, tinted, rounded card here made the same class of message look like a
+             different and larger kind of problem. Same size, same colour, same offset. -->
+        <TextBlock x:Name="ErrorText" Visibility="Collapsed" TextWrapping="Wrap"
+                   FontSize="11" Margin="2,3,0,0"
+                   Foreground="{DynamicResource DangerBrush}"/>
+      </StackPanel>
+    </Border>
+
+    <Border DockPanel.Dock="Top" Style="{StaticResource DashCard}">
+      <StackPanel>
+        <TextBlock x:Name="Headline" Style="{StaticResource PageHeaderTitle}"/>
+        <TextBlock x:Name="Subhead" Style="{StaticResource DashSubheading}" Margin="0,2,0,12"
+                   Text="Every field carries what the invoice holds now. Nothing changes until Save."/>
+        <WrapPanel>
+
+              <!-- Every header control is named. A bare <ComboBox/> here has no AutomationId and no
+                   accessible name, so a screen reader announces it as "combo box" with no clue what
+                   it edits, and automation cannot tell the three of them apart at all. -->
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Date" Style="{StaticResource Lbl}"/>
+                <DatePicker x:Name="InvoiceDatePicker" SelectedDate="{Binding InvoiceDate}"
+                            AutomationProperties.Name="Invoice date"
+                            Style="{StaticResource AppDatePicker}" Width="150"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <!-- Same weight and colour as every other label. Requiredness is carried by the
+                     validation message and by HelpText for screen readers — not by making one
+                     label look different from the six beside it. -->
+                <TextBlock Text="Buyer" Style="{StaticResource Lbl}"/>
+                <ComboBox x:Name="BuyerPicker" ItemsSource="{Binding Buyers}" SelectedItem="{Binding SelectedBuyer}"
+                          AutomationProperties.Name="Buyer"
+                          AutomationProperties.HelpText="Required" Width="180"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Broker" Style="{StaticResource Lbl}"/>
+                <ComboBox x:Name="BrokerPicker" ItemsSource="{Binding Brokers}" SelectedItem="{Binding SelectedBroker}"
+                          AutomationProperties.Name="Broker" Width="160"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Broker %" Style="{StaticResource Lbl}"/>
+                <TextBox x:Name="BrokerPctBox" Text="{Binding BrokerPct, UpdateSourceTrigger=PropertyChanged}" Width="70"
+                         AutomationProperties.Name="Broker percent"
+                         Style="{StaticResource AppNumericTextBox}"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Terms" Style="{StaticResource Lbl}"/>
+                <TextBox x:Name="TermsBox" Text="{Binding TermsDays, UpdateSourceTrigger=PropertyChanged}" Width="70"
+                         AutomationProperties.Name="Terms in days"
+                         Style="{StaticResource AppNumericTextBox}"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Type" Style="{StaticResource Lbl}"/>
+                <!-- Wide enough for WITHOUT BILL, not for BILL. 80px was set when BILL was the
+                     only type and the closed box showed "WITH(" once there were four. A fixed
+                     width rather than auto, so the field does not jump as the selection changes.
+                     DialogProbe measures the longest entry against this. -->
+                <ComboBox x:Name="DocTypePicker" ItemsSource="{Binding DocTypes}" SelectedItem="{Binding DocType}"
+                          AutomationProperties.Name="Document type" Width="150"/>
+              </StackPanel>
+              <StackPanel Style="{StaticResource FieldPair}">
+                <TextBlock Text="Due" Style="{StaticResource Lbl}"/>
+                <TextBlock Text="{Binding DueDate, StringFormat=dd-MM-yyyy}" MinWidth="90" Height="32"
+                           Padding="0,7,0,0" FontWeight="SemiBold"
+                           AutomationProperties.Name="Due date"/>
+              </StackPanel>
+                    </WrapPanel>
+      </StackPanel>
+    </Border>
+
+    <Border Style="{StaticResource DashCard}" Margin="0,12,0,0">
+      <DockPanel>
+        <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
+          <StackPanel>
+            <TextBlock Text="Invoice lines" Style="{StaticResource DashHeading}"/>
+            <TextBlock Style="{StaticResource DashSubheading}"
+                       Text="Rejection and Amount are calculated"/>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+            <Button x:Name="AddLineButton" Click="AddLine_Click"
+                    Style="{StaticResource DashButton}" Margin="0,0,8,0"
+                    ToolTip="Add another line to this invoice"
+                    AutomationProperties.Name="Add line">
+              <StackPanel Orientation="Horizontal">
+                <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconAdd}"/>
+                <TextBlock Text="Add line" Margin="7,0,0,0" VerticalAlignment="Center"/>
+              </StackPanel>
+            </Button>
+            <!-- Only on screen while something is ticked, as on the entry screen. -->
+            <Button x:Name="DeleteLines" Click="DeleteLines_Click" Visibility="Collapsed"
+                    Style="{StaticResource DashButton}"
+                    Foreground="{DynamicResource DangerBrush}"
+                    ToolTip="Take the ticked lines off this invoice"
+                    AutomationProperties.Name="Remove the ticked lines">
+              <StackPanel Orientation="Horizontal">
+                <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconRemove}"/>
+                <TextBlock x:Name="DeleteLinesLabel" Margin="7,0,0,0" VerticalAlignment="Center"/>
+              </StackPanel>
+            </Button>
+          </StackPanel>
+        </Grid>
+            <!-- Not sortable, for the same reason the Sales entry grid is not: an invoice's
+                 lines are in the order they were typed, and that is the order that prints. -->
+            <DataGrid x:Name="LineGrid" CanUserSortColumns="False"
+                      ItemsSource="{Binding Lines}" IsReadOnly="False"
+                    CanUserAddRows="False" CanUserDeleteRows="False" SelectionUnit="Cell" ColumnHeaderHeight="40"
+                    HeadersVisibility="Column" GridLinesVisibility="None"
+                    ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                    ScrollViewer.VerticalScrollBarVisibility="Auto"
+                    BorderThickness="0" Background="Transparent">
+            <!-- A cell takes the first click to become current and only edits on the second, so on
+                 a fresh screen the first figure typed goes nowhere. On a keyboard-first entry
+                 screen that is a silent data loss, not a nicety. -->
+            <DataGrid.CellStyle>
+              <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
+              </Style>
+            </DataGrid.CellStyle>
+            <DataGrid.RowStyle>
+              <!-- Colour on HasConflict, not on Error. Every freshly started line has an Error
+                   ("Weight must be greater than 0") from the moment a grade is picked, so keying
+                   off Error painted the row you were currently typing into red. The tooltip still
+                   carries every message, including the not-yet-typed ones. -->
+              <Style TargetType="DataGridRow">
+                <!-- MinHeight, not the grid's RowHeight. RowHeight PINS every row at 42 whatever is
+                     in it, which is what stopped a wrapped remark from ever being visible in full.
+                     A floor keeps the rows even while a line has a short remark, and lets the one
+                     with a long one grow to fit it. -->
+                <Setter Property="MinHeight" Value="42"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="ToolTip" Value="{Binding Error}"/>
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding HasConflict}" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </DataGrid.RowStyle>
+            <DataGrid.Columns>
+              <!-- The entry grid's tick column, and for the same job: selecting several lines to
+                   take off at once. On EVERY row, blank ones included — a line just added is the
+                   one most likely to be a mistake, and it is blank by definition. -->
+              <DataGridTemplateColumn Width="36" MinWidth="36" CanUserResize="False">
+                <DataGridTemplateColumn.HeaderTemplate>
+                  <DataTemplate>
+                    <CheckBox x:Name="TickAllLines" Click="TickAllLines_Click" Loaded="TickAllLoaded"
+                              IsThreeState="False"
+                              Style="{StaticResource FieldCheckBox}"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"
+                              ToolTip="Tick every line"
+                              AutomationProperties.Name="Tick every line"/>
+                  </DataTemplate>
+                </DataGridTemplateColumn.HeaderTemplate>
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <CheckBox IsChecked="{Binding Selected, UpdateSourceTrigger=PropertyChanged}"
+                              Click="TickLine_Click"
+                              Style="{StaticResource FieldCheckBox}"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"
+                              AutomationProperties.Name="Select this line"/>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <!-- Ticking is for removing several lines at once, and nothing else: it changes no
+                   figure and no total. The header box ticks and unticks the lot. -->
+              <!-- Both boxes centred in the SAME 36px. AppColumnHeader is left-aligned with 10px
+                   of padding while AppCell centres its content, so HorizontalAlignment="Center" on
+                   the header box centred it inside a presenter that was itself pinned left — and
+                   the header tick sat a few px left of every row tick under it. Zero the padding
+                   on both and centre the header's content, and the one column has one centre. -->
+
+              <!-- CellComboBox, not a bare ComboBox: the default field style is 32px and these sat a
+                   visible 4px taller than every other control in a 36px row. Same defect the
+                   Disposition dropdown had (docs/12 §3c). -->
+              <!-- Two known inconsistencies here, left alone on purpose (docs/11 §Gaps):
+                   1. Size comes before Grade; every other grid in the app reads Grade then Size,
+                      and this page's own empty-state hint says "Pick a grade and size". Swapping
+                      them changes the tab order on a keyboard-first entry screen, so it is a
+                      workflow decision rather than a defect to fix quietly.
+                   2. These headers are Title Case; every other grid uses UPPERCASE. Purely
+                      visual, and equally a design decision.
+                   Neither affects what is saved. -->
+              <DataGridTemplateColumn Header="Size" Width="92*" MinWidth="88" CellStyle="{StaticResource ComboCell}">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <!-- ItemTemplate, not DisplayMemberPath. The design's combo template draws its
+                         closed state from SelectionBoxItemTemplate, which DisplayMemberPath does
+                         not populate — so the list showed "+6.5" while the box showed the type
+                         name, clipped to "Di". An explicit template feeds both. -->
+                    <!-- An unset combo draws nothing but a chevron, so a fresh line looked broken
+                         rather than unfilled. The hint sits behind the drop-down and disappears
+                         the moment a size is chosen. -->
+                    <Grid>
+                      <ComboBox ItemsSource="{Binding AllowedSizes}" SelectedItem="{Binding Size, UpdateSourceTrigger=PropertyChanged}"
+                                ItemTemplate="{StaticResource SizeCodeTemplate}" ItemContainerStyle="{StaticResource SizeItemContainer}" Style="{StaticResource CellComboBox}"
+                                AutomationProperties.Name="Size"/>
+                      <TextBlock Text="Size" Style="{StaticResource CellPlaceholder}"
+                                 Visibility="{Binding Size, Converter={StaticResource Empty}}"/>
+                    </Grid>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Header="Grade" Width="120*" MinWidth="112" CellStyle="{StaticResource ComboCell}">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <Grid>
+                      <ComboBox ItemsSource="{Binding Source={x:Static local:Catalogue.Grades}}"
+                                SelectedItem="{Binding Grade, UpdateSourceTrigger=PropertyChanged}"
+                                ItemTemplate="{StaticResource GradeNameTemplate}" ItemContainerStyle="{StaticResource GradeItemContainer}" Style="{StaticResource CellComboBox}"
+                                AutomationProperties.Name="Grade"/>
+                      <TextBlock Text="Grade" Style="{StaticResource CellPlaceholder}"
+                                 Visibility="{Binding Grade, Converter={StaticResource Empty}}"/>
+                    </Grid>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTextColumn Header="Weight" Width="80*" MinWidth="72" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding GrossWeightCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
+              <DataGridTextColumn Header="Selection" Width="88*" MinWidth="80" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding SelectionCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
+              <!-- Read-only and never wider than "999.99", so it can afford the floor that the two
+                   Less columns need. -->
+              <DataGridTextColumn Header="Rejection" Width="88*" MinWidth="80" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
+                                  Binding="{Binding RejectionCt, StringFormat=N2, Mode=OneWay}" Foreground="{DynamicResource AccentBrush}"/>
+              <DataGridTextColumn Header="Price/ct" Width="104*" MinWidth="96" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding PricePerCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}">
+                <DataGridTextColumn.ElementStyle>
+                  <Style TargetType="TextBlock" BasedOn="{StaticResource Num}">
+                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                    <Setter Property="ToolTip" Value="{Binding PricePerCt, StringFormat=N2}"/>
+                  </Style>
+                </DataGridTextColumn.ElementStyle>
+              </DataGridTextColumn>
+              <DataGridTextColumn Header="Ex Rate" Width="66*" MinWidth="58" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding ExRate, UpdateSourceTrigger=LostFocus}"/>
+              <!-- 52*/46 gave the editor 13px of text room — one character — so a percentage like
+                   12.5 scrolled out of sight as it was typed and the field looked dead. These two
+                   hold the same shape of figure as Ex Rate and are sized to match it. -->
+              <DataGridTextColumn Header="Less 1" Width="62*" MinWidth="52" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding Less1Pct, UpdateSourceTrigger=LostFocus}"/>
+              <DataGridTextColumn Header="Less 2" Width="62*" MinWidth="52" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding Less2Pct, UpdateSourceTrigger=LostFocus}"/>
+              <DataGridTextColumn Header="Amount" Width="116*" MinWidth="100" IsReadOnly="True" HeaderStyle="{StaticResource AppNumericHeader}"
+                                  Binding="{Binding Amount, StringFormat=N2, Mode=OneWay}" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}">
+                <DataGridTextColumn.ElementStyle>
+                  <Style TargetType="TextBlock" BasedOn="{StaticResource Num}">
+                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                    <Setter Property="ToolTip" Value="{Binding Amount, StringFormat=N2}"/>
+                  </Style>
+                </DataGridTextColumn.ElementStyle>
+              </DataGridTextColumn>
+              <!-- MinWidth, because a star column with none is the column that pays for everything
+                   else: below about a 1400px window the ten fixed columns took all the room and
+                   this one was squeezed to 20px, showing "Rema" and no remark at all. With a floor
+                   the grid scrolls instead, which keyboard entry is unaffected by — Tab still
+                   walks the cells and the DataGrid scrolls the focused one into view. -->
+              <!-- Free text that already trims to an ellipsis and carries its full value in a
+                   tooltip, so it is the one column that can give room to Less 1 and Less 2. -->
+              <!-- A TEMPLATE column, exactly as the disposition NOTE on Intake & movements is,
+                   and built from the same two styles: CellTextBox for the box, CellPlaceholder for
+                   the ghost text.
+
+                   A DataGridTextColumn was not enough and EditingElementStyle did not close it.
+                   That column has two states: a TextBlock at rest and a TextBox while editing. So
+                   styling the editor fixed the white box that appeared once you clicked, and left
+                   the resting state a bare line of text with no box at all, which is not what
+                   Intake shows and was the difference being reported. A template column has one
+                   state: the box is always there, the way every other cell in this grid and the
+                   NOTE cell on Intake behave. -->
+              <DataGridTemplateColumn Header="Remark" Width="116*" MinWidth="88">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <Grid>
+                      <!-- WRAPS, and the row grows with it (see the row style above). A
+                           single-line box can only ever show one column's worth of a remark, so a
+                           long one was cut whichever end you looked at: scrolled to its tail after
+                           typing, and to its head after LostFocus sent it home. Neither is the
+                           value. Wrapping shows all of it, at the cost of a taller row on the lines
+                           that carry one — which is the honest trade, since the alternative is a
+                           field that quietly hides what it holds.
+
+                           AcceptsReturn stays FALSE: Enter belongs to the grid, where it adds the
+                           next line. LostFocus still goes home, which now only matters for a remark
+                           too long even to wrap inside the row. -->
+                      <TextBox Text="{Binding Remark, UpdateSourceTrigger=PropertyChanged}"
+                               Style="{StaticResource CellTextBox}"
+                               TextWrapping="Wrap" AcceptsReturn="False"
+                               Height="Auto" MinHeight="28" VerticalContentAlignment="Center"
+                               AutomationProperties.Name="Remark"
+                               ToolTip="{Binding Remark}"/>
+                      <TextBlock Text="remark" Style="{StaticResource CellPlaceholder}"
+                                 Visibility="{Binding Remark, Converter={StaticResource Empty}}"/>
+                    </Grid>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <!-- ACTION, last and next to Remark. Three icon buttons and one worded: Print memo,
+                   Move to stock, Confirm sale, Remove. Same icons and the same ActionIcon style as
+                   the header row above, so a glyph means the same thing in both places.
+
+                   Icons rather than words because this repeats on every line. The same four as
+                   text measured over 300px and made Action the widest column in the table, which
+                   starved the star columns and clipped the Size and Grade dropdowns. At 26px each
+                   the column is 196 and the table's floors come to 1132, inside the card at any
+                   normal window.
+
+                   The first three act on the WHOLE invoice and share the header buttons' handlers
+                   exactly — pressing one on any row does the same thing, since none of those
+                   handlers reads sender except to pass it to NewInvoice_Click, which ignores it.
+                   Only Remove is about this line. Their tooltips say which is which; the header
+                   keeps the worded copies for anyone who wants the labels. -->
+              <!-- ACTION, last and next to Remark. The SAME four icons as the entry screen, in
+                   the same order and the same style, so a glyph means the same thing in both
+                   places. Two of them do a different job here, because the same job would be
+                   wrong: this window is correcting a sale that has already happened.
+
+                     Confirm sale saves the correction. Posting an invoice that is already posted
+                     is not something to offer; in here that act IS Save changes, and the tooltip
+                     says so rather than leaving the tick to be guessed at.
+
+                     Move to stock asks first. It leaves this window, and the window is holding
+                     edits nobody has saved, so it says what will be lost before it goes. -->
+              <DataGridTemplateColumn Header="Action" Width="Auto" MinWidth="136"
+                                      CanUserResize="False">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                      <Button Click="PrintMemo_Click"
+                              Style="{StaticResource DashButton}"
+                              Height="26" Width="28" MinWidth="0" Padding="0" Margin="2,0"
+                              ToolTip="Print the memo for this invoice. Nothing is saved and no stock moves."
+                              AutomationProperties.Name="Print memo">
+                        <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconMemo}"/>
+                      </Button>
+                      <Button Click="Save_Click"
+                              Style="{StaticResource DashGoldButton}"
+                              Height="26" Width="28" MinWidth="0" Padding="0" Margin="2,0"
+                              ToolTip="Save these figures. In this window that is what confirming the sale means."
+                              AutomationProperties.Name="Save changes">
+                        <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconConfirm}"/>
+                      </Button>
+                      <Button Click="RemoveLine_Click" Tag="{Binding}"
+                              Style="{StaticResource DashButton}"
+                              Height="26" Width="28" MinWidth="0" Padding="0" Margin="2,0"
+                              Foreground="{DynamicResource DangerBrush}"
+                              ToolTip="Take this line off the invoice"
+                              AutomationProperties.Name="Remove this line">
+                        <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconRemove}"/>
+                      </Button>
+                    </StackPanel>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+                          </DataGrid.Columns>
+            </DataGrid>
+      </DockPanel>
+    </Border>
+
+  </DockPanel>
+</Window>
