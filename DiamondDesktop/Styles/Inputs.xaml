@@ -123,9 +123,54 @@
                                                   Content="{TemplateBinding SelectionBoxItem}"
                                                   ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
                                                   IsHitTestVisible="False"/>
-                                <Path Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
-                                      Data="M0,0 L4,4 L8,0" Stroke="{DynamicResource TextMutedBrush}"
-                                      StrokeThickness="1.4" SnapsToDevicePixels="True"/>
+
+                                <!-- COLLAPSED unless the combo is editable, so every drop-down in
+                                     the app that is not renders exactly as it did before this
+                                     existed. WPF only looks for this part by name when IsEditable
+                                     is true; without it, IsEditable silently does nothing at all
+                                     and the box goes blank with nowhere to type. That is what the
+                                     Stock, intake, ledger and price pickers were doing.
+
+                                     Style="{x:Null}" detaches the implicit
+                                     <Style TargetType="TextBox"> declared in MainWindow, which
+                                     otherwise reaches in here and forces Height 32 and Padding 10
+                                     onto the part: clipped text, sitting twice as far in as the
+                                     selected value did. Everything it needs is stated here. -->
+                                <TextBox x:Name="PART_EditableTextBox" Grid.Column="0"
+                                         Style="{x:Null}" Visibility="Collapsed"
+                                         Margin="{TemplateBinding Padding}" Padding="0"
+                                         MinHeight="0" VerticalAlignment="Stretch"
+                                         VerticalContentAlignment="Center"
+                                         HorizontalContentAlignment="Left"
+                                         Background="Transparent" BorderThickness="0"
+                                         FontFamily="{TemplateBinding FontFamily}"
+                                         FontSize="{TemplateBinding FontSize}"
+                                         Foreground="{TemplateBinding Foreground}"
+                                         CaretBrush="{DynamicResource TextBrush}"
+                                         SelectionBrush="{DynamicResource AccentBrush}"
+                                         IsReadOnly="{TemplateBinding IsReadOnly}"/>
+
+                                <!-- The chevron is a toggle in its own right now. While the combo
+                                     is NOT editable the border above is hit-test-invisible, so this
+                                     never sees a click and the full-size ToggleButton underneath
+                                     opens the list exactly as before. Once it IS editable the
+                                     border has to accept clicks for the caret, which hides that
+                                     button, and then this is what opens the list. Same chevron,
+                                     same place, either way. -->
+                                <ToggleButton x:Name="chev" Grid.Column="1" Focusable="False"
+                                              ClickMode="Press" Background="Transparent"
+                                              IsChecked="{Binding IsDropDownOpen, Mode=TwoWay,
+                                                                  RelativeSource={RelativeSource TemplatedParent}}">
+                                  <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                      <Border Background="Transparent">
+                                        <Path HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              Data="M0,0 L4,4 L8,0" Stroke="{DynamicResource TextMutedBrush}"
+                                              StrokeThickness="1.4" SnapsToDevicePixels="True"/>
+                                      </Border>
+                                    </ControlTemplate>
+                                  </ToggleButton.Template>
+                                </ToggleButton>
                             </Grid>
                         </Border>
                         <Popup x:Name="PART_Popup" AllowsTransparency="True" Placement="Bottom"
@@ -143,6 +188,15 @@
                         </Popup>
                     </Grid>
                     <ControlTemplate.Triggers>
+                        <!-- The editable swap, and the hit-testing is the whole of it: the caret
+                             cannot be placed while the border above the ToggleButton refuses
+                             clicks, and the list cannot be opened once it accepts them, which is
+                             why the chevron became a toggle of its own. -->
+                        <Trigger Property="IsEditable" Value="True">
+                            <Setter TargetName="cp" Property="Visibility" Value="Collapsed"/>
+                            <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="bd" Property="IsHitTestVisible" Value="True"/>
+                        </Trigger>
                         <Trigger Property="IsKeyboardFocusWithin" Value="True">
                             <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
                         </Trigger>
@@ -187,6 +241,122 @@
         <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="BorderBrush" Value="Transparent"/>
+    </Style>
+
+    <!-- ================= EDITABLE CELL COMBO (Size, Grade) ==================
+         The same box as CellComboBox, with somewhere to type.
+
+         WHY ITS OWN TEMPLATE. FieldComboBox has no PART_EditableTextBox, so IsEditable on it does
+         nothing at all: there is no text box for the caret to land in. Adding the part to that
+         template would change every drop-down in the app (buyer, broker, doc type, every filter)
+         to fix two cells on one screen. This carries the change where it is wanted and nowhere
+         else.
+
+         THE HIT-TESTING IS THE WHOLE DIFFICULTY. In the non-editable template a ToggleButton
+         covers the control and a border sits over it with IsHitTestVisible=False, so a click
+         anywhere opens the list. Do that here and the ToggleButton eats every click before the
+         caret can be placed. So the toggle is confined to the chevron column, and column 0 belongs
+         to the text box. Chevron opens the list; clicking the text places the caret; typing does
+         both, via Picker_Typed.
+         ==================================================================== -->
+    <Style x:Key="EditableCellComboBox" TargetType="ComboBox" BasedOn="{StaticResource CellComboBox}">
+        <Setter Property="IsEditable" Value="True"/>
+        <!-- OFF, deliberately. WPF's own type-ahead rewrites the text box to the first prefix
+             match, which fights the filter binding and makes a mid-word edit jump. The narrowing
+             in SaleLine.Narrow is the search now. -->
+        <Setter Property="IsTextSearchEnabled" Value="False"/>
+        <!-- STILL NEEDED even with the search off, and the two settings do different jobs:
+             IsTextSearchEnabled governs type-ahead JUMPING, while TextPath tells WPF which
+             property is an item's TEXT. Without it an editable combo showing items through an
+             ItemTemplate falls back to ToString(), so choosing a grade filled the box with
+             "DiamondDesktop.Data.Grade". -->
+        <Setter Property="TextSearch.TextPath" Value="ShortName"/>
+        <Setter Property="StaysOpenOnEdit" Value="True"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBox">
+                    <Border x:Name="bd" CornerRadius="{StaticResource RadiusControl}"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="26"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- The part WPF looks for by name. It wires Text, the caret and the
+                                 selection to it; nothing here has to.
+
+                                 Style="{x:Null}" IS LOAD-BEARING. MainWindow declares an implicit
+                                 <Style TargetType="TextBox" BasedOn="AppTextBox"/>, which reaches
+                                 inside this template and lands on the part: Height 32 inside a 32px
+                                 combo that already carries the combo's own 10px padding as margin,
+                                 so the text was clipped, and Padding 10,0 on top of that margin, so
+                                 it sat about twice as far in as the closed state had drawn it. The
+                                 font survived only because a TemplateBinding is a local value and
+                                 beats a style setter; Height and Padding were not set here, so they
+                                 did not. Detaching the style is what makes the rest of these
+                                 predictable rather than a race with a style declared elsewhere.
+
+                                 Everything the box needs is therefore explicit below, and matches
+                                 the closed state exactly: same font, same 13pt, same left inset. -->
+                            <TextBox x:Name="PART_EditableTextBox" Grid.Column="0"
+                                     Style="{x:Null}"
+                                     Margin="{TemplateBinding Padding}" Padding="0"
+                                     MinHeight="0" VerticalAlignment="Stretch"
+                                     VerticalContentAlignment="Center"
+                                     HorizontalContentAlignment="Left"
+                                     Background="Transparent" BorderThickness="0"
+                                     FontFamily="{TemplateBinding FontFamily}"
+                                     FontSize="{TemplateBinding FontSize}"
+                                     Foreground="{TemplateBinding Foreground}"
+                                     CaretBrush="{DynamicResource TextBrush}"
+                                     SelectionBrush="{DynamicResource AccentBrush}"
+                                     IsReadOnly="{TemplateBinding IsReadOnly}"/>
+
+                            <ToggleButton Grid.Column="1" Focusable="False" ClickMode="Press"
+                                          Background="Transparent" BorderThickness="0"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay,
+                                                              RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="Transparent">
+                                            <Path HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                  Data="M0,0 L4,4 L8,0"
+                                                  Stroke="{DynamicResource TextMutedBrush}"
+                                                  StrokeThickness="1.4" SnapsToDevicePixels="True"/>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+
+                            <Popup x:Name="PART_Popup" AllowsTransparency="True" Placement="Bottom"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}" Focusable="False"
+                                   PopupAnimation="Fade" VerticalOffset="4">
+                                <Border MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                        MaxHeight="240" CornerRadius="{StaticResource RadiusControl}"
+                                        Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                        Padding="4" Effect="{DynamicResource PopupShadow}">
+                                    <ScrollViewer>
+                                        <ItemsPresenter/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <!-- ========================= TOGGLE SWITCH ========================= -->

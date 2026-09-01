@@ -1283,7 +1283,8 @@ CREATE OR REPLACE VIEW "public"."v_invoice" WITH ("security_invoker"='on') AS
         CASE
             WHEN ("c"."lines_total" > 0) THEN "round"((("c"."lines_costed")::numeric / ("c"."lines_total")::numeric), 4)
             ELSE (0)::numeric
-        END AS "cost_coverage"
+        END AS "cost_coverage",
+    COALESCE("c"."lines_total", (0)::bigint) AS "line_count"
    FROM (((((("public"."sales_invoice" "i"
      JOIN "public"."buyer" "b" ON (("b"."buyer_id" = "i"."buyer_id")))
      LEFT JOIN "public"."broker" "br" ON (("br"."broker_id" = "i"."broker_id")))

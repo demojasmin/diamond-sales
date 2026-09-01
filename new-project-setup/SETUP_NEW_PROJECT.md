@@ -85,6 +85,30 @@ Expect a small table at the end reading:
 
 ---
 
+## Step 2b · Apply everything that landed after the snapshot
+
+`schema.sql` was dumped on 19 Aug 2026. Ten migrations have landed since, and
+without them the app is missing whole features — most visibly stock reservation,
+where the desktop app calls `reserve_line` on every line typed and gets
+*"function does not exist"* back on each keystroke.
+
+1. **New query** → paste `0036_to_0047_since_schema.sql` → **Run**
+
+One paste, ten sections, each committing itself. Takes 10–20 seconds.
+
+**After Step 2 and not before.** Section 4 adds the "Unknown Grade" catalogue
+entry, so running this first would make Step 2's own summary read 28 grades
+where it says 27 — and look like a failure when it is not. If you run it too
+early it refuses and names the step you have missed, rather than half-applying.
+
+It ends with its own check. **Every row must read `ok`**, followed by a small
+table showing **28 grades** and **0 reservations held**. `verify_new_project.sql`
+in Step 3 cannot check any of this — it pins the schema as it stood before these
+ten and passes whether or not they are here — so this is the only place they are
+confirmed. Send that back with the Step 3 result.
+
+---
+
 ## Step 3 · Check it
 
 1. Open `supabase/verify_new_project.sql`

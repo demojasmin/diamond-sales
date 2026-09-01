@@ -7,6 +7,19 @@ namespace DiamondDesktop;
 
 public partial class App : Application
 {
+    /// <summary>
+    /// Faults already shown, keyed on type and message, so a repeating one is reported once.
+    ///
+    /// A binding or layout fault fires on every measure pass. Reporting each put a modal in front
+    /// of a modal in front of a modal, and the window underneath could not be reached until every
+    /// one had been dismissed — which is what "it shows so many times" was.
+    /// </summary>
+    private readonly HashSet<string> _reported = [];
+
+    /// How many repeats were swallowed. Not shown anywhere yet; it is here so the count exists
+    /// when there is somewhere honest to put it.
+    private int _repeats;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -15,14 +28,35 @@ public partial class App : Application
         // Without this, any unhandled exception closes the app with no window, no message and no
         // log — from the user's side it just vanishes, which is indistinguishable from the sign-in
         // having failed. Say what broke instead.
+        //
+        // AND KEEP GOING. This used to Shutdown() on every one, which turned a transient fault in
+        // a control — a stale collection view, a binding evaluated a frame after its source went —
+        // into the loss of a half-typed invoice. The UI thread is not corrupt after a
+        // NullReferenceException inside a WPF control; the frame it happened on is abandoned and
+        // the next one draws fine. Closing the app was the harshest possible answer to a fault the
+        // desk could not have caused and cannot avoid.
+        //
+        // ONCE PER FAULT, not once per occurrence. A layout or binding fault repeats on every
+        // measure pass, and the old handler put a modal up for each — a stack of identical boxes
+        // that had to be clicked through before the window could be reached at all. The same
+        // exception type and message is reported once and then only counted.
         DispatcherUnhandledException += (_, args) =>
         {
+            args.Handled = true;                      // the app stays up; see above
+
+            string fault = $"{args.Exception.GetType().Name}: {args.Exception.Message}";
+            if (!_reported.Add(fault))
+            {
+                _repeats++;
+                return;                               // seen it; do not stack another box
+            }
+
             MessageBox.Show(
-                $"{args.Exception.GetType().Name}: {args.Exception.Message}\n\n" +
-                $"{args.Exception.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}",
-                "Solitaire Desk stopped", MessageBoxButton.OK, MessageBoxImage.Error);
-            args.Handled = true;
-            Shutdown();
+                $"{fault}\n\n" +
+                $"{args.Exception.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}\n\n" +
+                "The app is still running and nothing on screen has been lost. If this keeps "
+                + "happening, note what you were doing and restart when it suits you.",
+                "Something went wrong", MessageBoxButton.OK, MessageBoxImage.Warning);
         };
 
         // WPF quits when the last window closes — and during login the login dialog IS the last

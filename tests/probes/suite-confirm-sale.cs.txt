@@ -30,7 +30,7 @@ var t = new Thread(() =>
                  "Themes/LightTheme.xaml", "Themes/Typography.xaml", "Styles/Buttons.xaml",
                  "Styles/Inputs.xaml", "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
                  "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
-                 "Styles/Audit.xaml",
+                 "Styles/Audit.xaml", "Styles/Catalogue.xaml",
              })
         app.Resources.MergedDictionaries.Add(new ResourceDictionary
         { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
@@ -96,10 +96,27 @@ var t = new Thread(() =>
     // Content is an icon-and-label panel now, so the label is read out of it.
     static string Label(Button b) =>
         ((StackPanel)b.Content).Children.OfType<TextBlock>().First().Text;
+    // The label carries the tick count now, as Remove always has, so it is matched on the action
+    // it names rather than on the whole string.
     Check("BUTTON - names the consequence, not the mechanism",
-          Label(post) == "Confirm sale", Label(post));
-    Check("BUTTON - and Move to stock is a button of its own",
-          Label(move) == "Move to stock", Label(move));
+          Label(post).StartsWith("Confirm sale"), Label(post));
+    // MOVE TO STOCK IS OFF THIS PAGE, on request. The anchor stays in the tree because
+    // RefreshActionStates and every Busy() scope on this screen name it, so what is asserted is
+    // that it is hidden and untabbable rather than that it carries a label.
+    Check("BUTTON - Move to stock is off the screen, but still an anchor Busy can name",
+          move.Visibility == System.Windows.Visibility.Collapsed && !move.IsTabStop,
+          $"{move.Visibility}, tab stop {move.IsTabStop}");
+    // The RELEASE it did is not lost: Clear / New invoice still gives an abandoned entry's carats
+    // back, so nothing can be stranded by the button going.
+    string winSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "DiamondDesktop", "MainWindow.xaml.cs"));
+    int clearAt = winSrc.IndexOf("private async void NewInvoice_Click", StringComparison.Ordinal);
+    int dropAt = winSrc.IndexOf("await DropEntryAsync();", clearAt, StringComparison.Ordinal);
+    int resetAt = winSrc.IndexOf("ResetEntry();", clearAt, StringComparison.Ordinal);
+    Check("BUTTON - and the release it performed still happens when the entry is cleared",
+          clearAt > 0 && dropAt > 0 && resetAt > dropAt,
+          "NewInvoice_Click releases before it resets, so no hold is stranded");
     // No style assertion any more. These two are COLLAPSED ANCHORS -- the visible buttons live
     // per row in the Action column, where a DataTemplate leaves them no x:Name -- so they carry no
     // style at all. Busy() names them to swap a caption, which is what has to keep working.
@@ -107,9 +124,10 @@ var t = new Thread(() =>
           post is not null && move is not null);
     // Move to stock must never be a second way to move stock. If it ever grows a Repo call this
     // stops being true, because posting is the only thing that hands the invoice an id.
-    Check("BUTTON - Move to stock comes BEFORE Confirm sale, so the sign-off is last",
-          ((System.Windows.Controls.Panel)move.Parent).Children.IndexOf(move)
-          < ((System.Windows.Controls.Panel)post.Parent).Children.IndexOf(post));
+    Check("BUTTON - Confirm sale is the last action in the row, so the sign-off is last",
+          ((System.Windows.Controls.Panel)post.Parent).Children.IndexOf(post)
+          == ((System.Windows.Controls.Panel)post.Parent).Children.Count - 1,
+          $"index {((System.Windows.Controls.Panel)post.Parent).Children.IndexOf(post)}");
 
     // -- nothing is written before the sign-off -----------------------------
     // Post_Click validates BEFORE the summary, and asks BEFORE SaveDraftAsync. An empty invoice
@@ -171,16 +189,33 @@ var t = new Thread(() =>
     broken.Lines.Add(new SaleLine { Grade = noii, Size = s65,
                                     GrossWeightCt = 1.00m, SelectionCt = 5.00m, PricePerCt = 100m });
 
+    // EVERY FAULT IS A LINE'S NOW. Buyer, terms and broker percentage moved onto the row with the
+    // rest of the deal, so a refusal names WHICH line rather than pointing at a header that no
+    // longer exists -- and TermsDays / BrokerPct set on the entry push down onto every line, which
+    // is how this invoice ends up with a line carrying 9999 days and 200%.
     var probs = broken.Problems();
-    Check("REFUSAL - names ALL of it, not just the first",
-          probs.Count == 4, string.Join(" | ", probs));
-    Check("REFUSAL - header faults first, in the order the fields sit",
-          probs[0].StartsWith("Buyer") && probs[1].StartsWith("Terms")
-          && probs[2].StartsWith("Broker %"), string.Join(" | ", probs));
-    Check("REFUSAL - then the line, numbered as the grid numbers it",
-          probs[3].StartsWith("Line 1:"), probs.Count > 3 ? probs[3] : "<none>");
+    Check("REFUSAL - every fault is reported, numbered as the grid numbers it",
+          probs.Count == 2 && probs.All(x => x.StartsWith("Line 1:")), string.Join(" | ", probs));
+    // The figures first, then the deal: a row wrong in both says so once about each rather than
+    // hiding one behind the other.
+    Check("REFUSAL - the figure fault first, then the deal fault, on the same line",
+          probs[0].Contains("exceeds gross") && probs[1].Contains("Buyer is required"),
+          string.Join(" | ", probs));
     Check("REFUSAL - Validate() is unchanged: still the first problem",
           broken.Validate() == probs[0], broken.Validate());
+
+    // EVERY faulty row, not just the first: three rows short of a buyer are three refusals, so the
+    // desk fixes them in one pass instead of pressing Confirm three times.
+    var manyBad = new InvoiceEntry();
+    manyBad.Lines.Clear();
+    for (int i = 0; i < 3; i++)
+        manyBad.Lines.Add(new SaleLine { Grade = noii, Size = s65,
+                                         GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 100m });
+    manyBad.Recalculate();
+    Check("REFUSAL - all three buyer-less rows are named at once",
+          manyBad.Problems().Count == 3
+          && manyBad.Problems().All(x => x.Contains("Buyer is required")),
+          string.Join(" | ", manyBad.Problems()));
 
     var empty = new InvoiceEntry();
     empty.Buyers.Add(new PartyRef(11, "ABC EXPORTS", 30));

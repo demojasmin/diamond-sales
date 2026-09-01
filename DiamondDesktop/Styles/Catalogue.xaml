@@ -1,0 +1,114 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:ui="clr-namespace:DiamondDesktop">
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       GRADE AND SIZE, EVERYWHERE.
+
+       Every way a grade or a sieve is picked or printed in this app, in one file. It is the Sales
+       entry treatment, unchanged — the same templates, the same item containers, the same 34px
+       field, the same search behaviour — lifted out of MainWindow so every other page can use the
+       one definition instead of half of it.
+
+       WHY THIS FILE EXISTS. These four resources lived in MainWindow.Resources, which is a scope
+       nothing outside MainWindow can see. Sales entry had the full treatment; the other seventeen
+       pickers were assembled a piece at a time — the templates re-attached from code-behind in two
+       foreach loops, the height and the search behaviour repeated at every site in markup, and the
+       accessible name simply missing on several. UpdateInvoiceDialog referenced these four by name
+       while its own header comment records that MainWindow's resources are invisible to it.
+
+       So the rule is now: a grade or size picker takes GradePicker or SizePicker and NOTHING ELSE.
+       A grade or size CELL takes GradeCellText or SizeCellText. Nothing is set per-site, so nothing
+       can be forgotten per-site.
+
+       NOT A BEHAVIOUR CHANGE. Every value below is what Sales entry already used.
+       ══════════════════════════════════════════════════════════════════════ -->
+
+  <!-- ── what an item reads as ──────────────────────────────────────────── -->
+
+  <!-- Shared so the closed combo and its dropdown can never disagree. See the Sales entry Size
+       column for why DisplayMemberPath is not used with this design's combo template. -->
+  <!-- ShortName, not Code. The catalogue stores a fifth of a carat as the number 0.2; the
+       office has only ever called it 1/5, and so does the sheet the stock is counted on. -->
+  <DataTemplate x:Key="SizeCodeTemplate">
+    <TextBlock Text="{Binding ShortName}" ToolTip="{Binding Code}"/>
+  </DataTemplate>
+
+  <!-- The grade as the office writes it — "1BB", "#", "TOP co". Used by every grade combo in the
+       app: Sales entry, Intake, the ledger, the dashboard filter and the price editor. The Stock
+       filter builds its own strings and matches this deliberately, so a grade reads the same
+       wherever it is picked. The code stays in the tables, which is where it is needed. -->
+  <!-- No TextTrimming here. This template feeds the combo's CLOSED state as well as its list, and
+       in the closed state it renders inside a presenter that reports almost no width while
+       measuring — with trimming on, the whole name was ellipsised away and the cell came out
+       blank. The column is sized to fit the longest grade name instead; the tooltip covers a
+       longer one arriving later. -->
+  <DataTemplate x:Key="GradeNameTemplate">
+    <TextBlock Text="{Binding ShortName}" ToolTip="{Binding DisplayName}"/>
+  </DataTemplate>
+
+  <!-- The accessible name has to live on the CONTAINER. WPF's ComboBoxItemAutomationPeer names an
+       item from the item itself, and with an ItemTemplate there is nothing to read, so it falls
+       back to ToString() on the model — a database wire type. Every entry in the Grade list
+       announced itself to a screen reader as "DiamondDesktop.Data.Grade", twenty-three times.
+       Putting the name on the TextBlock inside the template does NOT fix it; the peer never
+       looks there. Measured, not assumed. -->
+  <Style x:Key="GradeItemContainer" TargetType="ComboBoxItem" BasedOn="{StaticResource FieldComboBoxItem}">
+    <Setter Property="AutomationProperties.Name" Value="{Binding ShortName}"/>
+  </Style>
+  <Style x:Key="SizeItemContainer" TargetType="ComboBoxItem" BasedOn="{StaticResource FieldComboBoxItem}">
+    <Setter Property="AutomationProperties.Name" Value="{Binding ShortName}"/>
+  </Style>
+
+  <!-- ── the pickers ────────────────────────────────────────────────────── -->
+
+  <!--
+    A grade picker, whole. ItemsSource is the only thing a page still supplies, because that is
+    data; everything below is what the control LOOKS and BEHAVES like, and no page has an opinion
+    worth having about that.
+
+    34px matches every other field on the operations forms — it is what all fifteen of these were
+    setting by hand, one at a time.
+
+    PickerSearch.On is set HERE rather than at each site. It was the single most-forgotten piece:
+    a picker without it is a picker you have to scroll through a twenty-three-row catalogue to use,
+    and there is no visible difference to notice it by.
+
+    NOT for the Stock page's two filters. Those are filled with plain strings — "All grades", then
+    the codes — and an ItemTemplate binding ShortName renders a string as nothing at all. They keep
+    PickerSearch.On and the same implicit ComboBoxItem style, so they already read identically; the
+    only thing they cannot take is a template for a property a string does not have.
+  -->
+  <Style x:Key="GradePicker" TargetType="ComboBox" BasedOn="{StaticResource AppComboBox}">
+    <Setter Property="Height" Value="34"/>
+    <Setter Property="ui:PickerSearch.On" Value="True"/>
+    <Setter Property="ItemTemplate" Value="{StaticResource GradeNameTemplate}"/>
+    <Setter Property="ItemContainerStyle" Value="{StaticResource GradeItemContainer}"/>
+  </Style>
+
+  <Style x:Key="SizePicker" TargetType="ComboBox" BasedOn="{StaticResource AppComboBox}">
+    <Setter Property="Height" Value="34"/>
+    <Setter Property="ui:PickerSearch.On" Value="True"/>
+    <Setter Property="ItemTemplate" Value="{StaticResource SizeCodeTemplate}"/>
+    <Setter Property="ItemContainerStyle" Value="{StaticResource SizeItemContainer}"/>
+  </Style>
+
+  <!-- ── the same two things, PRINTED in a grid ─────────────────────────── -->
+
+  <!--
+    A grade or sieve in a table cell. The mark the office writes, with what it stands for on the
+    tooltip — so a column stays narrow and nothing is actually lost.
+
+    The bindings are on the STYLE, not on the column, which is what makes this shareable: every
+    row this is applied to must expose GradeShort/GradeName or SizeShort/SizeCode. That is already
+    true of v_stock_position and v_sales_line, and the price grid's projection now matches them
+    rather than printing the raw stored code.
+  -->
+  <Style x:Key="GradeCellText" TargetType="TextBlock">
+    <Setter Property="ToolTip" Value="{Binding GradeName}"/>
+  </Style>
+  <Style x:Key="SizeCellText" TargetType="TextBlock">
+    <Setter Property="ToolTip" Value="{Binding SizeCode}"/>
+  </Style>
+
+</ResourceDictionary>

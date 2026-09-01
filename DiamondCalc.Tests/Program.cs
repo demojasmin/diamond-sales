@@ -337,7 +337,15 @@ var uiPlus11 = DiamondDesktop.Catalogue.AllSizes.First(s => s.Code == "+11");
 DiamondDesktop.Data.Grade GradeOf(string code) =>
     DiamondDesktop.Catalogue.Grades.First(g => g.Code == code);
 
-var inv = new DiamondDesktop.InvoiceEntry { Buyer = "Z K ENTERPRISE", BrokerPct = 1m, TermsDays = 45 };
+// The buyer is PICKED, not merely named. Since deals moved onto the line, a line inherits the
+// header's chosen party -- a PartyRef -- and setting only the display string left every line sold
+// to nobody, which is a real refusal ("Line 1: Buyer is required") and not the blank row it looked
+// like. This is how the screen builds an invoice: the picker sets SelectedBuyer, which fills in the
+// name and the default terms behind it.
+var inv = new DiamondDesktop.InvoiceEntry { BrokerPct = 1m, TermsDays = 45 };
+inv.Buyers.Add(new DiamondDesktop.PartyRef(1, "Z K ENTERPRISE", 45));
+inv.SelectedBuyer = inv.Buyers[0];
+inv.TermsDays = 45;                      // the picker's default terms land first; the case wants 45
 // A new invoice opens with NO rows -- the grid holds only the lines you asked for -- so the
 // first line is added here rather than assumed.
 inv.Lines.Add(new DiamondDesktop.SaleLine());
@@ -609,6 +617,31 @@ Eq("SALES-001 rejection of a fully-rejected line is the whole parcel", line2.Rej
 Check("SALES-001 a blank row is ignored", inv.RealLines.Count == 2);
 inv.Lines.Add(new DiamondDesktop.SaleLine());
 Check("SALES-001 a blank row still does not block the save", inv.Validate() is null, inv.Validate());
+
+// The blank row is ignored because it is not a LINE: Problems() walks RealLines, and IsBlank is
+// true for a row with no grade, no size and no figures. Asserted directly so the rule cannot be
+// weakened by accident -- it was misread once as the cause of a refusal that was really about a
+// real line missing its buyer.
+var untouched = inv.Lines[^1];
+Check("SALES-001 the blank row is not a line at all",
+      untouched.IsBlank && !inv.RealLines.Contains(untouched), "IsBlank, and outside RealLines");
+Check("SALES-001 and it raises no problem of its own",
+      !inv.Problems().Any(x => x.Contains($"Line {inv.Lines.IndexOf(untouched) + 1}:")),
+      string.Join(" | ", inv.Problems()));
+
+// A REAL line missing its buyer must still refuse, which is the other half of the rule.
+var noBuyer = new DiamondDesktop.SaleLine
+{
+    Grade = GradeOf("NO 1"), Size = uiPlus65,
+    GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m,
+};
+inv.Lines.Add(noBuyer);
+noBuyer.DealBuyer = null;
+Check("SALES-001 but a real line with no buyer still blocks the save",
+      inv.Problems().Any(x => x.Contains("Buyer is required")),
+      string.Join(" | ", inv.Problems()));
+inv.Lines.Remove(noBuyer);
+Check("SALES-001 and removing it clears the refusal", inv.Validate() is null, inv.Validate());
 
 // Terms of 0 is valid (docs/04 A-3)
 inv.TermsDays = 0;

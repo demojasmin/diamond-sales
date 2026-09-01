@@ -133,10 +133,76 @@ Check("WIDTH - the fixed columns leave real room for the description",
 Check("WIDTH - and the description column will not be squeezed below readable",
       cols.Contains("Width=\"*\" MinWidth=\"240\""));
 
-// When it IS cut, the reader must be able to see that it was and read the rest.
-Check("WIDTH - a cut description is marked and readable on hover",
-      cols.Contains("TextTrimming") && cols.Contains("Value=\"{Binding What}\""),
-      "ellipsis and tooltip");
+// It is never cut now. Widening was tried twice and lost both times -- this card shares its row
+// with Recent activity and the detail drawer, so there is no width to win. A wrapped row grows to
+// fit its own sentence whatever the window is doing, which ends the argument rather than moving it.
+Check("WIDTH - the description wraps instead of being cut",
+      cols.Contains("TextWrapping") && cols.Contains("Value=\"{Binding What}\""),
+      "wrap and tooltip");
+// Wrapping alone does nothing while the grid pins every row at 42: the cell would draw one line
+// and clip the rest, which looks exactly like the bug it was meant to fix.
+Check("WIDTH - and the row is free to grow, with the old height as its floor",
+      markup.Contains("RowHeight=\"NaN\" MinRowHeight=\"42\""),
+      "auto row height");
+
+// ── the handover bundle stands a new project up to TODAY ───────────────────
+// schema.sql is a snapshot. Every migration after it has to ship beside it, or a new client's
+// project is built missing features the installed app already calls -- reserve_line on every
+// keystroke against a database that has never heard of it.
+string bundleDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+                                "new-project-setup");
+// Found by PATTERN, not by name. The file is renamed every time a migration is folded in, and a
+// hardcoded name meant the read threw and killed the suite silently at the point of the rename --
+// the checks after it simply stopped, with no failure to read.
+string bundleFile = Directory.GetFiles(bundleDir, "0036_to_*_since_schema.sql").Single();
+string setup = File.ReadAllText(bundleFile);
+string bundleName = Path.GetFileName(bundleFile);
+
+// Every migration from 0036 to the newest one on disk must appear as a section.
+var shipped = Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+                                              "supabase", "migrations"), "*.sql")
+    .Select(Path.GetFileName)
+    .Where(f => string.CompareOrdinal(f!.Substring(0, 4), "0036") >= 0)
+    .OrderBy(f => f, StringComparer.Ordinal).ToList();
+
+var missing = shipped.Where(f => !setup.Contains($"SECTION") || !setup.Contains(f!)).ToList();
+Check("BUNDLE - every migration since the schema snapshot is in the setup file",
+      missing.Count == 0,
+      missing.Count == 0 ? $"{shipped.Count} sections" : string.Join(", ", missing));
+
+// Order is the whole safety story: 0042 rewrites 0040's function, 0044 rewrites 0043's view.
+var positions = shipped.Select(f => setup.IndexOf(f!, StringComparison.Ordinal)).ToList();
+Check("BUNDLE - and they are in number order, so later ones rewrite earlier ones",
+      positions.Zip(positions.Skip(1), (a, b) => a < b).All(x => x),
+      "0042 after 0040, 0044 after 0043");
+
+// A section that fails must not leave the next one running on half a database. Counted off whole
+// LINES, so a "begin;" written inside one of the migrations' own comments cannot inflate it.
+var setupLines = setup.Split((char)10).Select(l => l.Trim()).ToList();
+int begins = setupLines.Count(l => l == "begin;");
+int commits = setupLines.Count(l => l == "commit;");
+Check("BUNDLE - each section commits itself",
+      begins == shipped.Count && commits == shipped.Count,
+      $"{begins} begin / {commits} commit for {shipped.Count} sections");
+
+// Run before the seed and 0039 makes Step 2 report 28 grades where it says 27.
+Check("BUNDLE - it refuses if the steps before it have not run",
+      setup.Contains("has not been run") && setup.Contains("$guard$"));
+
+// And in the other direction. Section 8 rewinds v_stock_position from 0044's twelve columns to
+// 0043's ten, which "create or replace view" cannot do -- so run on an up-to-date database it
+// failed with 42P16 eleven hundred lines in, naming a view rather than the mistake.
+Check("BUNDLE - and refuses a database that already has these migrations",
+      setup.Contains("already has 0043") && setup.Contains("stock_reservation') is not null"),
+      "no rewinding an existing project");
+
+// And the guide has to actually tell someone to run it.
+string guide = File.ReadAllText(Path.Combine(bundleDir, "SETUP_NEW_PROJECT.md"));
+Check("BUNDLE - the setup guide has a step for it, after the seed",
+      guide.Contains(bundleName)
+      && guide.IndexOf("## Step 2 ") < guide.IndexOf(bundleName)
+      && guide.IndexOf(bundleName) < guide.IndexOf("## Step 3 "),
+      bundleName);
 
 Console.WriteLine();
 Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");

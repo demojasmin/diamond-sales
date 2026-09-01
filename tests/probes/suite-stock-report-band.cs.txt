@@ -23,7 +23,7 @@ var t = new Thread(() =>
     var app = new Application();
     foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
         "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
-        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml"})
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml", "Styles/Catalogue.xaml"})
         app.Resources.MergedDictionaries.Add(new ResourceDictionary
         { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
 

@@ -21,7 +21,7 @@ var t = new Thread(() =>
     var app = new Application();
     foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
         "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
-        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml"})
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml", "Styles/Catalogue.xaml"})
         app.Resources.MergedDictionaries.Add(new ResourceDictionary
         { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
 
@@ -107,12 +107,19 @@ var t = new Thread(() =>
           dlg.FindName("BuyerPicker") is ComboBox && dlg.FindName("BrokerPicker") is ComboBox
           && dlg.FindName("BrokerPctBox") is TextBox && dlg.FindName("TermsBox") is TextBox
           && dlg.FindName("DocTypePicker") is ComboBox && dlg.FindName("InvoiceDatePicker") is DatePicker);
-    // Compared WHOLE. The old version stripped the tick column from the page's list and not from
-    // the modal's, so the two could never match once the modal grew a tick column of its own --
-    // it printed two identical lists and called them different.
+    // Compared WHOLE except for Deal Details, which is the ONE column the modal must not have and
+    // the page must. On Sales entry the deal is the line's, because that screen can write several
+    // invoices at once; the modal edits an invoice that already exists, and an invoice IS one deal
+    // -- its buyer, broker, terms and type are the header fields checked directly above. Offering
+    // a per-line deal there would be offering to split a document that has already been issued.
+    string PageCols(DataGrid gr) =>
+        string.Join(", ", gr.Columns.Select(c => c.Header as string ?? "·").Where(h => h != "Deal Details"));
     Check("MODAL - and the same invoice-line columns",
-          Cols(modalGrid) == Cols(page),
-          $"modal [{Cols(modalGrid)}]  page [{Cols(page)}]");
+          Cols(modalGrid) == PageCols(page),
+          $"modal [{Cols(modalGrid)}]  page [{PageCols(page)}]");
+    Check("MODAL - and Deal Details is the page's alone, because an invoice is already one deal",
+          page.Columns.Any(c => (c.Header as string) == "Deal Details")
+          && !modalGrid.Columns.Any(c => (c.Header as string) == "Deal Details"));
     // RealLines, not Items: an InvoiceEntry opens with a blank row to type into, so the grid holds
     // one more than the invoice has lines. Counting rows counted that one too.
     Check("MODAL - carrying the invoice's own lines",

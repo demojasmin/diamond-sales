@@ -1,4 +1,4 @@
-// Every importer, against real files, for the two cases that matter:
+﻿// Every importer, against real files, for the two cases that matter:
 //
 //   A · the file writes a sieve the catalogue already holds under ANOTHER notation.
 //       Nothing may be offered, nothing may be created, and the numbers must not move.
@@ -267,6 +267,62 @@ foreach (string file in new[] { "Sale File Sample.xlsx", "Sale File - 5 months s
           missing.LineCount < baseline.LineCount,
           $"{missing.LineCount} vs {baseline.LineCount} lines");
 }
+
+// ── IMPORTING STOCK ASKS BEFORE IT DELETES ─────────────────────────────────
+// Both stock importers now put the same question -- replace what is already imported, or add this
+// file to it -- through the same AskReplaceOrAdd dialog. The workbook one used to answer it
+// itself: it showed a confirmation that said the old parcels WOULD be deleted, and there was no
+// other door. Asserted off the handler's source, because the path needs a file dialog and a
+// database and a probe has neither.
+string importer = File.ReadAllText(Path.Combine(
+    AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "MainWindow.xaml.cs"));
+
+int excelAt = importer.IndexOf("private async void ImportStock_Click", StringComparison.Ordinal);
+int pdfAt = importer.IndexOf("private async void ImportStockPdf_Click", StringComparison.Ordinal);
+string excel = importer[excelAt..importer.IndexOf("// ── Stock import · the printed sheet", excelAt, StringComparison.Ordinal)];
+string pdf = importer[pdfAt..importer.IndexOf("private async Task RememberSheetSizesAsync", pdfAt, StringComparison.Ordinal)];
+
+Check("STOCKMODE · the workbook importer asks whether to replace or add",
+      excel.Contains("AskReplaceOrAdd("), "the same dialog the printed sheet uses");
+Check("STOCKMODE · and the printed sheet still asks with it too",
+      pdf.Contains("AskReplaceOrAdd("), "one dialog, one wording, two importers");
+
+// BEFORE anything is written. An answer collected after the write would be a report, not a choice.
+Check("STOCKMODE · the question comes before the write",
+      excel.IndexOf("AskReplaceOrAdd(", StringComparison.Ordinal)
+      < excel.IndexOf("Repo.ImportStockAsync(", StringComparison.Ordinal),
+      "asked, then written");
+
+// Cancel is a third answer and must write nothing at all.
+Check("STOCKMODE · cancelling writes nothing",
+      excel.Contains("if (choice == AppDialog.Answer.Cancel) { Say(\"Stock import cancelled\"); return; }"));
+
+// The answer has to REACH the database. The workbook path used to call ImportStockAsync with no
+// mode at all, which defaults to Replace -- so a choice that never got passed would look right on
+// screen and delete the old parcels anyway.
+Check("STOCKMODE · and the answer is what the write is given",
+      excel.Contains("new Repo.StockImportMode(replace, Guid.NewGuid(), \"excel\")")
+      && !System.Text.RegularExpressions.Regex.IsMatch(
+             excel, @"ImportStockAsync\(plan\.Rows, asAt, gradeIds, sizeIds,\s*progressDialog\.Progress\)\)"),
+      "no mode-less call left on this path");
+
+// A database without 0027 has no batch list, so it can only replace -- and must say so honestly
+// rather than offer a choice it cannot honour.
+Check("STOCKMODE · a database that cannot add still gets the replace-only confirmation",
+      excel.Contains("if (batches is null)") && excel.Contains("ConfirmStockImport(plan, picker.FileName, existing.Count, asAt)"),
+      "pre-0027 falls back rather than lying");
+
+// The dialog itself must offer both doors AND a way out, in the office's own words.
+int askAt = importer.IndexOf("private AppDialog.Answer AskReplaceOrAdd", StringComparison.Ordinal);
+string ask = importer[askAt..(askAt + 2400)];
+Check("STOCKMODE · the dialog offers remove, keep, and cancel",
+      ask.Contains("primaryText: \"Remove old & import latest\"")
+      && ask.Contains("tertiaryText: \"Keep old & add latest\"")
+      && ask.Contains("cancelText: \"Cancel\""),
+      "three doors");
+Check("STOCKMODE · and names what removing the old data actually costs",
+      ask.Contains("Removing the old data deletes") && ask.Contains("Currently imported"),
+      "the carats at stake, and which imports they are");
 
 Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} check(s) failed.");
 Environment.Exit(fail == 0 ? 0 : 1);

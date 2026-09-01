@@ -35,6 +35,45 @@ public static class Catalogue
     /// </summary>
     public static ObservableCollection<SizeBucket> ActiveSizes { get; } = [];
 
+    /// <summary>
+    /// The grades a SALE may be written against: the catalogue, less the two nobody sells from.
+    ///
+    ///   ZZ TEST         test data. It exists because somebody needed a grade to prove an import
+    ///                   with, and it has no business being one keystroke from a real invoice.
+    ///   Unknown Grade   0039's landing place for a sheet row that printed no grade name. It is a
+    ///                   holding pen: the carats are real and belong on the Stock page, but the
+    ///                   correction path is an ADJUST onto the right bucket, not a sale out of it.
+    ///                   Selling from it would put a parcel on an invoice under a name that says
+    ///                   the office does not know what it is.
+    ///
+    /// Hidden from the PICKER only. Both grades keep their rows, their stock, their history and
+    /// their place on every report -- this changes what can be typed, not what exists, and no
+    /// stock or reservation logic reads this list.
+    ///
+    /// A projection maintained in place, exactly as ActiveSizes is and for the same reason: the
+    /// pickers bind once at load, so a list that gets replaced leaves every bound ComboBox holding
+    /// the catalogue as it was at startup.
+    /// </summary>
+    public static ObservableCollection<Grade> SellableGrades { get; } = [];
+
+    /// <summary>
+    /// The codes a sale may not be written against, on the desk's instruction.
+    ///
+    /// Matched on CODE, trimmed and case-insensitively, because that is the field the import and
+    /// the master-data screen both write. Names can be edited; a code is a fixed point.
+    ///
+    /// "+14" IS DIFFERENT FROM THE OTHER TWO and worth knowing before this list is trusted. ZZ TEST
+    /// is test data and Unknown Grade is a holding pen, so neither should ever be sold from. "+14"
+    /// is a grade that HOLDS REAL CARATS on Demo, and hiding it here means those carats cannot be
+    /// put on an invoice from this screen at all. That is what was asked for; it is one line to
+    /// undo if it turns out to have been a sieve label that landed in the grade column rather than
+    /// a grade nobody trades.
+    /// </summary>
+    private static readonly string[] NotForSale = ["ZZ TEST", "Unknown Grade", "+14"];
+
+    private static bool Sellable(Grade g) =>
+        !NotForSale.Contains(g.Code?.Trim(), StringComparer.OrdinalIgnoreCase);
+
     static Catalogue()
     {
         // ponytail: rebuilds the whole list per change — the catalogue is a dozen sieves, and it
@@ -43,6 +82,12 @@ public static class Catalogue
         {
             ActiveSizes.Clear();
             foreach (var s in AllSizes.Where(s => s.Active)) ActiveSizes.Add(s);
+        };
+
+        Grades.CollectionChanged += (_, _) =>
+        {
+            SellableGrades.Clear();
+            foreach (var g in Grades.Where(Sellable)) SellableGrades.Add(g);
         };
     }
 
@@ -223,13 +268,128 @@ public sealed class SaleLine : Notifier
         get => _grade;
         set
         {
+            // A SEARCH MISS IS NOT A CLEAR. An editable ComboBox writes SelectedItem = null the
+            // moment its text stops matching an item, so typing one character over a chosen grade
+            // emptied the cell -- the weight and remark stayed, and the bucket silently went. The
+            // cell offers no blank to choose, so a null arriving while there is text in the box can
+            // only have come from the search, and it is refused. Picker_LostFocus puts the chosen
+            // name back when the cell is left, so nothing is stranded.
+            //
+            // Keyed on the null itself, not on whether the box has text: WPF nulls the selection
+            // and rewrites Text in an order that is not worth depending on, and a guard that
+            // guessed at that order let the clear through anyway. NOTHING in this app clears a
+            // grade -- the one place that clears a SIZE writes the field directly, below -- so a
+            // null arriving here has only one possible source.
+            if (value is null && _grade is not null) return;
+
             Set(ref _grade, value);
             Raise(nameof(AllowedSizes));
-            if (_size is not null && !AllowedSizes.Contains(_size)) Size = null;   // grade_size, enforced at entry
+
+            // The box shows what was chosen, not what was typed to find it.
+            _gradeFilter = value?.ShortName ?? "";
+            Raise(nameof(GradeFilter));
+            Raise(nameof(GradePlaceholder));
+
+            // NOT GradeChoices. Raising it here swapped the ComboBox's ItemsSource in the middle of
+            // WPF applying this very selection: the chosen item was not in the new list, so WPF
+            // wrote SelectedItem back to null, which re-entered this setter, which raised again.
+            // That is unbounded recursion, and a StackOverflowException takes the process down
+            // without reaching App's DispatcherUnhandledException handler -- the app simply
+            // vanished the moment a size or grade was picked.
+            //
+            // Nothing is lost by leaving it: GradeChoices already reads as the FULL list once the
+            // box matches what is chosen (see below), and the filter's own setter raises it on the
+            // next keystroke and on the way out of the cell.
+            // grade_size, enforced at entry: the size chosen is not offered under the new grade.
+            // Written through the FIELD, because the setter refuses nulls so that a search miss
+            // cannot empty the cell, and this is the one clear the code actually means. Raising
+            // Size by hand keeps everything downstream identical -- OnLineChanged still sees it,
+            // so the hold on the old bucket is still released.
+            if (_size is not null && !AllowedSizes.Contains(_size))
+            {
+                _size = null;
+                _sizeFilter = "";
+                Raise(nameof(Size));
+                Raise(nameof(SizeFilter));
+                Raise(nameof(SizePlaceholder));
+            }
         }
     }
 
     public IReadOnlyList<SizeBucket> AllowedSizes => Catalogue.SizesFor(_grade);
+
+    // ── typing in a picker narrows it ──────────────────────────────────────
+    //
+    // PER LINE, and that is the whole reason these exist rather than a CollectionView filter.
+    // WPF hands every ItemsControl bound to the same collection the SAME default view, so
+    // filtering it in one cell would filter the picker in every other row at once. A list per
+    // line cannot do that to its neighbours.
+    //
+    // The text is held here too, so a half-typed word survives the row scrolling out of view and
+    // its container being recycled.
+
+    private string _gradeFilter = "", _sizeFilter = "";
+
+    /// What has been typed into the Grade box. Setting it re-narrows GradeChoices and nothing else
+    /// -- in particular it never touches Grade, so text matching nothing cannot silently unset a
+    /// bucket that is already chosen.
+    public string GradeFilter
+    {
+        get => _gradeFilter;
+        set { Set(ref _gradeFilter, value ?? ""); Raise(nameof(GradeChoices)); Raise(nameof(GradePlaceholder)); }
+    }
+
+    public string SizeFilter
+    {
+        get => _sizeFilter;
+        set { Set(ref _sizeFilter, value ?? ""); Raise(nameof(SizeChoices)); Raise(nameof(SizePlaceholder)); }
+    }
+
+    /// <summary>
+    /// The choices, narrowed to what has been typed.
+    ///
+    /// Text that EQUALS what is already chosen is not a search -- it is the box showing the
+    /// selection. Narrowing on it would leave the drop-down offering the one grade already picked,
+    /// so opening it again to change your mind showed a list of one.
+    /// </summary>
+    public IReadOnlyList<Grade> GradeChoices =>
+        _gradeFilter == (_grade?.ShortName ?? "")
+            ? Catalogue.SellableGrades
+            : Narrow(Catalogue.SellableGrades, _gradeFilter, g => g.ShortName, g => g.Code);
+
+    public IReadOnlyList<SizeBucket> SizeChoices =>
+        _sizeFilter == (_size?.ShortName ?? "")
+            ? AllowedSizes
+            : Narrow(AllowedSizes, _sizeFilter, z => z.ShortName, z => z.Code);
+
+    /// <summary>
+    /// The rows whose name or code CONTAINS what was typed, case- and space-insensitively.
+    ///
+    /// Contains rather than StartsWith: the sheet writes "NO 1 BB" and the desk says "BB", and a
+    /// picker that only answers to the first letter is barely faster than scrolling. Spaces are
+    /// dropped from both sides so "no1" finds "NO 1".
+    ///
+    /// An empty box returns EVERYTHING, and so does a search matching nothing -- an empty
+    /// drop-down under a typo looks like a broken picker, and the text is about to be reverted
+    /// anyway. See MainWindow's Picker_LostFocus.
+    /// </summary>
+    private static IReadOnlyList<T> Narrow<T>(IReadOnlyList<T> all, string typed,
+                                              params Func<T, string?>[] fields)
+    {
+        string want = typed.Replace(" ", "").Trim();
+        if (want.Length == 0) return all;
+
+        var hit = all.Where(x => fields.Any(f =>
+                       f(x)?.Replace(" ", "").Contains(want, StringComparison.OrdinalIgnoreCase) == true))
+                     .ToList();
+        return hit.Count > 0 ? hit : all;
+    }
+
+    /// The grey hint shows only on a cell that is both unchosen AND unstarted. An editable combo
+    /// draws the typed text in the same place, so keying off the selection alone left the hint
+    /// sitting on top of what was being typed.
+    public bool GradePlaceholder => _grade is null && _gradeFilter.Length == 0;
+    public bool SizePlaceholder  => _size  is null && _sizeFilter.Length  == 0;
 
 
 
@@ -281,7 +441,22 @@ public sealed class SaleLine : Notifier
 
     private string? _gradeWas, _sizeWas;
 
-    public SizeBucket? Size { get => _size; set => Set(ref _size, value); }
+    public SizeBucket? Size
+    {
+        get => _size;
+        set
+        {
+            // Same guard as Grade above, for the same reason. The one deliberate clear bypasses it
+            // by writing the field.
+            if (value is null && _size is not null) return;
+
+            Set(ref _size, value);
+            _sizeFilter = value?.ShortName ?? "";
+            Raise(nameof(SizeFilter));
+            Raise(nameof(SizePlaceholder));
+            // NOT SizeChoices, for the reason spelled out in the Grade setter above.
+        }
+    }
     public decimal GrossWeightCt { get => _grossWeightCt; set => Set(ref _grossWeightCt, value); }
     public decimal SelectionCt { get => _selectionCt; set => Set(ref _selectionCt, value); }
     public decimal PricePerCt { get => _pricePerCt; set => Set(ref _pricePerCt, value); }
@@ -330,6 +505,183 @@ public sealed class SaleLine : Notifier
     /// instead of adding a second set (EntryStore).
     /// </summary>
     public Guid LineKey { get; init; } = Guid.CreateVersion7();
+
+    // ── the deal this line is sold under ───────────────────────────────────
+    //
+    // PER LINE, on the desk's instruction: every row may name its own buyer, broker, broker
+    // percentage, terms and document type.
+    //
+    // WHAT THE DATABASE CAN HOLD. These six are columns on sales_invoice, not on sales_line --
+    // v_sales_line.amount multiplies by the INVOICE's broker_pct, a receipt and an outstanding
+    // balance and a credit limit and an ageing bucket all key on invoice.buyer_id, and a printed
+    // bill carries one buyer's name at the top. So a row carrying its own deal cannot mean a
+    // second buyer on one invoice; it means the entry produces MORE THAN ONE invoice.
+    //
+    // Rows whose deal is identical are one invoice with several lines -- which is why an entry
+    // where every row names the same buyer still writes exactly one invoice, as it always did.
+    // See InvoiceEntry.Deals.
+
+    private PartyRef? _dealBuyer, _dealBroker;
+    private decimal _dealBrokerPct;
+    private int _dealTermsDays;
+    private string _dealDocType = "BILL";
+
+    public PartyRef? DealBuyer
+    {
+        get => _dealBuyer;
+        set { Set(ref _dealBuyer, value); RaiseDeal(); }
+    }
+
+    public PartyRef? DealBroker
+    {
+        get => _dealBroker;
+        set { Set(ref _dealBroker, value); RaiseDeal(); }
+    }
+
+    public decimal DealBrokerPct
+    {
+        get => _dealBrokerPct;
+        set { Set(ref _dealBrokerPct, value); RaiseDeal(); }
+    }
+
+    public int DealTermsDays
+    {
+        get => _dealTermsDays;
+        set { Set(ref _dealTermsDays, value); RaiseDeal(); }
+    }
+
+    public string DealDocType
+    {
+        get => _dealDocType;
+        set { Set(ref _dealDocType, string.IsNullOrWhiteSpace(value) ? "BILL" : value); RaiseDeal(); }
+    }
+
+    /// <summary>
+    /// The date this line's money is due. Derived, not stored: it is the invoice date plus this
+    /// line's own terms, which is the rule the header has always stated and the one the database
+    /// applies (sales_invoice carries terms_days, never a due date).
+    ///
+    /// SETTABLE, because the drawer offers it as a field and a desk thinks in dates as often as in
+    /// day counts. Setting it writes TERMS, so the two can never disagree -- and a date before the
+    /// invoice date is refused rather than stored as negative terms.
+    /// </summary>
+    public DateOnly DealDueDate
+    {
+        get => Calc.DueDate(DateOnly.FromDateTime(_dealInvoiceDate), Math.Max(_dealTermsDays, 0));
+        set
+        {
+            int days = value.DayNumber - DateOnly.FromDateTime(_dealInvoiceDate).DayNumber;
+            DealTermsDays = Math.Clamp(days, 0, 365);
+        }
+    }
+
+    /// <summary>
+    /// The date this line's invoice is written on, and what its due date is measured from.
+    ///
+    /// PART OF THE DEAL, so it sits in the drawer with the rest of it and two rows dated
+    /// differently are two invoices. sales_invoice.invoice_date is per invoice, so this costs
+    /// nothing to express -- and a desk back-dating one parcel while today's others stand is a
+    /// real thing to want.
+    ///
+    /// The header's Date is the SEED: it fills this in on every new row, so an entry written on
+    /// one day still behaves as one date unless a line is deliberately changed.
+    /// </summary>
+    public DateTime DealDate
+    {
+        get => _dealInvoiceDate;
+        set { Set(ref _dealInvoiceDate, value); RaiseDeal(); }
+    }
+
+    private DateTime _dealInvoiceDate = DateTime.Today;
+
+    internal void SetInvoiceDate(DateTime date)
+    {
+        if (_dealInvoiceDate == date) return;
+        _dealInvoiceDate = date;
+        Raise(nameof(DealDate));
+        RaiseDeal();
+    }
+
+    private void RaiseDeal()
+    {
+        Raise(nameof(DealDueDate));
+        Raise(nameof(DealSummary));
+        Raise(nameof(DealTerms));
+        Raise(nameof(DealLine2));
+        Raise(nameof(HasBuyer));
+        Raise(nameof(DealProblem));
+        Raise(nameof(DealKey));
+    }
+
+    /// <summary>
+    /// What the grid's Deal Details cell reads. Three lines: buyer, broker, then the terms.
+    ///
+    /// Presentation only, and deliberately not the thing anything groups on -- see DealKey. Two
+    /// deals that print the same summary but differ in a field the summary does not show must
+    /// still be two invoices.
+    /// </summary>
+    public string DealBuyerName => _dealBuyer?.Name ?? "No buyer";
+    public string DealBrokerName => _dealBroker?.Name ?? "No broker";
+    public string DealTerms => $"{_dealBrokerPct:0.##}% · {Math.Max(_dealTermsDays, 0)}d · {_dealDocType}";
+
+    /// <summary>
+    /// The cell's second line: broker and terms together.
+    ///
+    /// Three stacked lines needed about 48px and the grid's rows are 42, so the third was sliced
+    /// through the middle -- the deal was the one column on this screen you could not actually
+    /// read. Two lines fit with room to spare, and DealSummary still carries all of it on the
+    /// tooltip, so nothing is lost, only folded.
+    /// </summary>
+    public string DealLine2 =>
+        (_dealBroker is null ? "No broker" : _dealBroker.Name) + " · " + DealTerms;
+    public string DealSummary => $"{DealBuyerName} · {DealBrokerName} · {DealTerms}";
+
+    /// A line with no buyer cannot be sold: sales_invoice.buyer_id is NOT NULL, and the cell says so
+    /// in place of a name rather than leaving the row looking finished.
+    public bool HasBuyer => _dealBuyer is not null;
+
+    /// <summary>
+    /// What is wrong with this line's DEAL, or null. Blocks the save; does NOT block the sums.
+    ///
+    /// Separate from Error, and that separation is the point. Error means the figures cannot be
+    /// computed -- no grade, no weight, a selection above the gross -- so Recalculate zeroes the
+    /// row and waits. A missing buyer is not that: the carats, the rejection and the amount are
+    /// all perfectly well defined, the desk simply has not said who is buying yet. Folding it into
+    /// Error blanked the Amount column on every row until a buyer was picked, which on a
+    /// keyboard-first screen means the figures disappear while they are being typed.
+    ///
+    /// So: reported by Problems(), shown on the Deal Details cell, and ignored by the arithmetic.
+    /// </summary>
+    public string? DealProblem =>
+        _dealBuyer is null ? "Buyer is required — open Deal Details on this line"
+        : _dealTermsDays is < 0 or > 365 ? "Terms must be between 0 and 365 days"
+        : _dealBrokerPct is < 0 or > 100 ? "Broker % must be between 0 and 100"
+        : null;
+
+    /// <summary>
+    /// What makes two lines the SAME invoice. Every field the database stores on sales_invoice,
+    /// and nothing else -- the due date is derived from terms, so including it would be counting
+    /// the same fact twice.
+    /// </summary>
+    public (DateOnly Date, long? Buyer, long? Broker, decimal Pct, int Terms, string Doc) DealKey =>
+        (DateOnly.FromDateTime(_dealInvoiceDate), _dealBuyer?.Id, _dealBroker?.Id,
+         _dealBrokerPct, Math.Max(_dealTermsDays, 0), _dealDocType);
+
+    /// <summary>Copies another line's deal onto this one. The drawer's Save, and a new row's default.</summary>
+    public void TakeDealFrom(SaleLine other)
+    {
+        _dealBuyer = other._dealBuyer;
+        _dealBroker = other._dealBroker;
+        _dealBrokerPct = other._dealBrokerPct;
+        _dealTermsDays = other._dealTermsDays;
+        _dealDocType = other._dealDocType;
+        _dealInvoiceDate = other._dealInvoiceDate;
+
+        Raise(nameof(DealBuyer)); Raise(nameof(DealBroker)); Raise(nameof(DealBrokerPct));
+        Raise(nameof(DealTermsDays)); Raise(nameof(DealDocType)); Raise(nameof(DealDate));
+        Raise(nameof(DealBuyerName)); Raise(nameof(DealBrokerName));
+        RaiseDeal();
+    }
 
     public bool IsBlank => _grade is null && _size is null && _grossWeightCt == 0 && _selectionCt == 0 && _pricePerCt == 0;
 
@@ -434,6 +786,13 @@ public sealed class SaleLine : Notifier
         return (null, false);
     }
 }
+
+/// <summary>
+/// One numbered button in the pager. <paramref name="Current"/> travels WITH the number rather
+/// than being worked out in a trigger: the row is an ItemsControl, and an item that cannot say
+/// whether it is the page you are on would need each button to reach back up the tree to ask.
+/// </summary>
+public sealed record PageChip(int Number, bool Current);
 
 /// <summary>The invoice being typed. Header values apply to every line — broker % included (docs/03 C-7).</summary>
 public sealed class InvoiceEntry : Notifier
@@ -542,6 +901,8 @@ public sealed class InvoiceEntry : Notifier
             Set(ref _selectedBuyer, value);
             Buyer = value?.Name;
             BuyerId = value?.Id;
+            // Down onto every line, for the reason spelled out above the header fields.
+            foreach (var line in Lines) line.DealBuyer = value;
             if (value?.DefaultTermsDays is { } terms && TermsDays == 0) TermsDays = terms;
             Raise(nameof(Buyer));
         }
@@ -555,6 +916,7 @@ public sealed class InvoiceEntry : Notifier
             Set(ref _selectedBroker, value);
             Broker = value?.Name;
             BrokerId = value?.Id;
+            foreach (var line in Lines) line.DealBroker = value;
             if (value?.DefaultBrokerPct is { } pct && BrokerPct == 0) BrokerPct = pct;
             Raise(nameof(Broker));
         }
@@ -571,12 +933,63 @@ public sealed class InvoiceEntry : Notifier
 
     public string Status { get; set; } = InvoiceStatus.DRAFT;
 
-    public DateTime InvoiceDate { get => _invoiceDate; set { Set(ref _invoiceDate, value); Recalculate(); } }
+    public DateTime InvoiceDate
+    {
+        get => _invoiceDate;
+        set
+        {
+            Set(ref _invoiceDate, value);
+            // Every line's due date is measured from it, and the line answers for its own.
+            foreach (var line in Lines) line.SetInvoiceDate(value);
+            Recalculate();
+        }
+    }
+
+    // ── the header fields ──────────────────────────────────────────────────
+    //
+    // NOT on the Sales entry screen any more: the deal is the LINE's, and this markup no longer
+    // offers a global buyer or broker. They stay on the model because the Update modal and a
+    // reopened draft both edit an invoice that already IS one deal, where the header is the only
+    // place that deal can live.
+    //
+    // Setting one PUSHES IT DOWN to every line, which is what keeps those two paths honest: an
+    // invoice opened for correction has one buyer, so its lines must all carry it, so Deals sees
+    // one group and writes one invoice back. Without the push-down a corrected invoice would come
+    // back as a row of buyer-less lines.
     public string? Buyer { get => _buyer; set => Set(ref _buyer, value); }
     public string? Broker { get => _broker; set => Set(ref _broker, value); }
-    public decimal BrokerPct { get => _brokerPct; set { Set(ref _brokerPct, value); Recalculate(); } }
-    public int TermsDays { get => _termsDays; set { Set(ref _termsDays, value); Recalculate(); } }
-    public string DocType { get => _docType; set => Set(ref _docType, value); }
+
+    public decimal BrokerPct
+    {
+        get => _brokerPct;
+        set
+        {
+            Set(ref _brokerPct, value);
+            foreach (var line in Lines) line.DealBrokerPct = value;
+            Recalculate();
+        }
+    }
+
+    public int TermsDays
+    {
+        get => _termsDays;
+        set
+        {
+            Set(ref _termsDays, value);
+            foreach (var line in Lines) line.DealTermsDays = value;
+            Recalculate();
+        }
+    }
+
+    public string DocType
+    {
+        get => _docType;
+        set
+        {
+            Set(ref _docType, value);
+            foreach (var line in Lines) line.DealDocType = value;
+        }
+    }
 
     public decimal TotalCarats { get; private set; }
     public decimal TotalAmount { get; private set; }
@@ -586,6 +999,166 @@ public sealed class InvoiceEntry : Notifier
     public DateOnly DueDate => Calc.DueDate(DateOnly.FromDateTime(InvoiceDate), Math.Max(TermsDays, 0));
 
     public IReadOnlyList<SaleLine> RealLines => Lines.Where(l => !l.IsBlank).ToList();
+
+    // ── what the grid shows: the same lines, narrowed and paged ────────────
+    //
+    // THE SAME OBJECTS, and that is the whole safety story. VisibleLines holds references to the
+    // very SaleLine instances in Lines, so a cell edited through the grid edits the line itself:
+    // the hold it placed, the totals, Problems() and the payload all read Lines and never this.
+    // Filtering and paging change WHAT IS ON SCREEN and nothing else. A view that copied its rows
+    // would silently detach every edit from the invoice.
+
+    /// <summary>The rows the grid is bound to: Lines, less what the filters exclude, one page at a time.</summary>
+    public ObservableCollection<SaleLine> VisibleLines { get; } = [];
+
+    /// 20, matching the reference. A page is a screenful; more and the point of paging is lost,
+    /// fewer and an ordinary invoice needs paging it never wanted.
+    public const int DefaultPageSize = 20;
+
+    /// What the "Show on page by" list offers. A fixed set rather than a free number: a typed page
+    /// size is a box to validate and a way to ask for one row a page.
+    public static readonly IReadOnlyList<int> PageSizes = [10, 20, 50, 100];
+
+    private int _pageSize = DefaultPageSize;
+
+    /// <summary>
+    /// How many rows a page holds. Changing it goes back to the FIRST page: the row that was on
+    /// screen is on a different page now whatever we do, and "page 1" is the one answer that is
+    /// never a page that no longer exists.
+    /// </summary>
+    public int PageSize
+    {
+        get => _pageSize;
+        set
+        {
+            if (value <= 0 || value == _pageSize) return;
+            _pageSize = value;
+            _page = 0;
+            Raise(nameof(PageSize));
+            Repage();
+        }
+    }
+
+    private DateTime? _filterDate;
+    private PartyRef? _filterBuyer, _filterBroker;
+    private string? _filterType;
+    private int _page;
+
+    /// <summary>
+    /// The four filters. Null on each means "no opinion", so an untouched screen shows everything --
+    /// the default the desk asked for, and the reason none of these is an enum with an "All"
+    /// member: absence is easier to reason about than a sentinel.
+    /// </summary>
+    public DateTime? FilterDate   { get => _filterDate;   set { Set(ref _filterDate, value);   Repage(); } }
+    public PartyRef? FilterBuyer  { get => _filterBuyer;  set { Set(ref _filterBuyer, value);  Repage(); } }
+    public PartyRef? FilterBroker { get => _filterBroker; set { Set(ref _filterBroker, value); Repage(); } }
+    public string?   FilterType   { get => _filterType;   set { Set(ref _filterType, value);   Repage(); } }
+
+    public bool AnyFilter => _filterDate is not null || _filterBuyer is not null
+                          || _filterBroker is not null || !string.IsNullOrWhiteSpace(_filterType);
+
+    /// <summary>Every line the filters admit, in the order it was typed.</summary>
+    public IReadOnlyList<SaleLine> FilteredLines =>
+        Lines.Where(l =>
+                 (_filterDate is not { } d || l.DealDate.Date == d.Date)
+              && (_filterBuyer is not { } b || l.DealBuyer?.Id == b.Id)
+              && (_filterBroker is not { } r || l.DealBroker?.Id == r.Id)
+              && (string.IsNullOrWhiteSpace(_filterType)
+                  || string.Equals(l.DealDocType, _filterType, StringComparison.OrdinalIgnoreCase)))
+             .ToList();
+
+    public int PageCount => Math.Max(1, (FilteredLines.Count + PageSize - 1) / PageSize);
+
+    /// Clamped on read as well as on write: rows are removed from under it, and a page number
+    /// pointing past the end would show an empty grid with lines still on the invoice.
+    public int Page
+    {
+        get => Math.Clamp(_page, 0, PageCount - 1);
+        set { _page = Math.Clamp(value, 0, PageCount - 1); Repage(); }
+    }
+
+    public bool HasPages => PageCount > 1;
+    public string PageLabel => $"Page {Page + 1} of {PageCount}";
+
+    /// Whether the chevrons can go anywhere. Disabled at the ends rather than hidden: a control
+    /// that moves out from under the cursor is worse than one that is plainly spent.
+    public bool CanPrevPage => Page > 0;
+    public bool CanNextPage => Page < PageCount - 1;
+
+    /// <summary>
+    /// The numbered buttons, and which one is the page you are on.
+    ///
+    /// A WINDOW OF SEVEN, centred on the current page and clamped to the ends, because the numbers
+    /// are laid out in a row inside a card: forty pages of an entry would push the chevrons off the
+    /// edge of that card, which is the one thing this row must never do. Seven is what the
+    /// reference shows plus room either side.
+    /// </summary>
+    public IReadOnlyList<PageChip> PageNumbers { get; private set; } = [];
+
+    /// How many numbers the row shows at most.
+    public const int PageWindow = 7;
+
+    private IReadOnlyList<PageChip> BuildPageNumbers()
+    {
+        int total = PageCount, here = Page;                 // both 0-based inside, 1-based on screen
+        int first = Math.Max(0, Math.Min(here - PageWindow / 2, total - PageWindow));
+        int last = Math.Min(total - 1, first + PageWindow - 1);
+
+        var chips = new List<PageChip>();
+        for (int i = first; i <= last; i++) chips.Add(new PageChip(i + 1, i == here));
+        return chips;
+    }
+
+    /// <summary>
+    /// What the grid is showing, in words, because a filtered grid that says nothing looks like an
+    /// invoice that has lost rows -- which is exactly the fright a hidden filter gives.
+    /// </summary>
+    public string ShowingLabel =>
+        Lines.Count == FilteredLines.Count
+            ? $"{Lines.Count} row{(Lines.Count == 1 ? "" : "s")}"
+            : $"{FilteredLines.Count} of {Lines.Count} rows shown · filtered";
+
+    /// <summary>
+    /// Rebuilds the page in place.
+    ///
+    /// Cleared and refilled rather than replaced: the grid binds to this collection once, and
+    /// handing it a new one would leave it showing the list as it stood at load -- the same trap
+    /// Catalogue.ActiveSizes documents.
+    /// </summary>
+    public void Repage()
+    {
+        var page = FilteredLines.Skip(Page * PageSize).Take(PageSize).ToList();
+
+        VisibleLines.Clear();
+        foreach (var line in page) VisibleLines.Add(line);
+
+        // Rebuilt here, not computed on demand: the chips carry which one is current, so they have
+        // to be replaced whenever the page moves rather than re-read by a binding that has no
+        // reason to notice.
+        PageNumbers = BuildPageNumbers();
+
+        Raise(nameof(FilteredLines));
+        Raise(nameof(PageCount));
+        Raise(nameof(Page));
+        Raise(nameof(HasPages));
+        Raise(nameof(PageLabel));
+        Raise(nameof(PageNumbers));
+        Raise(nameof(CanPrevPage));
+        Raise(nameof(CanNextPage));
+        Raise(nameof(ShowingLabel));
+        Raise(nameof(AnyFilter));
+    }
+
+    /// <summary>Clears all four filters and returns to the first page.</summary>
+    public void ClearFilters()
+    {
+        _filterDate = null; _filterBuyer = null; _filterBroker = null; _filterType = null;
+        _page = 0;
+
+        Raise(nameof(FilterDate)); Raise(nameof(FilterBuyer));
+        Raise(nameof(FilterBroker)); Raise(nameof(FilterType));
+        Repage();
+    }
 
     /// How many lines actually carry data. Presentation only — it drives the "nothing typed yet"
     /// hint on the entry screen. RealLines is recomputed on demand and raises nothing, so a hint
@@ -605,7 +1178,11 @@ public sealed class InvoiceEntry : Notifier
 
     public void Recalculate()
     {
-        foreach (var line in Lines) line.Recalculate(BrokerPct);
+        // The LINE's broker percentage, not the header's: it is part of that line's own deal now,
+        // and two rows on this screen may be sold at different rates. v_sales_line still multiplies
+        // by the invoice's broker_pct on the server -- which agrees, because lines only share an
+        // invoice when their whole deal matches, percentage included. See Deals.
+        foreach (var line in Lines) line.Recalculate(line.DealBrokerPct);
 
         var real = RealLines;
         TotalCarats = real.Sum(l => l.SelectionCt);
@@ -624,6 +1201,165 @@ public sealed class InvoiceEntry : Notifier
     public string? Validate() => Problems().FirstOrDefault();
 
     /// <summary>
+    /// How many lines a SALE must carry. On the desk's instruction: one line is not enough to
+    /// confirm, and Confirm sale stays off until a second is on the invoice.
+    ///
+    /// Worth knowing before this is relied on: a single-line invoice is ordinary in most trading,
+    /// and this refuses one outright. It is one number to change if that turns out to be wrong.
+    /// </summary>
+    public const int MinLinesToConfirm = 2;
+
+    /// <summary>
+    /// Everything Problems() refuses, PLUS the minimum line count.
+    ///
+    /// Separate from Problems() deliberately, and this is the whole reason it exists as its own
+    /// method. Problems() gates four things: Confirm sale, Print memo, the Update modal, and
+    /// correcting an already-posted invoice. Putting the minimum in there would stop a one-line
+    /// MEMO being printed and make every single-line invoice already on the books uneditable --
+    /// neither of which was asked for. Only confirming a NEW sale carries the rule.
+    /// </summary>
+    /// <summary>
+    /// This invoice as the payload that is saved: the header, and EVERY real line.
+    ///
+    /// Extracted from SaveDraftAsync so the claim "all the rows are sent" can be tested rather than
+    /// read. Confirming two rows and seeing one invoice in the list was reported as a lost line
+    /// four times; the line was never lost, but nothing in the suite could demonstrate that, so
+    /// each answer was another reading of the same code. Now a probe builds three rows and counts
+    /// what comes out.
+    ///
+    /// RealLines, not Lines: a blank row is not a line. That is the same rule the chip, the totals
+    /// and Problems() use, so the payload cannot disagree with what the screen says it holds.
+    /// </summary>
+    /// <summary>
+    /// The invoices this entry would write: its real lines gathered by the deal they are sold
+    /// under, in the order those deals first appear on screen.
+    ///
+    /// ONE GROUP IS THE ORDINARY CASE and the reason this is grouping rather than one-invoice-per-
+    /// row. An entry where every line names the same buyer produces exactly one invoice with every
+    /// line on it, which is what this screen has always done. Rows only separate when their deal
+    /// actually differs -- and then they must, because sales_invoice holds one buyer, one broker,
+    /// one percentage, one terms and one document type, and there is nowhere to put a second.
+    ///
+    /// GroupBy is stable in LINQ-to-Objects, so the lines inside a group stay in the order they
+    /// were typed and the groups stay in the order they were started. Both matter: the order is
+    /// what prints, and the desk reads the confirmation against the screen.
+    /// </summary>
+    public IReadOnlyList<IReadOnlyList<SaleLine>> Deals => GroupDeals(RealLines);
+
+    /// <summary>
+    /// The same grouping, over whichever lines are being acted on.
+    ///
+    /// GroupBy is stable in LINQ-to-Objects, so lines keep the order they were typed and deals the
+    /// order they were started — which is what makes a confirmation readable against the screen.
+    /// </summary>
+    public static IReadOnlyList<IReadOnlyList<SaleLine>> GroupDeals(IEnumerable<SaleLine> lines) =>
+        lines.GroupBy(l => l.DealKey)
+             .Select(g => (IReadOnlyList<SaleLine>)g.ToList())
+             .ToList();
+
+    /// <summary>
+    /// THE TICKED LINES: what Remove, Print memo and Confirm sale all act on.
+    ///
+    /// A tick used to be selection for Remove alone, and the other two acted on the whole entry.
+    /// On the desk's instruction it now scopes all three — so four rows with two ticked confirm
+    /// those two, and the other two stay on screen still holding their carats.
+    ///
+    /// RealLines, so a ticked blank row is not a line. That rule has never moved: the chip, the
+    /// totals and the payload all agree on what counts as one.
+    /// </summary>
+    public IReadOnlyList<SaleLine> SelectedLines => RealLines.Where(l => l.Selected).ToList();
+
+    /// <summary>The invoices the TICKED lines would write, one per deal.</summary>
+    public IReadOnlyList<IReadOnlyList<SaleLine>> SelectedDeals => GroupDeals(SelectedLines);
+
+    /// <summary>
+    /// Every invoice this entry would write, one per deal. The lines' own buyer and terms, not the
+    /// header's -- ToDraft below is what the Update modal still uses, where an invoice already IS
+    /// one deal and the header is the only place it lives.
+    ///
+    /// Each carries its OWN client_ref rather than the entry's. They are separate documents and
+    /// the id is what makes a retry idempotent per document; sharing one would make a replay of
+    /// the second invoice collide with the first.
+    /// </summary>
+    public IReadOnlyList<DraftInvoice> ToDrafts(long currencyId) => ToDrafts(currencyId, RealLines);
+
+    /// <summary>The same, over whichever lines are being confirmed or printed.</summary>
+    public IReadOnlyList<DraftInvoice> ToDrafts(long currencyId, IEnumerable<SaleLine> lines_) =>
+        GroupDeals(lines_).Select(lines =>
+        {
+            var head = lines[0];
+            return new DraftInvoice(
+                null, Guid.CreateVersion7(), DateOnly.FromDateTime(head.DealDate),
+                head.DealBuyer!.Id, head.DealBroker?.Id, head.DealBrokerPct,
+                Math.Max(head.DealTermsDays, 0), head.DealDocType, currencyId,
+                lines.Select(l => new DraftLine(
+                    l.Grade!.GradeId, l.Size!.SizeId, l.GrossWeightCt, l.SelectionCt,
+                    l.PricePerCt, l.ExRate, l.Less1Pct, l.Less2Pct, l.Remark)).ToList());
+        }).ToList();
+
+    public DraftInvoice ToDraft(long buyerId, long currencyId) =>
+        new(InvoiceId, ClientRef, DateOnly.FromDateTime(InvoiceDate), buyerId, BrokerId,
+            BrokerPct, TermsDays, DocType, currencyId,
+            RealLines.Select(l => new DraftLine(
+                l.Grade!.GradeId, l.Size!.SizeId, l.GrossWeightCt, l.SelectionCt,
+                l.PricePerCt, l.ExRate, l.Less1Pct, l.Less2Pct, l.Remark)).ToList());
+
+    /// <summary>
+    /// What stops the TICKED lines being acted on, or nothing.
+    ///
+    /// NOTHING TICKED IS A REFUSAL, not an empty action. Confirm sale and Print memo are only on
+    /// screen once a row is ticked, but a keyboard or a stale click can still reach them, and a
+    /// button that quietly does nothing is worse than one that says why.
+    /// </summary>
+    public IReadOnlyList<string> SelectionProblems(string action)
+    {
+        // AN EMPTY ENTRY IS NOT A TICKING PROBLEM. With no row to tick, "nothing is selected" tells
+        // the desk to do something it cannot; "An invoice needs at least one line" is the fault, and
+        // Problems() already says it. This is also what keeps the block chip -- which reads
+        // ConfirmProblems() on every keystroke -- from nagging about ticks on a blank screen.
+        if (RealLines.Count == 0) return Problems();
+
+        var ticked = SelectedLines;
+        return ticked.Count == 0
+            ? [$"{NothingTicked} {action} — nothing is selected"]
+            : Problems(ticked);
+    }
+
+    /// <summary>
+    /// How a "nothing is ticked" refusal opens.
+    ///
+    /// Named so the screen can tell it apart from a FIELD fault. It belongs to no box and no row --
+    /// nothing is wrong with the invoice, the desk simply has not ticked anything -- and the code
+    /// that pins a refusal to the control at fault has to know not to try, or it pins this one to
+    /// whichever cell happens to be unfinished and writes "Tick the lines to confirm" over a Size
+    /// dropdown.
+    /// </summary>
+    public const string NothingTicked = "Tick the lines to";
+
+    /// <summary>What stops the TICKED lines being confirmed. The button state and the chip read this.</summary>
+    public IReadOnlyList<string> ConfirmProblems() => ConfirmProblems(null);
+
+    /// <summary>
+    /// The same, over an explicit set — the row a per-row Confirm icon sits on, which is its own
+    /// selection and is not required to be ticked.
+    /// </summary>
+    public IReadOnlyList<string> ConfirmProblems(IReadOnlyList<SaleLine>? chosen)
+    {
+        var found = (chosen is null ? SelectionProblems("confirm") : Problems(chosen)).ToList();
+
+        // ON THE ENTRY, not on the selection. The rule guards a half-typed SCREEN -- one line is
+        // not an invoice worth confirming -- and applying it to the ticks instead would forbid
+        // confirming a single row out of four, which is the whole point of ticking.
+        //
+        // Only once there IS a line: an empty invoice already says "needs at least one line", and
+        // two refusals for one blank screen is noise.
+        if (RealLines.Count is > 0 && RealLines.Count < MinLinesToConfirm)
+            found.Add($"A sale needs at least {MinLinesToConfirm} lines — this one has {RealLines.Count}");
+
+        return found;
+    }
+
+    /// <summary>
     /// EVERYTHING wrong with the invoice, header first, then the lines in the order they sit on
     /// screen. Validate() is the first of these, so every existing caller sees exactly what it saw
     /// before -- one rule set, two shapes, rather than a second list that drifts out of step.
@@ -632,29 +1368,38 @@ public sealed class InvoiceEntry : Notifier
     /// it, being told "Line 2: Selection is above weight", fixing that, and being told about line 4
     /// is three refusals for one click. The desk should see the whole of what is wrong at once.
     /// </summary>
-    public IReadOnlyList<string> Problems()
+    public IReadOnlyList<string> Problems() => Problems(RealLines);
+
+    /// <summary>
+    /// The same rules, over whichever lines are being acted on — the whole entry for a memo save
+    /// or a correction, the TICKED ones for Confirm sale and Print memo.
+    ///
+    /// Numbered by the row's place in the GRID, not its place in the subset, so "Line 3" is the
+    /// third row on screen whether or not rows one and two are ticked.
+    /// </summary>
+    public IReadOnlyList<string> Problems(IReadOnlyList<SaleLine> lines)
     {
         var found = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(Buyer)) found.Add("Buyer is required");
+        // Buyer, terms and broker % are checked ON THE LINE now (see SaleLine.Validate) -- they are
+        // the line's own since the deal moved onto the row, and a single header message could only
+        // ever name one of however many rows were missing one. They still block the save exactly as
+        // they did; the difference is that the refusal says WHICH line.
 
-        // The same 0-365 rule the Add buyer dialog enforces (MainWindow.ValidateBuyer). It was
-        // missing here, so terms of 9,999 days were accepted on the invoice itself and put the due
-        // date decades out. One rule, both places.
-        if (TermsDays is < 0 or > 365) found.Add("Terms must be between 0 and 365 days");
-
-        // Broker % is a header field, but the only thing checking it was Calc.Pct() throwing once
-        // per line — so an out-of-range percentage reddened every row with "Broker % is out of
-        // range" and sent the user hunting through the grid for a fault in the header.
-        if (BrokerPct is < 0 or > 100) found.Add("Broker % must be between 0 and 100");
-
-        if (RealLines.Count == 0)
+        if (lines.Count == 0)
             found.Add("An invoice needs at least one line");
         else
             // Not FirstOrDefault: a half-filled row three lines down is as much a reason to refuse
             // as the first one, and hiding it until the first is fixed makes the refusal look new.
-            found.AddRange(RealLines.Where(l => l.Error is not null)
-                                    .Select(l => $"Line {Lines.IndexOf(l) + 1}: {l.Error}"));
+            //
+            // The figures first, then the deal, per line -- so a row that is wrong in both says so
+            // once about each rather than hiding one behind the other. Three rows short of a buyer
+            // are three refusals, and the desk fixes them in one pass.
+            foreach (var l in lines)
+            {
+                if (l.Error is { } bad) found.Add($"Line {Lines.IndexOf(l) + 1}: {bad}");
+                if (l.DealProblem is { } deal) found.Add($"Line {Lines.IndexOf(l) + 1}: {deal}");
+            }
 
         return found;
     }
@@ -667,7 +1412,41 @@ public sealed class InvoiceEntry : Notifier
             LineDropped?.Invoke(line);
         }
 
-        foreach (SaleLine line in e.NewItems ?? Array.Empty<object>()) line.PropertyChanged += OnLineChanged;
+        foreach (SaleLine line in e.NewItems ?? Array.Empty<object>())
+        {
+            line.PropertyChanged += OnLineChanged;
+
+            // A NEW ROW NAMES NOBODY. It used to copy the deal off the row above it, on the theory
+            // that most entries are several parcels to one buyer -- but that made a buyer appear in
+            // Deal Details that the desk had never chosen for that line, on a screen whose whole
+            // point is that the deal belongs to the row. Pressing Add line and finding the drawer
+            // already filled in is the global Buyer field back in everything but name.
+            //
+            // THE HEADER'S DEAL IS STILL INHERITED, and only the header's. That is the path a
+            // reopened draft, a restored entry and the Update modal all come in on: each sets the
+            // buyer first and adds the lines after, and without this every line arrived sold to
+            // nobody on an invoice that plainly has one. A fresh entry has no header deal -- nobody
+            // can set one, there is no control for it -- so a row typed by hand starts empty.
+            //
+            // Keyed on the DEAL being unset, not on the row being blank: a line arrives carrying
+            // figures often enough (the importer, the Update modal, every test), and gating on
+            // IsBlank left all of those sold to nobody. A line that already names a buyer is never
+            // touched.
+            if (line.DealBuyer is null && _selectedBuyer is not null)
+            {
+                line.DealBuyer = _selectedBuyer;
+                line.DealBroker = _selectedBroker;
+                line.DealBrokerPct = _brokerPct;
+                line.DealTermsDays = _termsDays;
+                line.DealDocType = _docType;
+            }
+
+            line.SetInvoiceDate(_invoiceDate);
+        }
+
+        // A row added or removed changes what the page holds, and can change how many pages there
+        // are. Rebuilt here so the grid never shows a line the invoice no longer has.
+        Repage();
 
         Recalculate();
     }
@@ -683,6 +1462,14 @@ public sealed class InvoiceEntry : Notifier
 
     private void OnLineChanged(object? sender, PropertyChangedEventArgs e)
     {
+        // A line's DEAL decides whether a filter admits it, so editing the buyer on a row while a
+        // buyer filter is set can move that row off the page it is sitting on. Rebuilt only when a
+        // filter is actually set: with none, every line is on the page already and this would be a
+        // rebuild per keystroke for no visible change.
+        if (AnyFilter && e.PropertyName is nameof(SaleLine.DealBuyer) or nameof(SaleLine.DealBroker)
+                                        or nameof(SaleLine.DealDocType) or nameof(SaleLine.DealDate))
+            Repage();
+
         if (sender is SaleLine changed
             && e.PropertyName is nameof(SaleLine.Grade) or nameof(SaleLine.Size)
                               or nameof(SaleLine.GrossWeightCt))
@@ -700,7 +1487,21 @@ public sealed class InvoiceEntry : Notifier
             // Selectable is derived from IsBlank and raised BY Recalculate, so reacting to it sent
             // the whole invoice straight back into Recalculate -- a stack overflow, not a slow
             // screen. Same reason RejectionCt and Amount are on this list.
-            or nameof(SaleLine.Selectable)) return;
+            or nameof(SaleLine.Selectable)
+            // Typing in a picker narrows a list. It moves no figure, so rebuilding every total on
+            // the invoice per keystroke would be work with no reader -- and GradeChoices is raised
+            // BY the filter's setter, which is the same recursion Selectable caused.
+            or nameof(SaleLine.GradeFilter) or nameof(SaleLine.SizeFilter)
+            or nameof(SaleLine.GradeChoices) or nameof(SaleLine.SizeChoices)
+            or nameof(SaleLine.GradePlaceholder) or nameof(SaleLine.SizePlaceholder)
+            // The deal's DERIVED faces. Every one of them is raised BY a deal setter that has
+            // already asked for a recalculate, so reacting to them would run the whole invoice
+            // again once per field -- the same recursion Selectable caused. The deal fields
+            // themselves are NOT on this list: DealBrokerPct moves every amount on the row.
+            or nameof(SaleLine.DealSummary) or nameof(SaleLine.DealTerms) or nameof(SaleLine.DealLine2)
+            or nameof(SaleLine.DealDueDate) or nameof(SaleLine.DealKey)
+            or nameof(SaleLine.HasBuyer)
+            or nameof(SaleLine.DealBuyerName) or nameof(SaleLine.DealBrokerName)) return;
         Recalculate();
     }
 }

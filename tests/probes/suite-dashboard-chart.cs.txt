@@ -1,4 +1,4 @@
-// The Sales trend axis, and the breakdown header that changes with the widget.
+﻿// The Sales trend axis, and the breakdown header that changes with the widget.
 //
 // NO DATABASE. AxisScale is pure, and the header controls are measured on a real window.
 //
@@ -80,7 +80,7 @@ var t = new Thread(() =>
                  "Themes/LightTheme.xaml", "Themes/Typography.xaml", "Styles/Buttons.xaml",
                  "Styles/Inputs.xaml", "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
                  "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
-                 "Styles/Audit.xaml",
+                 "Styles/Audit.xaml", "Styles/Catalogue.xaml",
              })
         app.Resources.MergedDictionaries.Add(new ResourceDictionary
         { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
@@ -147,7 +147,7 @@ var t = new Thread(() =>
         new Action(() => settle.Continue = false));
     System.Windows.Threading.Dispatcher.PushFrame(settle);
 
-    say.Invoke(win, ["on the UI thread", false]);
+    say.Invoke(win, ["on the UI thread", false, false, false]);
     Check("SAY - still writes straight through on the UI thread",
           status.Text.Contains("on the UI thread"), status.Text);
 
@@ -165,7 +165,7 @@ var t = new Thread(() =>
     Exception? offThread = null;
     var worker = new Thread(() =>
     {
-        try { say.Invoke(win, ["from a background thread", false]); }
+        try { say.Invoke(win, ["from a background thread", false, false, false]); }
         catch (Exception ex) { offThread = ex.InnerException ?? ex; }
     });
     worker.Start();

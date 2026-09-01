@@ -68,7 +68,7 @@ var t = new Thread(() =>
                  "Themes/LightTheme.xaml", "Themes/Typography.xaml", "Styles/Buttons.xaml",
                  "Styles/Inputs.xaml", "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
                  "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
-                 "Styles/Audit.xaml",
+                 "Styles/Audit.xaml", "Styles/Catalogue.xaml",
              })
         app.Resources.MergedDictionaries.Add(new ResourceDictionary
         { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });

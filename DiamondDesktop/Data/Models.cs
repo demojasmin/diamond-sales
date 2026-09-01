@@ -330,6 +330,13 @@ public class VSalesLine : BaseModel
     [Column("amount_pre_broker")] public decimal AmountPreBroker { get; set; }
     [Column("remark")] public string? Remark { get; set; }
     [Column("updated_at")] public DateTime UpdatedAt { get; set; }
+
+    /// The grade and sieve as the desk writes them, exactly as VStockPosition names them. The
+    /// Invoices page's LINES grid has always bound to these two; without them here both bindings
+    /// resolved to nothing, so every line on that panel drew with a blank grade and a blank size
+    /// -- two lines that look identical, and neither of them looks like the row that was typed.
+    public string GradeShort => GradeNames.Short(GradeCode);
+    public string SizeShort => SizeNames.Short(SizeCode);
 }
 
 [Table("v_invoice")]
@@ -360,6 +367,16 @@ public class VInvoice : BaseModel
     [Column("cost_total")] public decimal? CostTotal { get; set; }
     [Column("margin")] public decimal? Margin { get; set; }
     [Column("cost_coverage")] public decimal CostCoverage { get; set; }
+
+    /// <summary>
+    /// How many lines are on this invoice (0046).
+    ///
+    /// On the LIST, not only in the detail drawer. The drawer opens on selection and stands down
+    /// entirely on a narrow window, so an invoice of two lines read exactly like an invoice of one
+    /// unless somebody clicked it -- which is how "I confirmed two rows and the page shows one"
+    /// kept being reported against an invoice that had both rows all along.
+    /// </summary>
+    [Column("line_count")] public int LineCount { get; set; }
     [Column("broker_payable")] public decimal BrokerPayable { get; set; }
     [Column("due_date")] public DateOnly DueDate { get; set; }
     [Column("is_overdue")] public bool IsOverdue { get; set; }

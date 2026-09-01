@@ -1,0 +1,583 @@
+﻿// A TICK IS A SELECTION, and it now scopes all three actions on the sales entry.
+//
+// It used to scope Remove alone: Print memo printed the whole entry and Confirm sale sold the
+// whole entry, however few rows were ticked -- so "Confirm sale · 2 lines" on a four-row entry
+// sold four, and the two rows the desk thought it had held were gone with the rest. This suite is
+// the check on that: what is ticked is what is acted on, what is not stays put, and nothing
+// merges that should not.
+//
+// NO DATABASE. The payload is built by InvoiceEntry itself, so which rows go and which stay is
+// answerable without a round trip -- and the parts that ARE round trips (releasing one line's
+// hold rather than the entry's) are asserted against the handler's own source, since a probe
+// cannot post.
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+
+    var app = new Application();
+    foreach (string d in new[]
+             {
+                 "Themes/LightTheme.xaml", "Themes/Typography.xaml", "Styles/Buttons.xaml",
+                 "Styles/Inputs.xaml", "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
+                 "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
+                 "Styles/Audit.xaml", "Styles/Catalogue.xaml",
+             })
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    // ── four rows, two buyers ──────────────────────────────────────────────
+    Catalogue.Grades.Clear();
+    Catalogue.AllSizes.Clear();
+    var noii = new Grade { GradeId = 5, Code = "NO II" };
+    var no2 = new Grade { GradeId = 6, Code = "NO 2" };
+    var s65 = new SizeBucket { SizeId = 3, Code = "+6.5" };
+    var m65 = new SizeBucket { SizeId = 4, Code = "-6.5" };
+    Catalogue.Grades.Add(noii); Catalogue.Grades.Add(no2);
+    Catalogue.AllSizes.Add(s65); Catalogue.AllSizes.Add(m65);
+
+    var abc = new PartyRef(11, "ABC EXPORTS", 30);
+    var xyz = new PartyRef(12, "XYZ GEMS", 60);
+
+    // Rows 1 and 2 are ABC's, rows 3 and 4 are XYZ's. Two deals, so the grouping has something to
+    // get wrong: a subset must not merge two buyers, and must not split one.
+    InvoiceEntry Build()
+    {
+        var e = new InvoiceEntry { InvoiceDate = new DateTime(2026, 8, 26), TermsDays = 30 };
+        e.Buyers.Add(abc); e.Buyers.Add(xyz);
+        e.Lines.Clear();
+        for (int i = 0; i < 4; i++)
+        {
+            var line = new SaleLine
+            {
+                Grade = i < 2 ? noii : no2,
+                Size = i % 2 == 0 ? s65 : m65,
+                GrossWeightCt = 1m + i,
+                SelectionCt = 1m + i,
+                PricePerCt = 1000m * (i + 1),
+                DealBuyer = i < 2 ? abc : xyz,
+                DealTermsDays = i < 2 ? 30 : 60,
+                DealDocType = "BILL",
+            };
+            line.DealDate = new DateTime(2026, 8, 26);
+            e.Lines.Add(line);
+        }
+        e.Recalculate();
+        return e;
+    }
+
+    long cur = 1;   // any currency id: the payload carries it through untouched
+
+    var inv = Build();
+    Check("SETUP - four real lines, none ticked",
+          inv.RealLines.Count == 4 && inv.SelectedLines.Count == 0,
+          $"{inv.RealLines.Count} lines, {inv.SelectedLines.Count} ticked");
+    Check("SETUP - and nothing wrong with any of them",
+          inv.Problems().Count == 0, string.Join(" | ", inv.Problems()));
+
+    // ── 1 of 4 ─────────────────────────────────────────────────────────────
+    inv.Lines[0].Selected = true;
+    var one = inv.ToDrafts(cur, inv.SelectedLines);
+    Check("1/4 - one ticked row writes one invoice", one.Count == 1, $"{one.Count}");
+    Check("1/4 - carrying that row alone", one[0].Lines.Count == 1, $"{one[0].Lines.Count}");
+    Check("1/4 - and its buyer, not the entry's first",
+          one[0].BuyerId == abc.Id, $"{one[0].BuyerId}");
+    Check("1/4 - the other three are untouched and still on the entry",
+          inv.RealLines.Count == 4 && inv.SelectedLines.Count == 1,
+          $"{inv.RealLines.Count} lines, {inv.SelectedLines.Count} ticked");
+    // The minimum-line rule is about the SCREEN, not the ticks: one row out of four is exactly
+    // what ticking is for, and refusing it would make the whole feature unusable.
+    Check("1/4 - a single ticked row is confirmable when the entry has four",
+          inv.ConfirmProblems().Count == 0, string.Join(" | ", inv.ConfirmProblems()));
+
+    // ── 2 of 4, same deal ──────────────────────────────────────────────────
+    inv.Lines[1].Selected = true;
+    var two = inv.ToDrafts(cur, inv.SelectedLines);
+    Check("2/4 - two rows of ONE deal write ONE invoice, not two",
+          two.Count == 1, $"{two.Count}");
+    Check("2/4 - with both lines on it", two[0].Lines.Count == 2, $"{two[0].Lines.Count}");
+    Check("2/4 - and its total is those two rows, not all four",
+          two[0].Lines.Sum(l => l.GrossWeightCt) == 3m,
+          $"{two[0].Lines.Sum(l => l.GrossWeightCt)} ct");
+
+    // ── 2 of 4, different deals: no incorrect merging ──────────────────────
+    inv.Lines[1].Selected = false;
+    inv.Lines[2].Selected = true;                 // row 1 (ABC) + row 3 (XYZ)
+    var split = inv.ToDrafts(cur, inv.SelectedLines);
+    Check("2/4 - two rows of two deals write TWO invoices",
+          split.Count == 2, $"{split.Count}");
+    Check("2/4 - one per buyer, neither merged into the other",
+          split[0].BuyerId == abc.Id && split[1].BuyerId == xyz.Id
+          && split[0].Lines.Count == 1 && split[1].Lines.Count == 1,
+          $"{split[0].BuyerId}/{split[0].Lines.Count}, {split[1].BuyerId}/{split[1].Lines.Count}");
+    Check("2/4 - and each keeps its own terms",
+          split[0].TermsDays == 30 && split[1].TermsDays == 60,
+          $"{split[0].TermsDays}d, {split[1].TermsDays}d");
+    // Every draft carries its OWN client_ref. It is what makes a retry idempotent per document,
+    // and -- because release_on_post deletes reservations BY client_ref -- it is also what stops
+    // posting one invoice releasing the holds of the rows still on the entry.
+    Check("2/4 - each invoice carries its own client_ref, so a post cannot release the rest",
+          split[0].ClientRef != split[1].ClientRef
+          && split[0].ClientRef != inv.ClientRef && split[1].ClientRef != inv.ClientRef,
+          "distinct from each other and from the entry");
+
+    // ── all four ───────────────────────────────────────────────────────────
+    foreach (var l in inv.Lines) l.Selected = true;
+    var all = inv.ToDrafts(cur, inv.SelectedLines);
+    var whole = inv.ToDrafts(cur);
+    Check("4/4 - ticking everything is the same as the whole entry",
+          all.Count == whole.Count && all.Count == 2
+          && all.Sum(d => d.Lines.Count) == whole.Sum(d => d.Lines.Count),
+          $"{all.Count} invoices, {all.Sum(d => d.Lines.Count)} lines");
+    Check("4/4 - which is still one invoice per deal, not one per row",
+          all.Sum(d => d.Lines.Count) == 4, $"{all.Sum(d => d.Lines.Count)}");
+
+    // ── nothing ticked is a refusal, not an empty action ───────────────────
+    foreach (var l in inv.Lines) l.Selected = false;
+    var none = inv.ConfirmProblems();
+    Check("NONE - with nothing ticked, confirming is refused",
+          none.Count == 1 && none[0].Contains("nothing is selected"), string.Join(" | ", none));
+    Check("NONE - and it says what to do about it",
+          none[0].StartsWith("Tick the lines to confirm"), none[0]);
+    Check("NONE - the same refusal for printing",
+          inv.SelectionProblems("print")[0].StartsWith("Tick the lines to print"),
+          inv.SelectionProblems("print")[0]);
+    Check("NONE - and the payload it would build is empty, so nothing could post anyway",
+          inv.ToDrafts(cur, inv.SelectedLines).Count == 0);
+
+    // An EMPTY entry says what is actually wrong with it. "Nothing is selected" on a screen with
+    // no row to select is an instruction the desk cannot follow -- and the block chip reads this
+    // on every keystroke.
+    var blank = new InvoiceEntry();
+    Check("NONE - an untouched screen is told it needs a line, not told to tick one",
+          blank.ConfirmProblems().Any(x => x == "An invoice needs at least one line")
+          && !blank.ConfirmProblems().Any(x => x.Contains("nothing is selected")),
+          string.Join(" | ", blank.ConfirmProblems()));
+
+    // ── a ticked row that is wrong blocks the ticked rows, not the rest ────
+    var mixed = Build();
+    mixed.Lines[3].DealBuyer = null;              // row 4 has no buyer
+    mixed.Lines[0].Selected = true;
+    Check("VALID - a fault on an UNTICKED row does not block the ticked ones",
+          mixed.ConfirmProblems().Count == 0, string.Join(" | ", mixed.ConfirmProblems()));
+    mixed.Lines[3].Selected = true;
+    Check("VALID - but ticking it refuses, naming its place in the GRID",
+          mixed.ConfirmProblems().Any(x => x.StartsWith("Line 4:")),
+          string.Join(" | ", mixed.ConfirmProblems()));
+
+    // ── filters and paging do not change what is ticked ────────────────────
+    // VisibleLines is Lines narrowed and paged; the tick lives on the LINE. So a row ticked and
+    // then filtered off the screen is still confirmed -- and the count on the button, which reads
+    // Lines too, still agrees with it.
+    var paged = Build();
+    paged.Lines[0].Selected = true;
+    paged.Lines[3].Selected = true;
+    paged.FilterBuyer = xyz;                      // hides rows 1 and 2
+    Check("FILTER - the filter narrows the grid",
+          paged.FilteredLines.Count == 2, $"{paged.FilteredLines.Count} of 4 shown");
+    Check("FILTER - but not the selection: both ticked rows still count",
+          paged.SelectedLines.Count == 2, $"{paged.SelectedLines.Count}");
+    Check("FILTER - and both are still what would be confirmed",
+          paged.ToDrafts(cur, paged.SelectedLines).Sum(d => d.Lines.Count) == 2,
+          $"{paged.ToDrafts(cur, paged.SelectedLines).Sum(d => d.Lines.Count)} line(s)");
+    paged.ClearFilters();
+    Check("FILTER - clearing it puts every row back and keeps the ticks",
+          paged.FilteredLines.Count == 4 && paged.SelectedLines.Count == 2,
+          $"{paged.FilteredLines.Count} shown, {paged.SelectedLines.Count} ticked");
+    Check("FILTER - paging is unchanged: one page holds an ordinary entry",
+          paged.PageCount == 1 && paged.VisibleLines.Count == 4,
+          $"{paged.PageCount} page(s), {paged.VisibleLines.Count} rows");
+
+    // ── each of the four filters actually narrows ──────────────────────────
+    // Read one at a time, cleared between, because a filter that is never exercised alone can be
+    // carried by another one and look as though it works.
+    var f = Build();
+    f.Lines[0].DealDate = new DateTime(2026, 9, 9);
+    f.Lines[0].DealDocType = "MEMO";
+    Check("FILTER - by DATE",
+          Narrow(f, () => f.FilterDate = new DateTime(2026, 9, 9)) == 1
+          && Narrow(f, () => f.FilterDate = new DateTime(2026, 8, 26)) == 3,
+          "one row moved to 09-09, three left on 26-08");
+    Check("FILTER - by BUYER",
+          Narrow(f, () => f.FilterBuyer = abc) == 2 && Narrow(f, () => f.FilterBuyer = xyz) == 2);
+    Check("FILTER - by BROKER, and an unset broker is not a match for one that is set",
+          Narrow(f, () => f.FilterBroker = abc) == 0, "no line names a broker");
+    Check("FILTER - by TYPE",
+          Narrow(f, () => f.FilterType = "MEMO") == 1
+          && Narrow(f, () => f.FilterType = "BILL") == 3);
+    Check("FILTER - and two together narrow to the intersection",
+          Narrow(f, () => { f.FilterBuyer = abc; f.FilterType = "BILL"; }) == 1,
+          "ABC's rows are 1 and 2; row 1 is the MEMO");
+    Check("FILTER - Clear puts every row back",
+          Narrow(f, () => { }) == 4);
+
+    int Narrow(InvoiceEntry e, Action set) { e.ClearFilters(); set(); return e.FilteredLines.Count; }
+
+    // ── a new row names nobody ─────────────────────────────────────────────
+    // It used to copy the deal off the row above, so pressing Add line and opening Deal Details
+    // showed a buyer the desk had never chosen for that line -- the global Buyer field back in
+    // everything but name, on the screen built to get rid of it.
+    var fresh = new InvoiceEntry();
+    fresh.Lines.Clear();
+    var first = new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m,
+                               PricePerCt = 1000m, DealBuyer = abc, DealBroker = xyz,
+                               DealTermsDays = 30, DealDocType = "BILL" };
+    fresh.Lines.Add(first);
+    var second = new SaleLine();
+    fresh.Lines.Add(second);
+    Check("NEWROW - a row added under a filled one starts with no buyer",
+          second.DealBuyer is null, second.DealBuyerName);
+    // Type is SaleLine's own default and always has been -- every sale is a bill unless somebody
+    // says otherwise -- so it is not the row above leaking through.
+    Check("NEWROW - and no broker or terms either",
+          second.DealBroker is null && second.DealTermsDays == 0,
+          $"{second.DealBroker?.Name ?? "none"}, {second.DealTermsDays}d, type {second.DealDocType}");
+    Check("NEWROW - the row above is untouched",
+          first.DealBuyer?.Id == abc.Id && first.DealTermsDays == 30, first.DealBuyerName);
+    // It still takes the entry's DATE, which is the one thing that is the entry's rather than the
+    // row's -- and a blank row is not a line, so it refuses nothing yet.
+    Check("NEWROW - but it does take the entry's date, and is not a line to refuse",
+          second.DealDate.Date == fresh.InvoiceDate.Date && fresh.RealLines.Count == 1,
+          $"{second.DealDate:dd-MM-yyyy}, {fresh.RealLines.Count} real line(s)");
+
+    // THE HEADER'S DEAL IS STILL INHERITED. A reopened draft, a restored entry and the Update
+    // modal all set the buyer first and add the lines after; without this every line arrived sold
+    // to nobody on an invoice that plainly has a buyer.
+    var reopened = new InvoiceEntry();
+    reopened.Lines.Clear();
+    reopened.Buyers.Add(abc);
+    reopened.SelectedBuyer = abc;
+    var loaded = new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m };
+    reopened.Lines.Add(loaded);
+    Check("NEWROW - but a line loaded under a header that names a buyer still takes it",
+          loaded.DealBuyer?.Id == abc.Id, loaded.DealBuyerName);
+
+    // ── the window: the buttons say what they will do ──────────────────────
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+                               Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1400 };
+    win.Show();
+
+    var entryField = typeof(MainWindow).GetField("_invoice",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var live = (InvoiceEntry)entryField.GetValue(win)!;
+    live.Lines.Clear();
+    foreach (var l in Build().Lines) live.Lines.Add(l);
+    live.Recalculate();
+
+    // Lets WPF finish a layout pass, so ActualWidth and the transforms below are real numbers.
+    static void Settle()
+    {
+        var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+            new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f);
+    }
+
+    var tick = typeof(MainWindow).GetMethod("TickCountChanged",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    static string Label(Button b) =>
+        ((StackPanel)b.Content).Children.OfType<TextBlock>().First().Text;
+
+    var post = (Button)win.FindName("Post")!;
+    var memo = (Button)win.FindName("SaveDraft")!;
+    var del = (Button)win.FindName("DeleteLines")!;
+
+    // ── one date box on the page, not two ─────────────────────────────────
+    // The entry's own date sat four inches from the filter's, same shape, one narrowing what is
+    // shown and the other setting what is written. The control stays as an anchor because
+    // InvoiceDate is what a new row's date is seeded from and what the Update modal reads.
+    var entryDate = (DatePicker)win.FindName("InvoiceDatePicker")!;
+    var filterDate = (DatePicker)win.FindName("LineFilterDate")!;
+    Check("DATE - the entry's own date box is off the screen and out of the tab order",
+          entryDate.Visibility == Visibility.Collapsed && !entryDate.IsTabStop,
+          $"{entryDate.Visibility}, tab stop {entryDate.IsTabStop}");
+    Check("DATE - but still bound, so InvoiceDate has not gone with it",
+          System.Windows.Data.BindingOperations.GetBindingExpression(
+              entryDate, DatePicker.SelectedDateProperty) is not null);
+    Check("DATE - and the filter is the SAME control the Invoices page filters by",
+          filterDate.Style == win.FindResource("AppDatePicker")
+          && filterDate.Width == ((DatePicker)win.FindName("InvoiceDateFilter")!).Width,
+          $"{filterDate.Width}px");
+
+    // PickerSearch was set on both party filters and could not work: it refuses to wrap a bound
+    // ItemsSource, and these are bound. What it DID do was make the box editable, so a name typed
+    // into it was accepted, matched nothing, and was silently replaced when focus left.
+    var fBuyer = (ComboBox)win.FindName("LineFilterBuyer")!;
+    var fBroker = (ComboBox)win.FindName("LineFilterBroker")!;
+    Check("FILTER - the party filters are plain pick-lists, not half-working search boxes",
+          !fBuyer.IsEditable && !fBroker.IsEditable,
+          $"buyer editable={fBuyer.IsEditable}, broker editable={fBroker.IsEditable}");
+    Check("FILTER - and they still hold their bindings",
+          System.Windows.Data.BindingOperations.GetBindingExpressionBase(
+              fBuyer, ItemsControl.ItemsSourceProperty) is not null
+          && System.Windows.Data.BindingOperations.GetBindingExpressionBase(
+              fBroker, System.Windows.Controls.Primitives.Selector.SelectedItemProperty) is not null);
+
+    live.Lines[0].Selected = true;
+    live.Lines[1].Selected = true;
+    tick.Invoke(win, null);
+
+    Check("LABEL - Confirm sale counts the ticked rows",
+          Label(post) == "Confirm sale · 2 lines", Label(post));
+    Check("LABEL - Print memo counts the same rows",
+          Label(memo) == "Print memo · 2 lines", Label(memo));
+    Check("LABEL - and Remove, which always did",
+          Label(del) == "Remove 2 lines", Label(del));
+    // The three appear together, so a tick reveals one consistent set of actions.
+    Check("LABEL - all three are on screen once something is ticked",
+          post.Visibility == Visibility.Visible && memo.Visibility == Visibility.Visible
+          && del.Visibility == Visibility.Visible);
+
+    foreach (var l in live.Lines) l.Selected = false;
+    tick.Invoke(win, null);
+    Check("LABEL - and all three go when nothing is",
+          post.Visibility == Visibility.Collapsed && memo.Visibility == Visibility.Collapsed
+          && del.Visibility == Visibility.Collapsed);
+
+    // The tooltips are the only place the scope is written in words, and they were the thing
+    // saying the opposite: "Confirms the WHOLE entry, not only the ticked rows".
+    Check("TOOLTIP - Confirm sale says it acts on the ticked lines",
+          (post.ToolTip as string ?? "").Contains("TICKED"), post.ToolTip as string);
+    Check("TOOLTIP - and that the rest keep their hold",
+          (post.ToolTip as string ?? "").Contains("keep their hold"), post.ToolTip as string);
+    Check("TOOLTIP - Print memo says the same",
+          (memo.ToolTip as string ?? "").Contains("TICKED"), memo.ToolTip as string);
+    Check("TOOLTIP - and still promises not to save",
+          (memo.ToolTip as string ?? "").Contains("Nothing is saved"), memo.ToolTip as string);
+
+    // ── the pager has its own strip, and does not sit on the scrollbar ────
+    // It used to be a panel laid over the grid at the bottom-right, squarely on top of the
+    // horizontal scrollbar: two controls in the same twenty pixels, and the bar unreachable.
+    while (live.Lines.Count < 45)
+        live.Lines.Add(new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m,
+                                      SelectionCt = 1m, PricePerCt = 1000m, DealBuyer = abc });
+    live.Repage();
+    Settle();
+
+    var grid = (DataGrid)win.FindName("Grid")!;
+    var pager = (FrameworkElement)((FrameworkElement)win.FindName("LinePageSize")!).Parent;
+    while (pager is not null && DockPanel.GetDock(pager) != Dock.Bottom
+           && pager.Parent is FrameworkElement up) pager = up;
+
+    Check("PAGER - it is docked under the table, not laid over it",
+          pager is not null && DockPanel.GetDock(pager) == Dock.Bottom
+          && pager.Parent is DockPanel,
+          pager?.GetType().Name ?? "<not found>");
+
+    var gridBox = grid.TransformToAncestor(win).TransformBounds(
+        new Rect(0, 0, grid.ActualWidth, grid.ActualHeight));
+    var pagerBox = pager!.TransformToAncestor(win).TransformBounds(
+        new Rect(0, 0, pager.ActualWidth, pager.ActualHeight));
+    Check("PAGER - so nothing of it overlaps the grid or its scrollbar",
+          pagerBox.Top >= gridBox.Bottom - 0.5 && pagerBox.Height > 0,
+          $"grid ends at {gridBox.Bottom:N0}, pager starts at {pagerBox.Top:N0}");
+    Check("PAGER - and it fits inside the card it sits in, uncut",
+          pagerBox.Left >= 0 && pagerBox.Right <= win.ActualWidth + 0.5,
+          $"{pagerBox.Left:N0}..{pagerBox.Right:N0} inside 0..{win.ActualWidth:N0}");
+
+    var numbers = (ItemsControl)win.FindName("LinePageNumbers")!;
+    Check("PAGER - the numbered buttons are on screen, one per page",
+          numbers.Items.Count == live.PageCount && numbers.Items.Count == 3,
+          $"{numbers.Items.Count} button(s), {live.PageCount} page(s)");
+
+    var sizeBox = (ComboBox)win.FindName("LinePageSize")!;
+    Check("PAGER - and the rows-per-page list shows the size in force",
+          sizeBox.SelectedItem is int n2 && n2 == live.PageSize, $"{sizeBox.SelectedItem}");
+
+    // Back to a short entry for the checks below.
+    while (live.Lines.Count > 4) live.Lines.RemoveAt(live.Lines.Count - 1);
+    live.Repage();
+    Settle();
+
+    // ── printing is scoped, and refuses an empty selection ─────────────────
+    var status = (TextBlock)win.FindName("Status")!;
+    status.Text = "";
+    typeof(MainWindow).GetMethod("PrintMemo_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, [memo, new RoutedEventArgs()]);
+    Check("PRINT - nothing ticked is refused before any printer dialog",
+          status.Text.Contains("Tick the lines to print"),
+          status.Text.Length == 0 ? "<silent>" : status.Text);
+    Check("PRINT - and it wrote nothing", live.InvoiceId is null);
+
+    // ── confirming is scoped, and refuses an empty selection ───────────────
+    // The refusal is MODAL, so every window that opens is answered -- left alone this hangs.
+    int dialogs = 0;
+    string? dialogTitle = null;
+    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+        new RoutedEventHandler((o, _) =>
+        {
+            if (o is not Window w || ReferenceEquals(w, win)) return;
+            dialogs++;
+            dialogTitle = w.Title;
+            w.Close();
+        }));
+
+    // A HALF-TYPED ROW ON THE ENTRY, which is what made the misplaced message visible. The refusal
+    // is about the TICKS, but the code that pins a refusal to the control at fault hunted for the
+    // first row carrying an Error and marked a cell of it -- so this row is what "Tick the lines to
+    // confirm" ended up written over.
+    var halfTyped = new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 0m,
+                                  SelectionCt = 0m, PricePerCt = 0m, DealBuyer = abc };
+    live.Lines.Add(halfTyped);
+    live.Recalculate();
+    Settle();
+    Check("CONFIRM - the entry carries a row that IS at fault, so there is something to mispin to",
+          halfTyped.Error is not null, halfTyped.Error ?? "<none>");
+
+    status.Text = "";
+    typeof(MainWindow).GetMethod("Post_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, [post, new RoutedEventArgs()]);
+
+    // SNAPSHOT IT NOW. The refusal path is synchronous all the way to Say(), so the line is on the
+    // bar the moment the call returns -- and the bar is shared. Settling first let whatever else
+    // the window had in flight (a reservation round trip on a workspace that refuses one) write its
+    // own message over the top, which failed this check for a reason that has nothing to do with it.
+    string refusal = status.Text;
+
+    var frame = new System.Windows.Threading.DispatcherFrame();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+        System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+        new Action(() => frame.Continue = false));
+    System.Windows.Threading.Dispatcher.PushFrame(frame);
+
+    Check("CONFIRM - nothing ticked posts nothing and books no invoice",
+          live.InvoiceId is null, live.InvoiceId?.ToString() ?? "null");
+    Check("CONFIRM - and the press is answered where the desk is looking",
+          refusal.Contains("nothing has been saved"),
+          refusal.Length == 0 ? "<silent>" : refusal);
+    Check("CONFIRM - and every row is still on the entry",
+          live.RealLines.Count == 5, $"{live.RealLines.Count}");
+
+    // AND IT IS NOT PINNED TO A CELL. Nothing on the invoice is wrong -- the desk has not ticked
+    // anything -- but the refusal fell through to the branch that hunts for the first row with an
+    // Error and marks a cell of it, so "Tick the lines to confirm" was written over a Size
+    // dropdown on whichever row happened to be unfinished.
+    var cellMarked = typeof(MainWindow)
+        .GetField("_lineErrorCell", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .GetValue(win);
+    Check("CONFIRM - and it is not written over a cell, which is nobody's fault here",
+          cellMarked is null, cellMarked?.GetType().Name ?? "<none marked>");
+    // Read off the model too, so the two cannot drift: the screen tells this refusal apart from a
+    // field fault by the sentence it opens with.
+    Check("CONFIRM - the refusal is recognisable as a selection problem, not a field one",
+          refusal.Contains(InvoiceEntry.NothingTicked)
+          || _invoice_SelectionProblem(live).StartsWith(InvoiceEntry.NothingTicked),
+          InvoiceEntry.NothingTicked);
+
+    static string _invoice_SelectionProblem(InvoiceEntry e) => e.SelectionProblems("confirm")[0];
+
+    live.Lines.Remove(halfTyped);
+    live.Recalculate();
+    Settle();
+
+    // ── the row icons are about their own row ──────────────────────────────
+    // They shared the header handlers and ignored the row entirely, so a per-row Confirm did
+    // whatever the ticks said. Tag="{Binding}" is what makes them the row's, and ActOn reads it.
+    string winSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "DiamondDesktop", "MainWindow.xaml.cs"));
+    string xaml = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "DiamondDesktop", "MainWindow.xaml"));
+
+    Check("ROW - the per-row Print memo icon carries the row",
+          xaml.Contains("Click=\"PrintMemo_Click\" Tag=\"{Binding}\""));
+    Check("ROW - and so does the per-row Confirm icon",
+          xaml.Contains("Click=\"Post_Click\" Tag=\"{Binding}\""));
+
+    var actOn = typeof(MainWindow).GetMethod("ActOn",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var tagged = new Button { Tag = live.Lines[2] };
+    var scoped = (IReadOnlyList<SaleLine>)actOn.Invoke(win, [tagged])!;
+    Check("ROW - an icon on row 3 acts on row 3, ticked or not",
+          scoped.Count == 1 && ReferenceEquals(scoped[0], live.Lines[2]), $"{scoped.Count} line(s)");
+
+    live.Lines[0].Selected = true;
+    var headerScope = (IReadOnlyList<SaleLine>)actOn.Invoke(win, [post])!;
+    Check("ROW - a header button has no row, so it acts on the ticks",
+          headerScope.Count == 1 && ReferenceEquals(headerScope[0], live.Lines[0]),
+          $"{headerScope.Count} line(s)");
+
+    var blankRow = new SaleLine();
+    live.Lines.Add(blankRow);
+    var blankScope = (IReadOnlyList<SaleLine>)actOn.Invoke(win, [new Button { Tag = blankRow }])!;
+    Check("ROW - an icon on an EMPTY row falls through to the ticks rather than acting on nothing",
+          blankScope.Count == 1 && ReferenceEquals(blankScope[0], live.Lines[0]),
+          $"{blankScope.Count} line(s)");
+    live.Lines.Remove(blankRow);
+
+    // ── the holds: released per line, never per entry ──────────────────────
+    // This is the one part a probe cannot run -- it is a round trip -- so it is asserted against
+    // the handler's source. DropEntryAsync gives back EVERYTHING this entry holds; using it here
+    // released the unticked rows' carats too and left them on screen holding nothing.
+    int postAt = winSrc.IndexOf("private async void Post_Click", StringComparison.Ordinal);
+    int endAt = winSrc.IndexOf("private void ReportPartial", StringComparison.Ordinal);
+    string body = winSrc.Substring(postAt, endAt - postAt);
+
+    Check("HOLDS - Post_Click releases one line at a time",
+          body.Contains("foreach (var line in chosen) await DropLineAsync(line);"));
+    Check("HOLDS - and never releases the whole entry",
+          !body.Contains("await DropEntryAsync();"),
+          "DropEntryAsync would give back the unticked rows' carats too");
+    Check("HOLDS - only the confirmed rows leave the screen",
+          body.Contains("foreach (var line in chosen) _invoice.Lines.Remove(line);"));
+    Check("HOLDS - a fresh entry only when nothing is left, since New invoice releases everything",
+          body.Contains("if (!anyLeft) NewInvoice_Click(sender, e);"));
+    Check("HOLDS - and the payload is built from the ticked rows",
+          body.Contains("_invoice.ToDrafts(Catalogue.BaseCurrencyId, chosen)"));
+
+    // The Move to stock release is still reachable from Clear / New invoice, so no hold can be
+    // stranded by any of this.
+    int clearAt = winSrc.IndexOf("private async void NewInvoice_Click", StringComparison.Ordinal);
+    Check("HOLDS - clearing the entry still gives everything back",
+          clearAt > 0 && winSrc.IndexOf("await DropEntryAsync();", clearAt, StringComparison.Ordinal) > 0);
+
+    // ── the summary approves the ticked rows, not the screen ───────────────
+    var sum = Build();
+    sum.Lines[0].Selected = true;
+    var (facts, bullets) = MainWindow.SaleSummary(sum, sum.SelectedLines);
+    string Fact(string label) => facts.FirstOrDefault(f => f.Label == label).Value ?? "<missing>";
+    Check("SUMMARY - the sign-off counts the ticked rows only",
+          bullets.Count == 1, $"{bullets.Count} bullet(s)");
+    Check("SUMMARY - and the carats leaving are theirs",
+          Fact("Leaving stock") == "1.00 ct", Fact("Leaving stock"));
+    // Unchanged: four rows over two deals, each deal headed by its own bullet, so six.
+    Check("SUMMARY - the whole-entry overload is unchanged",
+          MainWindow.SaleSummary(sum).Lines.Count == 6,
+          $"{MainWindow.SaleSummary(sum).Lines.Count}");
+
+    // A REFUSAL IS A BOX NOW, on request. It used to be the field markers and one line along the
+    // bottom edge of the window, a long way from the button just pressed and only ever able to
+    // show the first of several faults. The markers and the bottom line both stay; the box is what
+    // lists every problem at once. The class handler above is what answers it.
+    Check("DIALOGS - refusing an empty selection is said in a box, not only along the bottom edge",
+          dialogs == 1, $"{dialogs}");
+    Check("DIALOGS - and it is the app's own refusal dialog, not a system message box",
+          dialogTitle == "Not yet", dialogTitle ?? "<none>");
+
+    win.Close();
+    Console.WriteLine();
+    Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+    Console.Out.Flush();
+    Environment.Exit(fail);
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+Environment.Exit(fail);

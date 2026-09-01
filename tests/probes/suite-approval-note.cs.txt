@@ -307,6 +307,110 @@ var t = new Thread(() =>
     Check("NOTE - and the rest of the letterhead is unchanged by it",
           otherText.Contains("GSTIN : 27AGRPB2357E1ZH") && otherText.Contains("3392 7439"));
 
+    // ── ONE NOTE PER BUYER, IN ONE DOCUMENT ──────────────────────────────────
+    // It used to be one print job per buyer: two dialogs, two documents, two things to collect
+    // from the printer and no way to keep them as a single PDF. One document now, a page break
+    // before every note after the first, in selection order.
+    var abcLines = new List<VSalesLine>
+    {
+        new() { GradeCode = "1BB", SizeCode = "+6.5", GrossWeightCt = 1.00m, PricePerCt = 1000m,
+                ExRate = 1m, Remark = "abcOnly" },
+    };
+    var xyzLines = new List<VSalesLine>
+    {
+        new() { GradeCode = "NO 2", SizeCode = "-6.5", GrossWeightCt = 2.00m, PricePerCt = 2000m,
+                ExRate = 1m, Remark = "xyzOnly" },
+        new() { GradeCode = "NO 2", SizeCode = "+6.5", GrossWeightCt = 3.00m, PricePerCt = 3000m,
+                ExRate = 1m, Remark = "xyzAlso" },
+    };
+    var abcNote = new VInvoice { InvoiceNo = "MEMO", InvoiceDate = invoice.InvoiceDate,
+                                 BuyerName = "ABC EXPORTS", BrokerName = "JITESH SHAH" };
+    var xyzNote = new VInvoice { InvoiceNo = "MEMO", InvoiceDate = invoice.InvoiceDate,
+                                 BuyerName = "XYZ GEMS", BrokerName = "RAJ BROKERS" };
+
+    // ONE BUYER IS EXACTLY WHAT IT WAS. No wrapper, no break, one page -- the single-buyer case
+    // must not pay anything for the multi-buyer one.
+    var solo = Reports.BuildApprovalNotes([(abcNote, abcLines)], head);
+    var soloPager = (DynamicDocumentPaginator)((IDocumentPaginatorSource)solo).DocumentPaginator;
+    soloPager.PageSize = new Size(794, 1123);
+    soloPager.ComputePageCount();
+    Check("MULTI - one buyer is still one page", soloPager.PageCount == 1, $"{soloPager.PageCount}");
+    Check("MULTI - and still the same document the template builds",
+          solo.Blocks.OfType<Section>().All(b => !b.BreakPageBefore)
+          && solo.PageWidth == 794 && solo.PageHeight == 1123,
+          "no page break, same A4 box");
+
+    var both = Reports.BuildApprovalNotes([(abcNote, abcLines), (xyzNote, xyzLines)], head);
+    var bothPager = (DynamicDocumentPaginator)((IDocumentPaginatorSource)both).DocumentPaginator;
+    bothPager.PageSize = new Size(794, 1123);
+    bothPager.ComputePageCount();
+    Check("MULTI - two buyers make two pages, one each",
+          bothPager.PageCount == 2, $"{bothPager.PageCount} page(s)");
+    Check("MULTI - with a page break before the second, not a run-on",
+          both.Blocks.OfType<Section>().Count(b => b.BreakPageBefore) == 1,
+          $"{both.Blocks.OfType<Section>().Count(b => b.BreakPageBefore)} break(s)");
+    Check("MULTI - and the document is still A4, from the note's own template",
+          both.PageWidth == 794 && both.PageHeight == 1123 && !both.IsColumnWidthFlexible
+          && !double.IsInfinity(both.ColumnWidth));
+
+    // THE WHOLE TEMPLATE ON EVERY PAGE, not a header on the first and rows after it.
+    string bothText = new TextRange(both.ContentStart, both.ContentEnd).Text;
+    foreach (string stamp in new[] { "APPROVAL NOTE", "PRIYA GEMS", "GSTIN : 27AGRPB2357E1ZH",
+                                    "Authorised Sign.", "PARTICULARS" })
+        Check($"MULTI - \"{stamp}\" appears once per buyer",
+              System.Text.RegularExpressions.Regex.Matches(
+                  bothText, System.Text.RegularExpressions.Regex.Escape(stamp)).Count >= 2,
+              $"{System.Text.RegularExpressions.Regex.Matches(bothText, System.Text.RegularExpressions.Regex.Escape(stamp)).Count}");
+
+    Check("MULTI - both buyers are named, each on their own note",
+          bothText.Contains("ABC EXPORTS") && bothText.Contains("XYZ GEMS"));
+    Check("MULTI - and each broker with them",
+          bothText.Contains("JITESH SHAH") && bothText.Contains("RAJ BROKERS"));
+
+    // NOTHING MIXES. The lists were divided before they reached the printer, and the pages have to
+    // show it: each buyer's page is ruled to eleven and carries only that buyer's parcels.
+    var pages = both.Blocks.OfType<Table>().Where(x => x.Columns.Count == 5).ToList();
+    var wrapped = both.Blocks.OfType<Section>()
+                      .SelectMany(sec => sec.Blocks.OfType<Table>())
+                      .Where(x => x.Columns.Count == 5);
+    pages.AddRange(wrapped);
+    Check("MULTI - one ruled table per buyer", pages.Count == 2, $"{pages.Count}");
+
+    string Rows(Table x) => new TextRange(x.ContentStart, x.ContentEnd).Text;
+    Check("MULTI - the first note carries ABC's line and nothing of XYZ's",
+          Rows(pages[0]).Contains("abcOnly")
+          && !Rows(pages[0]).Contains("xyzOnly") && !Rows(pages[0]).Contains("xyzAlso"),
+          "no mixing");
+    Check("MULTI - the second carries XYZ's two lines and nothing of ABC's",
+          Rows(pages[1]).Contains("xyzOnly") && Rows(pages[1]).Contains("xyzAlso")
+          && !Rows(pages[1]).Contains("abcOnly"),
+          "no mixing");
+    Check("MULTI - and each is ruled to eleven, as one buyer's note always was",
+          pages.All(x => x.RowGroups[0].Rows.Count == 12),
+          string.Join(", ", pages.Select(x => x.RowGroups[0].Rows.Count)));
+
+    // SELECTION ORDER, not sorted and not reversed: the paper is handed over in the order the
+    // deals appear on the entry.
+    var reversed = Reports.BuildApprovalNotes([(xyzNote, xyzLines), (abcNote, abcLines)], head);
+    string firstOf(FlowDocument d) =>
+        new TextRange(d.ContentStart, d.ContentEnd).Text.Contains("XYZ GEMS")
+        && new TextRange(d.ContentStart, d.ContentEnd).Text.IndexOf("XYZ GEMS", StringComparison.Ordinal)
+           < new TextRange(d.ContentStart, d.ContentEnd).Text.IndexOf("ABC EXPORTS", StringComparison.Ordinal)
+            ? "XYZ" : "ABC";
+    Check("MULTI - the pages come out in the order they were given",
+          firstOf(both) == "ABC" && firstOf(reversed) == "XYZ",
+          $"{firstOf(both)} then, reversed, {firstOf(reversed)}");
+
+    // Three buyers, three pages -- the break is per note, not a one-off for the second.
+    var three = Reports.BuildApprovalNotes(
+        [(abcNote, abcLines), (xyzNote, xyzLines), (abcNote, abcLines)], head);
+    var threePager = (DynamicDocumentPaginator)((IDocumentPaginatorSource)three).DocumentPaginator;
+    threePager.PageSize = new Size(794, 1123);
+    threePager.ComputePageCount();
+    Check("MULTI - three buyers make three pages",
+          threePager.PageCount == 3 && three.Blocks.OfType<Section>().Count(b => b.BreakPageBefore) == 2,
+          $"{threePager.PageCount} page(s)");
+
     Console.WriteLine();
     Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
     Application.Current?.Shutdown();

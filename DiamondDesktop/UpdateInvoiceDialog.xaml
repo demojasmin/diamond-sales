@@ -266,8 +266,11 @@
                          rather than unfilled. The hint sits behind the drop-down and disappears
                          the moment a size is chosen. -->
                     <Grid>
-                      <ComboBox ItemsSource="{Binding AllowedSizes}" SelectedItem="{Binding Size, UpdateSourceTrigger=PropertyChanged}"
-                                ItemTemplate="{StaticResource SizeCodeTemplate}" ItemContainerStyle="{StaticResource SizeItemContainer}" Style="{StaticResource CellComboBox}"
+                      <ComboBox ItemsSource="{Binding SizeChoices}"
+                                Text="{Binding SizeFilter, UpdateSourceTrigger=PropertyChanged}"
+                                PreviewTextInput="Picker_Typed" LostFocus="Picker_LostFocus"
+                                PreviewKeyDown="Picker_Enter" SelectedItem="{Binding Size, UpdateSourceTrigger=PropertyChanged}"
+                                ItemTemplate="{StaticResource SizeCodeTemplate}" ItemContainerStyle="{StaticResource SizeItemContainer}" Style="{StaticResource EditableCellComboBox}"
                                 AutomationProperties.Name="Size"/>
                       <TextBlock Text="Size" Style="{StaticResource CellPlaceholder}"
                                  Visibility="{Binding Size, Converter={StaticResource Empty}}"/>
@@ -279,9 +282,14 @@
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <Grid>
-                      <ComboBox ItemsSource="{Binding Source={x:Static local:Catalogue.Grades}}"
+                      <!-- SellableGrades and type-to-jump, matching the Sales entry grid. -->
+                      <!-- Same editable, per-line narrowing as the Sales entry grid. -->
+                      <ComboBox ItemsSource="{Binding GradeChoices}"
+                                Text="{Binding GradeFilter, UpdateSourceTrigger=PropertyChanged}"
+                                PreviewTextInput="Picker_Typed" LostFocus="Picker_LostFocus"
+                                PreviewKeyDown="Picker_Enter"
                                 SelectedItem="{Binding Grade, UpdateSourceTrigger=PropertyChanged}"
-                                ItemTemplate="{StaticResource GradeNameTemplate}" ItemContainerStyle="{StaticResource GradeItemContainer}" Style="{StaticResource CellComboBox}"
+                                ItemTemplate="{StaticResource GradeNameTemplate}" ItemContainerStyle="{StaticResource GradeItemContainer}" Style="{StaticResource EditableCellComboBox}"
                                 AutomationProperties.Name="Grade"/>
                       <TextBlock Text="Grade" Style="{StaticResource CellPlaceholder}"
                                  Visibility="{Binding Grade, Converter={StaticResource Empty}}"/>
@@ -289,7 +297,7 @@
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTextColumn Header="Weight" Width="80*" MinWidth="72" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Weight ct" Width="80*" MinWidth="84" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding GrossWeightCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
               <DataGridTextColumn Header="Selection" Width="88*" MinWidth="80" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding SelectionCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>

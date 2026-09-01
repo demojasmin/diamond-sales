@@ -223,4 +223,60 @@ public partial class UpdateInvoiceDialog : Window
         ErrorText.Visibility = Visibility.Collapsed;
         DialogResult = true;
     }
+    /// <summary>
+    /// Typing in a Size or Grade cell opens the list it is narrowing, and leaving the cell puts
+    /// back what is actually chosen.
+    ///
+    /// The same two rules the Sales entry grid uses, and for the same reason: the text box accepts
+    /// anything, the bucket is whatever SelectedItem says, and a cell left reading "no 2" while the
+    /// line holds NO 1 would post a weight against a grade nobody picked. Duplicated rather than
+    /// shared because this dialog has no access to MainWindow's handlers, and four lines of
+    /// duplication is a smaller thing than a base class for two event handlers.
+    /// </summary>
+    private void Picker_Typed(object sender, System.Windows.Input.TextCompositionEventArgs e)
+    {
+        if (sender is ComboBox cb) cb.IsDropDownOpen = true;
+    }
+
+    /// <summary>
+    /// Enter takes the top match in a Size or Grade cell.
+    ///
+    /// Without it, typing "1bb" and pressing Enter did two unhelpful things at once: WPF commits
+    /// only text that matches an item EXACTLY, so the half-typed code selected nothing, and Enter
+    /// then fell through to the grid, which added a LINE. The typing was thrown away by the revert
+    /// on the way out and the person was left on a new empty row.
+    ///
+    /// Only while the drop-down is open and only when it offers something, so Enter keeps its
+    /// ordinary meaning -- add another line -- everywhere else in the grid.
+    /// </summary>
+    private void Picker_Enter(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != System.Windows.Input.Key.Enter) return;
+        if (sender is not ComboBox { IsDropDownOpen: true, DataContext: SaleLine line } cb) return;
+
+        if (System.Windows.Automation.AutomationProperties.GetName(cb) == "Grade")
+        {
+            if (line.GradeChoices.FirstOrDefault() is not { } g) return;
+            line.Grade = g;
+        }
+        else
+        {
+            if (line.SizeChoices.FirstOrDefault() is not { } z) return;
+            line.Size = z;
+        }
+
+        cb.IsDropDownOpen = false;
+        e.Handled = true;                 // or the grid appends a row under the one just filled
+    }
+
+    private void Picker_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ComboBox { DataContext: SaleLine line } cb) return;
+
+        if (System.Windows.Automation.AutomationProperties.GetName(cb) == "Grade")
+            line.GradeFilter = line.Grade?.ShortName ?? "";
+        else
+            line.SizeFilter = line.Size?.ShortName ?? "";
+    }
+
 }

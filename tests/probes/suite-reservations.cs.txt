@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
@@ -17,7 +17,7 @@ var t = new Thread(() =>
     var app = new Application();
     foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
         "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
-        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml"})
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml", "Styles/Catalogue.xaml"})
         app.Resources.MergedDictionaries.Add(new ResourceDictionary
         { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
 
@@ -112,12 +112,13 @@ var t = new Thread(() =>
           && moveHandler.GetCustomAttributes(true)
                 .Any(x => x.GetType().Name.Contains("AsyncStateMachine")),
           moveHandler.ReturnType.Name);
-    // The tooltip used to promise "no stock moves", which stopped being true the moment this
-    // button started returning carats. A button that lies about writing is worse than one with no
-    // tooltip at all.
-    string moveTip = move.ToolTip as string ?? "";
-    Check("RETURN - and it says it RETURNS, not that nothing moves",
-          moveTip.Contains("Return") && !moveTip.Contains("no stock moves"), moveTip);
+    // The button is off the Sales entry screen on request, so there is no tooltip left to check --
+    // it used to promise "no stock moves", which stopped being true the moment it started
+    // returning carats. What still matters is that it cannot be reached by accident: hidden, and
+    // out of the tab order.
+    Check("RETURN - and it is off the screen entirely now, not merely disabled",
+          move.Visibility == Visibility.Collapsed && !move.IsTabStop,
+          $"{move.Visibility}, tab stop {move.IsTabStop}");
 
     Check("RETURN - DropEntryAsync exists and returns the amount",
           typeof(MainWindow).GetMethod("DropEntryAsync", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -149,11 +150,35 @@ var t = new Thread(() =>
           src.Split("ResetEntry();").Length - 1 == 2
           && src.Contains("private void ResetEntry()"),
           $"{src.Split("ResetEntry();").Length - 1} call(s) of one shared reset");
-    int post = src.IndexOf("outcome.InvoiceNo} confirmed", StringComparison.Ordinal);
+    int post = src.IndexOf("posted.Count == 1\n            ? $\"Sale {posted[0]} confirmed",
+                           StringComparison.Ordinal);
+    if (post < 0) post = src.IndexOf("confirmed · stock deducted", StringComparison.Ordinal);
     int clear = src.LastIndexOf("_held.Clear();", post, StringComparison.Ordinal);
     Check("NO-DOUBLE - a confirmed sale clears this side's holds too",
-          post > 0 && clear > 0 && post - clear < 900,
+          post > 0 && clear > 0 && post - clear < 1400,
           post <= 0 ? "<no post path>" : $"{post - clear} chars before the message");
+
+    // ── the holds go back BEFORE the posts, not after ─────────────────────
+    // post_invoice measures each bucket against v_stock_position.balance_ct, and since 0043 that
+    // balance is NET OF RESERVATIONS -- these lines' own included. With one invoice the
+    // release_on_post trigger handled it inside the same transaction; an entry that writes several
+    // cannot rely on that, because the trigger keys on the invoice's own client_ref and would
+    // leave the second post measured against the first's leftovers. Releasing up front is what
+    // stops an entry being refused for carats it is itself holding.
+    //
+    // PER LINE, not per entry. A tick scopes Confirm sale now, so releasing the whole entry gave
+    // back the UNTICKED rows' carats as well and left them on screen holding nothing.
+    int postStart = src.IndexOf("private async void Post_Click", StringComparison.Ordinal);
+    int release = src.IndexOf("foreach (var line in chosen) await DropLineAsync(line);", postStart,
+                              StringComparison.Ordinal);
+    int firstPost = src.IndexOf("await Repo.PostAsync(id);", StringComparison.Ordinal);
+    Check("NO-DOUBLE - the confirmed lines' holds are released before the first post, not after it",
+          release > 0 && firstPost > 0 && release < firstPost,
+          release <= 0 ? "<no release on the post path>" : $"release at {release}, first post at {firstPost}");
+    Check("NO-DOUBLE - and only theirs: the whole entry is never released on the post path",
+          src.IndexOf("await DropEntryAsync();", postStart, StringComparison.Ordinal)
+              > src.IndexOf("private void ReportPartial", StringComparison.Ordinal),
+          "the unticked rows keep their reservations");
 
     Check("NO-DOUBLE - and Confirm sale still writes no stock of its own here",
           !src.Contains("ReserveLineAsync(_invoice.ClientRef, Guid.Empty"),
@@ -229,6 +254,15 @@ var t = new Thread(() =>
           src.IndexOf("_entryRestored = true;") < src.IndexOf("if (EntryStore.Load() is not { } stored) return;"),
           "set before the early return");
 
+    // NO SPARE ROW ON THE WAY BACK IN, on request. An entry restored with two lines used to gain a
+    // third, blank, one -- which read as the app adding a line nobody asked for. Adding a line is
+    // Add line's job; Enter at the end of the last row still appends while typing. A file that held
+    // NOTHING still gets one, because a grid with no rows has nowhere to start.
+    Check("PERSIST - a restored entry comes back with the lines it was saved with, and no spare",
+          src.Contains("if (entry.Lines.Count == 0) entry.Lines.Add(new SaleLine());")
+          && !src.Contains("entry.Lines.Add(new SaleLine());                       // and a fresh one"),
+          "one row only when the file held none");
+
     // A refused release must be RETRYABLE, not permanent. Forgetting the hold before the round
     // trip left the carats held in the database with no file, no cache and no client_ref on this
     // side -- unreachable from any screen. The order is what makes it recoverable.
@@ -282,22 +316,31 @@ var t = new Thread(() =>
     // A blank first entry was tried and taken out again on the desk's word: it read as a fault at
     // the top of the list, and the cells already carry their own grey hint when nothing is picked.
     var choosy = new SaleLine { Grade = g1 };
-    Check("PICKER - the grade list is the catalogue, with no blank entry",
-          !entryXamlHas("GradeChoices") && !entryXamlHas("FallbackValue=Select grade"),
-          "no blank in Grade");
-    Check("PICKER - and the size list is the sizes that grade allows",
-          !entryXamlHas("SizeChoices") && !entryXamlHas("FallbackValue=Select size")
+    // GradeChoices and SizeChoices exist again, but as the TYPE-TO-NARROW lists rather than the
+    // blank-leading ones that were taken out. The name being back is not the thing that matters;
+    // an empty row at the top of the drop-down is, so that is what is checked.
+    Check("PICKER - the grade list carries no blank entry",
+          choosy.GradeChoices.All(g => g is not null)
+          && !entryXamlHas("FallbackValue=Select grade"),
+          $"{choosy.GradeChoices.Count} grade(s), none null");
+    Check("PICKER - and neither does the size list",
+          choosy.SizeChoices.All(z => z is not null)
+          && !entryXamlHas("FallbackValue=Select size")
           && choosy.AllowedSizes.All(z => z is not null),
-          "no blank in Size");
+          $"{choosy.SizeChoices.Count} size(s), none null");
 
     // Buyer and Broker had NO hint at all -- an unset combo draws a chevron and nothing else, so
     // the one required field on the header was the only one that never said what it wanted.
+    // Both live in the Deal Details drawer now, bound to the LINE's deal rather than to a header
+    // that no longer exists -- so the placeholder keys off DealBuyer / DealBroker. The hint itself
+    // is unchanged, and it still matters for the same reason: an unset combo draws a chevron and
+    // nothing else, and Buyer is the one field a line cannot be sold without.
     Check("PICKER - Buyer says what it wants when nothing is chosen",
           entryXamlHas("Text=\"Select buyer\"")
-          && entryXamlHas("Visibility=\"{Binding SelectedBuyer, Converter={StaticResource Empty}}\""));
+          && entryXamlHas("Visibility=\"{Binding DealBuyer, Converter={StaticResource Empty}}\""));
     Check("PICKER - and so does Broker",
           entryXamlHas("Text=\"Select broker\"")
-          && entryXamlHas("Visibility=\"{Binding SelectedBroker, Converter={StaticResource Empty}}\""));
+          && entryXamlHas("Visibility=\"{Binding DealBroker, Converter={StaticResource Empty}}\""));
 
     win.Close();
     Console.WriteLine();

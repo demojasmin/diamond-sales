@@ -96,9 +96,19 @@ var t = new Thread(() =>
     SeedCatalogue();
     SeedParties();
 
-    Check("RELOAD - WPF really does null the selections (the defect being guarded)",
-          line.Grade is null && line.Size is null,
-          "grade and size are null immediately after the clear");
+    // WAS: "WPF really does null the selections (the defect being guarded)". It no longer can.
+    // Clearing Catalogue.Grades makes every bound ComboBox drop its selection and write the null
+    // back down the TwoWay binding -- that is still exactly what WPF does. What changed is that
+    // SaleLine now REFUSES a null over a chosen bucket, because an editable picker writes one the
+    // moment its text stops matching an item and that was silently emptying cells mid-typing.
+    //
+    // The same guard catches this reload on the way in, so the line never loses the grade in the
+    // first place and CatalogueChanged below has less to repair. Its repair still matters and is
+    // still checked: the line holds the OLD Grade object, and re-pointing it at the reloaded one
+    // by code is what the four checks underneath prove.
+    Check("RELOAD - the selections are no longer nulled by the clear at all",
+          line.Grade is not null && line.Size is not null,
+          "the line refuses a null over a chosen bucket");
 
     invoice.CatalogueChanged();
 

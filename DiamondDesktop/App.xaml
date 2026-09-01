@@ -20,6 +20,11 @@
                 <ResourceDictionary Source="Styles/Dashboard.xaml"/>
                 <!-- Audit console: builds on the dashboard card and KPI styles. -->
                 <ResourceDictionary Source="Styles/Audit.xaml"/>
+                <!-- Grade and size, everywhere. Application-level and not MainWindow-level on
+                     purpose: UpdateInvoiceDialog is a second window and reaches for the same
+                     templates, and a picker that resolves in one window and not the other is how
+                     the treatment fragmented in the first place. -->
+                <ResourceDictionary Source="Styles/Catalogue.xaml"/>
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Application.Resources>

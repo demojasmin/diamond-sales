@@ -1,4 +1,4 @@
-// Ticking, removing, memos, and the desk's own vocabulary.
+﻿// Ticking, removing, memos, and the desk's own vocabulary.
 //
 // NO DATABASE. Everything here is either a pure function or a control's state, so the whole of it
 // can be checked without a connection -- which matters most for the memo rules, because the point
@@ -7,6 +7,8 @@ using System.Reflection;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using DiamondDesktop;
 using DiamondDesktop.Data;
 
@@ -54,6 +56,15 @@ static string GetClickHandlerName(Button b)
     return "<none>";
 }
 
+/// Puts a REAL buyer on an entry, the way the screen does. The deal is the line's now, so a
+/// display string is not a buyer -- SelectedBuyer is what pushes a party onto every row.
+static void WithBuyer(InvoiceEntry e, string name = "KIRAN EXPORTS", long id = 11)
+{
+    var party = e.Buyers.FirstOrDefault(b => b.Id == id);
+    if (party is null) { party = new PartyRef(id, name); e.Buyers.Add(party); }
+    e.SelectedBuyer = party;
+}
+
 int fail = 0;
 void Check(string n, bool ok, string? d = null)
 {
@@ -73,7 +84,7 @@ var t = new Thread(() =>
                  "Themes/LightTheme.xaml", "Themes/Typography.xaml", "Styles/Buttons.xaml",
                  "Styles/Inputs.xaml", "Styles/Widgets.xaml", "Styles/DataGridStyles.xaml",
                  "Styles/AppOverrides.xaml", "Styles/Components.xaml", "Styles/Dashboard.xaml",
-                 "Styles/Audit.xaml",
+                 "Styles/Audit.xaml", "Styles/Catalogue.xaml",
              })
         app.Resources.MergedDictionaries.Add(new ResourceDictionary
         { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
@@ -123,8 +134,9 @@ var t = new Thread(() =>
     Check("MEMO - an invalid memo has problems to report",
           scratch.Problems().Count == 2, string.Join(" | ", scratch.Problems()));
     Check("MEMO - and they are the SAME ones Confirm sale reports",
-          scratch.Problems()[0].StartsWith("Terms")
-          && scratch.Problems()[1].StartsWith("Line 1:"), string.Join(" | ", scratch.Problems()));
+          scratch.Problems().All(x => x.StartsWith("Line 1:"))
+          && scratch.Problems().Any(x => x.Contains("Terms")),
+          string.Join(" | ", scratch.Problems()));
 
     // A line with no grade could not be written at all -- it has no ids. Problems() catches it as
     // a line error, so the refusal happens before anything reaches the database.
@@ -156,6 +168,19 @@ var t = new Thread(() =>
                                Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1500 };
     win.Show();
 
+    // EVERY CONFIRMATION IS A BOX NOW, on the desk's instruction: Say(ok: true) puts the message in
+    // an AppDialog as well as along the bottom edge. This suite presses a great many things that
+    // succeed, so the boxes are answered as they arrive -- otherwise the first Remove, print or
+    // save blocks on ShowDialog and the run never finishes.
+    int doneBoxes = 0;
+    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+        new RoutedEventHandler((o, _) =>
+        {
+            if (o is not Window w || ReferenceEquals(w, win) || (w.Title ?? "") != "Done") return;
+            doneBoxes++;
+            w.Close();
+        }));
+
     // Let the window finish laying out. ScrollViewer viewport and bar visibility are arrange-time
     // facts, and asserting them straight after Show measures a half-built tree.
     var laid = new System.Windows.Threading.DispatcherFrame();
@@ -163,6 +188,18 @@ var t = new Thread(() =>
         System.Windows.Threading.DispatcherPriority.ApplicationIdle,
         new Action(() => laid.Continue = false));
     System.Windows.Threading.Dispatcher.PushFrame(laid);
+
+    // The same wait, named, for the checks that measure arranged layout rather than state.
+    // ActualHeight, viewport and realised containers are all arrange-time facts: reading them
+    // straight after setting ItemsSource measures a tree that has not been laid out yet.
+    void Settle()
+    {
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+            new Action(() => frame.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(frame);
+    }
 
     var save = (Button)win.FindName("SaveDraft")!;
     var del = (Button)win.FindName("DeleteLines")!;
@@ -180,8 +217,9 @@ var t = new Thread(() =>
     Check("SCREEN - the print shortcut is discoverable, on the tooltip",
           (((Button)win.FindName("SaveDraft")!).ToolTip as string ?? "").Contains("Ctrl+P"),
           ((Button)win.FindName("SaveDraft")!).ToolTip as string);
-    Check("SCREEN - Action is the last column, right after Remark",
-          headers[^1] == "Action" && headers[^2] == "Remark", $"[{string.Join(", ", headers)}]");
+    Check("SCREEN - Action is the last column, after Remark and the deal",
+          headers[^1] == "Action" && headers[^2] == "Deal Details" && headers[^3] == "Remark",
+          $"[{string.Join(", ", headers)}]");
 
     // ── every row offers every one of its actions ──────────────────────────
     // Remove used to be gated on there being more than one line, so the single row you most often
@@ -203,16 +241,18 @@ var t = new Thread(() =>
         .First(c => c.Column?.Header as string == "Action");
     var rowButtons = FindAll<Button>(actionCell).ToList();
 
-    Check("ROW - a single row still shows all four actions",
-          rowButtons.Count == 4 && rowButtons.All(b => b.Visibility == Visibility.Visible),
+    // THREE, not four: Move to stock came off this page on request, so each row offers Print memo,
+    // Confirm sale and Remove.
+    Check("ROW - a single row still shows all three actions",
+          rowButtons.Count == 3 && rowButtons.All(b => b.Visibility == Visibility.Visible),
           $"{rowButtons.Count(b => b.Visibility == Visibility.Visible)} of {rowButtons.Count} visible");
     Check("ROW - including Remove, which used to vanish on the last row",
-          rowButtons.Any(b => (b.ToolTip as string ?? "").Contains("Take this line off")));
-    Check("ROW - every row action carries an icon and a tooltip",
+          rowButtons.Any(b => (b.ToolTip as string ?? "").Contains("Remove this line")));
+    Check("ROW - every row action carries an icon and a short tooltip",
           rowButtons.All(b => (b.Content is System.Windows.Shapes.Path
                                || b.Content is StackPanel)
-                              && (b.ToolTip as string ?? "").Length > 15),
-          string.Join(", ", rowButtons.Select(b => b.Content?.GetType().Name)));
+                              && (b.ToolTip as string ?? "").Length is > 5 and <= 48),
+          string.Join(" | ", rowButtons.Select(b => b.ToolTip as string ?? "<none>")));
 
     // Removing the only line leaves a fresh one behind rather than an empty grid.
     var only = entryOf(win).Lines.Single();
@@ -230,6 +270,10 @@ var t = new Thread(() =>
     // ── one action area: icon, label and tooltip on every button ───────────
     // Everything that acts on this invoice is in one row beside the heading. Nothing is per-row,
     // which is what kept the old Action column cramped enough to cut its own buttons in half.
+    // MoveToStock is off this page on request. It stays in the tree as an anchor Busy() and
+    // RefreshActionStates name, with no content to measure, so it leaves this sweep the same way
+    // DeleteLines does -- by being excluded rather than by having the assertions weakened for it.
+    var anchorsOnly = new[] { "DeleteLines", "MoveToStock", "SaveDraft", "Post" };
     var actions = new[] { "AddLineButton", "DeleteLines", "New", "SaveDraft", "MoveToStock", "Post" }
         .Where(n => win.FindName(n) is Button)
         .Select(n => (Name: n, Button: (Button)win.FindName(n)!)).ToList();
@@ -244,11 +288,59 @@ var t = new Thread(() =>
           string.Join(", ", actions.Select(a => a.Button.Parent?.GetType().Name).Distinct()));
     Check("ACTIONS - which wraps rather than pushing Confirm sale off the edge",
           actions[0].Button.Parent is WrapPanel);
-    Check("ACTIONS - and none of them is a hidden anchor",
-          actions.All(a => a.Name == "DeleteLines" || a.Button.Visibility == Visibility.Visible),
+    // ONE BUTTON UNTIL SOMETHING IS TICKED, on request: Add line stands alone on an untouched
+    // screen, and Print memo, Confirm sale and Remove appear together on the first tick.
+    Check("ACTIONS - an untouched screen offers Add line and nothing else",
+          actions.Single(a => a.Name == "AddLineButton").Button.Visibility == Visibility.Visible
+          && actions.Where(a => a.Name != "AddLineButton")
+                    .All(a => a.Button.Visibility == Visibility.Collapsed),
           string.Join(", ", actions.Select(a => $"{a.Name}={a.Button.Visibility}")));
 
-    foreach (var (name, b) in actions)
+    // Tick a row and the other three arrive.
+    var tickProbe = entryOf(win);
+    if (tickProbe.Lines.Count == 0) tickProbe.Lines.Add(new SaleLine());
+    tickProbe.Lines[0].Selected = true;
+    typeof(MainWindow).GetMethod("TickCountChanged", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, null);
+    Check("ACTIONS - and ticking a row brings Print memo, Confirm sale and Remove up together",
+          ((Button)win.FindName("SaveDraft")!).Visibility == Visibility.Visible
+          && ((Button)win.FindName("Post")!).Visibility == Visibility.Visible
+          && ((Button)win.FindName("DeleteLines")!).Visibility == Visibility.Visible);
+
+    // All three carry the tick count, as Remove always has -- and all three now ACT on those rows,
+    // so the number says what the button will do. See suite-tick-scope for the scoping itself.
+    Check("ACTIONS - and all three carry the count, singular at one",
+          ((TextBlock)win.FindName("SaveDraftLabel")!).Text == "Print memo · 1 line"
+          && ((TextBlock)win.FindName("PostLabel")!).Text == "Confirm sale · 1 line"
+          && ((TextBlock)win.FindName("DeleteLinesLabel")!).Text == "Remove 1 line",
+          $"[{((TextBlock)win.FindName("SaveDraftLabel")!).Text}] "
+          + $"[{((TextBlock)win.FindName("PostLabel")!).Text}]");
+
+    while (tickProbe.Lines.Count < 2) tickProbe.Lines.Add(new SaleLine());
+    tickProbe.Lines[0].Selected = true;
+    tickProbe.Lines[1].Selected = true;
+    typeof(MainWindow).GetMethod("TickCountChanged", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, null);
+    Check("ACTIONS - and the count follows the ticks, plural above one",
+          ((TextBlock)win.FindName("SaveDraftLabel")!).Text == "Print memo · 2 lines"
+          && ((TextBlock)win.FindName("PostLabel")!).Text == "Confirm sale · 2 lines",
+          $"[{((TextBlock)win.FindName("SaveDraftLabel")!).Text}]");
+    tickProbe.Lines[1].Selected = false;
+    // Ticking scopes all three now. The tooltips are where that is said in words, and they used to
+    // say the opposite -- "Confirms the WHOLE entry, not only the ticked rows".
+    Check("ACTIONS - and both say outright that they act on the TICKED rows",
+          (((Button)win.FindName("Post")!).ToolTip as string ?? "").Contains("TICKED")
+          && (((Button)win.FindName("SaveDraft")!).ToolTip as string ?? "").Contains("TICKED"));
+    tickProbe.Lines[0].Selected = false;
+    typeof(MainWindow).GetMethod("TickCountChanged", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, null);
+    Check("ACTIONS - and they go away again when the last tick is cleared",
+          ((Button)win.FindName("Post")!).Visibility == Visibility.Collapsed);
+    Check("ACTIONS - and Move to stock is hidden and out of the tab order, not merely disabled",
+          ((Button)win.FindName("MoveToStock")!).Visibility == Visibility.Collapsed
+          && !((Button)win.FindName("MoveToStock")!).IsTabStop);
+
+    foreach (var (name, b) in actions.Where(a => !anchorsOnly.Contains(a.Name)))
     {
         var panel = b.Content as StackPanel;
         var icon = panel?.Children.OfType<System.Windows.Shapes.Path>().FirstOrDefault();
@@ -282,10 +374,14 @@ var t = new Thread(() =>
     Check("ACTIONS - starting a new invoice is still reachable in code",
           typeof(MainWindow).GetMethod("NewInvoice_Click",
               BindingFlags.Instance | BindingFlags.NonPublic) is not null);
-    Check("ACTIONS - Print memo", Label("SaveDraft") == "Print memo", Label("SaveDraft"));
-    Check("ACTIONS - Move to stock", Label("MoveToStock") == "Move to stock", Label("MoveToStock"));
+    // Both carry the tick count now, as Remove always has -- so the label is matched on the
+    // action it names rather than on the whole string.
+    Check("ACTIONS - Print memo", Label("SaveDraft").StartsWith("Print memo"), Label("SaveDraft"));
+    // Move to stock is off this page on request; the anchor stays for Busy() and
+    // RefreshActionStates, hidden and untabbable, so it has no label to read.
+
     Check("ACTIONS - Confirm sale, and it is the primary",
-          Label("Post") == "Confirm sale"
+          Label("Post").StartsWith("Confirm sale")
           && ((Button)win.FindName("Post")!).Style == win.FindResource("DashGoldButton"),
           Label("Post"));
 
@@ -403,7 +499,7 @@ var t = new Thread(() =>
     Check("BUSY - and the button still comes back to itself, icon and all",
           restored is not null
           && restored.Children.OfType<System.Windows.Shapes.Path>().Any()
-          && restored.Children.OfType<TextBlock>().First().Text == "Print memo"
+          && restored.Children.OfType<TextBlock>().First().Text.StartsWith("Print memo")
           && save.IsEnabled,
           restored is null ? save.Content?.ToString() : "icon + label restored");
 
@@ -508,13 +604,14 @@ var t = new Thread(() =>
           ((Button)win.FindName("Post")!).Style == win.FindResource("DashGoldButton"));
 
     // ── Invoices: a memo is not a sale ─────────────────────────────────────
-    var filter = (ComboBox)win.FindName("InvoiceStatusFilter")!;
-    Check("LIST - the page opens on all sales",
-          ((ComboBoxItem)filter.Items[0]).Content as string == "All sales" && filter.SelectedIndex == 0,
-          $"index {filter.SelectedIndex}");
-    // A filter that can only ever come back empty is worse than no filter.
-    Check("LIST - and offers no Memo filter, because memos are never on this page",
-          !filter.Items.OfType<ComboBoxItem>().Any(i => (i.Content as string) == "Memo"));
+    // The status filter is gone; DATE took its column. A memo is still never on this page, and now
+    // there is not even a setting that could be pointed at one -- drafts are filtered out before
+    // the date range is applied at all.
+    var filter = (DatePicker)win.FindName("InvoiceDateFilter")!;
+    Check("LIST - the page opens on every date",
+          filter.SelectedDate is null, filter.SelectedDate?.ToString() ?? "<empty>");
+    Check("LIST - and there is no status control left to point at a memo",
+          win.FindName("InvoiceStatusFilter") is null);
 
     typeof(MainWindow).GetField("_invoices", BindingFlags.Instance | BindingFlags.NonPublic)!
         .SetValue(win, new List<VInvoice>
@@ -536,18 +633,20 @@ var t = new Thread(() =>
     Check("LIST - a cancelled sale still is: it happened",
           shown.Any(i => i.Status == InvoiceStatus.CANCELLED));
 
-    // Excluded BEFORE the status filter, so no setting can bring one back.
-    foreach (var item in filter.Items.OfType<ComboBoxItem>())
+    // Excluded BEFORE the date filter, so no setting can bring one back.
+    foreach (var day in new DateTime?[] { null, DateTime.Today, DateTime.Today.AddDays(-1) })
     {
-        filter.SelectedItem = item;
+        filter.SelectedDate = day;
         apply.Invoke(win, null);
         var rows = ((IEnumerable<VInvoice>)invoiceGrid.ItemsSource).ToList();
         if (rows.Any(i => i.Status == InvoiceStatus.DRAFT))
         {
-            Check($"LIST - no setting brings a memo back ({item.Content})", false);
+            Check($"LIST - no setting brings a memo back ({day?.ToString("d") ?? "all dates"})", false);
             break;
         }
     }
+    filter.SelectedDate = null;
+    apply.Invoke(win, null);
     Check("LIST - no setting of the filter brings a memo back", true);
 
     // ── a table that ends mid-row ends mid-BOX ────────────────────────────
@@ -635,6 +734,2140 @@ var t = new Thread(() =>
     var valueBox = (TextBox)((Grid)((Border)built).Child).Children[1];
     Check("SETTING - a value too long for any box is still readable on hover",
           valueBox.ToolTip is not null);
+
+    // ── the pickers offer only what a sale may be written against ─────────
+    Catalogue.Grades.Add(new Grade { GradeId = 900, Code = "ZZ TEST",       Active = true });
+    Catalogue.Grades.Add(new Grade { GradeId = 901, Code = "Unknown Grade", Active = true });
+    Catalogue.Grades.Add(new Grade { GradeId = 902, Code = "NO 7",          Active = true });
+
+    Check("PICK - test data is not one keystroke from a real invoice",
+          !Catalogue.SellableGrades.Any(g => g.Code == "ZZ TEST"),
+          "ZZ TEST hidden");
+    // 0039's holding pen. The carats are real and belong on the Stock page; the way out is an
+    // ADJUST onto the right bucket, not a sale under a name that says nobody knows what it is.
+    Check("PICK - and neither is Unknown Grade",
+          !Catalogue.SellableGrades.Any(g => g.Code == "Unknown Grade"));
+    // Asked for by the desk. Unlike the other two this one HOLDS REAL CARATS, so hiding it means
+    // they cannot be invoiced from this screen -- deliberate, and one line to undo.
+    Catalogue.Grades.Add(new Grade { GradeId = 903, Code = "+14", Active = true });
+    Check("PICK - nor +14", !Catalogue.SellableGrades.Any(g => g.Code == "+14"));
+    Check("PICK - every other grade is still offered",
+          Catalogue.SellableGrades.Any(g => g.Code == "NO 7")
+          && Catalogue.SellableGrades.Count == Catalogue.Grades.Count - 3,
+          $"{Catalogue.SellableGrades.Count} of {Catalogue.Grades.Count}");
+    // Hidden from the picker, not removed: the reports and the stock page still count them.
+    Check("PICK - but both still exist in the catalogue",
+          Catalogue.Grades.Any(g => g.Code == "ZZ TEST")
+          && Catalogue.Grades.Any(g => g.Code == "Unknown Grade"));
+
+    string pickMarkup = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "MainWindow.xaml"));
+    Check("PICK - Intake keeps the FULL catalogue, or 0039's correction path breaks",
+          pickMarkup.Contains("{x:Static local:Catalogue.Grades}}\"" ),
+          "an ADJUST out of Unknown Grade is how a mis-imported row is fixed");
+    // Superseded by real filtering: WPF's own type-ahead rewrites the text box to the first
+    // prefix match, which fights the filter binding and makes a mid-word edit jump. See the TYPE
+    // checks above for what replaced it.
+    Check("PICK - the pickers filter rather than leaning on WPF type-ahead",
+          pickMarkup.Contains("{Binding GradeChoices}")
+          && !pickMarkup.Contains("TextSearch.TextPath=\"ShortName\""),
+          "narrowing, not prefix-jumping");
+
+    // ── typing narrows the picker, and cannot lose the bucket ─────────────
+    var typed = new SaleLine();
+    int allGrades = typed.GradeChoices.Count;
+
+    typed.GradeFilter = "NO 7";
+    Check("TYPE - typing narrows the grade list to what matches",
+          typed.GradeChoices.Count < allGrades && typed.GradeChoices.Any(g => g.Code == "NO 7"),
+          $"{typed.GradeChoices.Count} of {allGrades}");
+
+    // Contains, not StartsWith: the sheet writes "NO 1 BB" and the desk says "BB".
+    typed.GradeFilter = "7";
+    Check("TYPE - it matches inside the name, not just the first letter",
+          typed.GradeChoices.Any(g => g.Code == "NO 7"), $"{typed.GradeChoices.Count} hit(s)");
+
+    // Spaces are noise in a code somebody is typing fast.
+    typed.GradeFilter = "no7";
+    Check("TYPE - and ignores the spaces", typed.GradeChoices.Any(g => g.Code == "NO 7"));
+
+    // An empty drop-down under a typo reads as a broken picker, and the text is about to be
+    // reverted anyway.
+    typed.GradeFilter = "qqqq";
+    Check("TYPE - a search matching nothing shows everything, not an empty list",
+          typed.GradeChoices.Count == allGrades, $"{typed.GradeChoices.Count}");
+
+    // THE GUARD. The text box accepts anything; the bucket is whatever SelectedItem says.
+    var real = Catalogue.SellableGrades.First(g => g.Code == "NO 7");
+    typed.Grade = real;
+    Check("TYPE - choosing a grade puts its name in the box",
+          typed.GradeFilter == real.ShortName, $"\"{typed.GradeFilter}\"");
+
+    typed.GradeFilter = "half typed nonsense";
+    Check("TYPE - and typing nonsense over it does NOT unset the grade",
+          ReferenceEquals(typed.Grade, real), "the line still holds NO 7");
+    // Picker_LostFocus does this on the way out, so the cell never sits reading one thing while
+    // the line holds another.
+    typed.GradeFilter = typed.Grade?.ShortName ?? "";
+    Check("TYPE - leaving the cell puts back what is actually chosen",
+          typed.GradeFilter == real.ShortName);
+
+    // The implicit <Style TargetType="TextBox"> in MainWindow reaches inside the combo template and
+    // lands on PART_EditableTextBox: Height 32 in a 32px control that already carries the combo's
+    // padding as margin, so the typed text was clipped, and Padding 10,0 on top of it, so it sat
+    // twice as far in as the closed state drew it. Detaching the style is what makes the rest of
+    // the template's values predictable.
+    string inputs = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "DiamondDesktop", "Styles", "Inputs.xaml"));
+    // The ELEMENT, not the first mention: the comment above it names the part too, and slicing
+    // from there measured 900 characters of prose instead of the attributes.
+    int part = inputs.IndexOf("x:Name=\"PART_EditableTextBox\"");
+    string editPart = part < 0 ? "" : inputs[part..Math.Min(inputs.Length, part + 900)];
+
+    Check("TYPE - the typed text is not styled by a style declared elsewhere",
+          editPart.Contains("Style=\"{x:Null}\""), "implicit TextBox style detached");
+    Check("TYPE - and it cannot be clipped by an inherited fixed height",
+          editPart.Contains("MinHeight=\"0\"") && !editPart.Contains("Height=\"32\""));
+    Check("TYPE - it sits where the chosen value sat, not twice as far in",
+          editPart.Contains("Padding=\"0\"") && editPart.Contains("Margin=\"{TemplateBinding Padding}\""),
+          "the combo's padding once, not twice");
+    Check("TYPE - in the cell's own font and size",
+          editPart.Contains("FontFamily=\"{TemplateBinding FontFamily}\"")
+          && editPart.Contains("FontSize=\"{TemplateBinding FontSize}\""));
+    Check("TYPE - vertically centred, like every other cell",
+          editPart.Contains("VerticalContentAlignment=\"Center\""));
+
+    string typeMarkup = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "MainWindow.xaml"));
+    Check("TYPE - the cells are editable and revert on the way out",
+          typeMarkup.Contains("EditableCellComboBox")
+          && typeMarkup.Contains("LostFocus=\"Picker_LostFocus\"")
+          && typeMarkup.Contains("PreviewTextInput=\"Picker_Typed\""));
+    // Per line, or one cell's filter would narrow every other row's picker.
+    var neighbour = new SaleLine();
+    typed.GradeFilter = "NO 7";
+    Check("TYPE - narrowing one row leaves the row beside it alone",
+          neighbour.GradeChoices.Count == allGrades,
+          $"neighbour still offers {neighbour.GradeChoices.Count}");
+    // The hint must not sit on top of what is being typed.
+    Check("TYPE - the grey hint clears as soon as anything is typed",
+          !typed.GradePlaceholder && new SaleLine().GradePlaceholder);
+
+
+    // A window that has just been shown still has its first load in flight, and RefreshActionStates
+    // deliberately does nothing while Busy() owns the buttons. Zeroed here so the state logic is
+    // what is being measured rather than the busy interplay.
+    void Refresh()
+    {
+        typeof(MainWindow).GetField("_inFlight", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(win, 0);
+        typeof(MainWindow).GetMethod("RefreshActionStates", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(win, null);
+    }
+
+    var moveBtn = (Button)win.FindName("MoveToStock")!;
+    var postBtn = (Button)win.FindName("Post")!;
+    // ── the button is always live; the REASON is what moves ──────────────
+    // Disabling it was tried and reversed on the desk's word: a dead button reads as a broken
+    // screen rather than as an invoice that is not ready, and the reason sat four inches away in a
+    // chip. Pressing it still refuses -- ReadyToConfirm runs the same ConfirmProblems() the chip
+    // reads, so nothing posts and no stock moves -- and the refusal lands under the field at fault.
+    Check("ACT - Confirm sale is clickable even when it would refuse",
+          postBtn.IsEnabled, "always live");
+
+    var live = entryOf(win);
+
+    // SINGLE ENTRY, nothing typed and nothing valid: both refuse, and both say why.
+    Refresh();
+    Check("ACT - Move to stock is dead while no line names a bucket",
+          !moveBtn.IsEnabled, $"enabled {moveBtn.IsEnabled}");
+    Check("ACT - Confirm sale is dead while the invoice would not post",
+          postBtn.IsEnabled && postBtn.ToolTip is string p1 && p1.Contains(live.Validate()!),
+          $"{postBtn.ToolTip}");
+
+    // THE BUG. Move to stock keyed on _held, a cache written only after Repo.ReserveLineAsync
+    // RETURNS SUCCESS. Offline, or on a workspace without 0043's reserve_line, that cache never
+    // fills -- so the button was dead for the whole session with a tooltip blaming the desk for a
+    // round trip that had failed silently. _held stays EMPTY throughout what follows, which is
+    // exactly the state that used to wedge it.
+    var held = (Dictionary<Guid, (long, long, decimal)>)typeof(MainWindow)
+        .GetField("_held", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(win)!;
+    held.Clear();
+    live.Lines.Clear();
+
+    SaleLine Bucketed(decimal ct)
+    {
+        var l = new SaleLine { Grade = Catalogue.SellableGrades.First() };
+        l.Size = l.AllowedSizes.Count > 0 ? l.AllowedSizes[0] : null;
+        l.GrossWeightCt = ct;
+        return l;
+    }
+
+    var b1 = Bucketed(5m); live.Lines.Add(b1);
+    var b2 = Bucketed(3m); live.Lines.Add(b2);
+    live.Recalculate();
+    Refresh();
+    Check("ACT - two lines naming a bucket make Move to stock live, with NOTHING held",
+          moveBtn.IsEnabled, $"{held.Count} held, {live.RealLines.Count} line(s)");
+    // Its tooltip went with the button when Move to stock came off the page, so there is no
+    // wording left to swap. The state still has to move with the entry, which is the half that
+    // matters and the half the bug was in.
+    Check("ACT - and the state still tracks the entry, tooltip or no tooltip",
+          moveBtn.IsEnabled && moveBtn.Visibility == Visibility.Collapsed,
+          $"enabled {moveBtn.IsEnabled}, {moveBtn.Visibility}");
+
+    // Removing them one at a time: still live at one, dead at none. The RULE is preserved --
+    // there must be something to act on -- it is only read off the entry instead of off a cache.
+    live.Lines.Remove(b1);
+    live.Recalculate();
+    Refresh();
+    Check("ACT - still live with one line left naming a bucket", moveBtn.IsEnabled);
+    live.Lines.Remove(b2);
+    live.Recalculate();
+    Refresh();
+    Check("ACT - and dead again once the last one is gone", !moveBtn.IsEnabled);
+
+    // The button state and the handler ask ONE question. They used to ask different ones: the
+    // handler always built its buckets from the LINES and refused on an empty list, so the hold
+    // cache was never what decided whether a press could do anything.
+    var bucketsOf = typeof(MainWindow).GetMethod("MoveToStockBuckets",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    Check("ACT - the button state and the click use one predicate",
+          ((System.Collections.ICollection)bucketsOf.Invoke(win, null)!).Count == 0 && !moveBtn.IsEnabled,
+          "one gate, two doors");
+
+    // Busy() writes IsEnabled directly, so a binding would have been severed by the first scope.
+    // Read off the BUTTONS Busy names, not off the markup as a whole: the pager's chevrons bind
+    // their IsEnabled quite legitimately -- no busy scope touches them.
+    Check("ACT - the states are code-behind, not a binding Busy would sever",
+          new[] { "Post", "MoveToStock", "SaveDraft", "AddLineButton", "DeleteLines" }
+              .All(n => win.FindName(n) is not Button b
+                        || BindingOperations.GetBindingExpressionBase(b, UIElement.IsEnabledProperty) is null),
+          "no IsEnabled binding on the action buttons");
+
+    // ── picking a value must not take the app down ────────────────────────
+    // It did. The Grade setter raised GradeChoices, which swapped the ComboBox's ItemsSource in the
+    // middle of WPF applying that very selection; the chosen item was not in the new list, so WPF
+    // wrote SelectedItem back to null, which re-entered the setter, which raised again. A
+    // StackOverflowException takes the process down without reaching App's unhandled-exception
+    // handler, so the app just vanished the moment a size or grade was picked.
+    //
+    // Driven through a REAL ComboBox with the same three bindings the cell uses. The view-model
+    // checks above all passed while this was broken -- nothing but WPF's own selection machinery
+    // closes the loop.
+    var crashLine = new SaleLine();
+    // TextPath mirrors EditableCellComboBox: without it an editable combo using an ItemTemplate
+    // writes the item's ToString() into the box.
+    var gradeBox = new ComboBox { IsEditable = true, IsTextSearchEnabled = false, DataContext = crashLine };
+    TextSearch.SetTextPath(gradeBox, "ShortName");
+    gradeBox.SetBinding(ItemsControl.ItemsSourceProperty, new Binding(nameof(SaleLine.GradeChoices)));
+    gradeBox.SetBinding(Selector.SelectedItemProperty,
+        new Binding(nameof(SaleLine.Grade)) { UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged });
+    gradeBox.SetBinding(ComboBox.TextProperty,
+        new Binding(nameof(SaleLine.GradeFilter)) { UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged });
+
+    var pickMe = Catalogue.SellableGrades.First();
+    gradeBox.SelectedItem = pickMe;                 // the exact act that killed the process
+    Check("CRASH - picking a grade in a live ComboBox does not re-enter the setter",
+          ReferenceEquals(crashLine.Grade, pickMe), $"{crashLine.Grade?.Code ?? "null"}");
+    Check("CRASH - and the selection survives instead of being written back to null",
+          gradeBox.SelectedItem is not null && crashLine.GradeFilter == pickMe.ShortName,
+          $"box=[{crashLine.GradeFilter}]");
+
+    // The list must not collapse to the one already chosen, or reopening it to change your mind
+    // offered a list of one.
+    Check("CRASH - and the list still offers every grade, not just the chosen one",
+          crashLine.GradeChoices.Count == Catalogue.SellableGrades.Count,
+          $"{crashLine.GradeChoices.Count} of {Catalogue.SellableGrades.Count}");
+
+    // Typing a whole code through the LIVE box resolves it to that grade and selects it, which is
+    // the behaviour wanted -- and the second trip through the setter it causes is exactly the path
+    // that used to recurse. Narrowing itself is covered by the TYPE checks above, on the view model
+    // where no binding can resolve the text out from under the assertion.
+    var other = Catalogue.SellableGrades.Last();
+    crashLine.GradeFilter = other.Code!;
+    // THE DATA-LOSS PATH. An editable combo writes SelectedItem = null the moment its text stops
+    // matching an item, so a single character typed over a chosen grade emptied the cell: weight
+    // and remark stayed, bucket silently gone. The line refuses a null that arrives while there is
+    // text in the box, because the cell offers no blank to choose.
+    var typeOver = Catalogue.SellableGrades.Last();
+    crashLine.GradeFilter = typeOver.Code!;
+    Check("CRASH - typing over a chosen grade cannot silently clear it",
+          crashLine.Grade is not null,
+          $"{crashLine.Grade?.Code ?? "CLEARED"}, box=[{crashLine.GradeFilter}]");
+
+    // And a clear the code MEANS still works: changing grade to one that disallows the size drops
+    // the size, which is grade_size enforced at entry.
+    var picked = new SaleLine { Grade = pickMe };
+    if (picked.AllowedSizes.Count > 0)
+    {
+        picked.Size = picked.AllowedSizes[0];
+        Check("CRASH - but a clear the code means still gets through",
+              picked.Size is not null, "size set, ready to be dropped");
+    }
+
+    // Same three bindings on the size cell, same act.
+    crashLine.Grade = pickMe;
+    var sizeBox = new ComboBox { IsEditable = true, IsTextSearchEnabled = false, DataContext = crashLine };
+    TextSearch.SetTextPath(sizeBox, "ShortName");
+    sizeBox.SetBinding(ItemsControl.ItemsSourceProperty, new Binding(nameof(SaleLine.SizeChoices)));
+    sizeBox.SetBinding(Selector.SelectedItemProperty,
+        new Binding(nameof(SaleLine.Size)) { UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged });
+    sizeBox.SetBinding(ComboBox.TextProperty,
+        new Binding(nameof(SaleLine.SizeFilter)) { UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged });
+
+    if (crashLine.SizeChoices.Count > 0)
+    {
+        var sizePick = crashLine.SizeChoices[0];
+        sizeBox.SelectedItem = sizePick;
+            Check("CRASH - the size box shows the code, not a type name",
+              crashLine.SizeFilter == sizePick.ShortName, $"box=[{crashLine.SizeFilter}]");
+        Check("CRASH - and picking a size does not either",
+              ReferenceEquals(crashLine.Size, sizePick), $"{crashLine.Size?.Code ?? "null"}");
+    }
+
+    // ── Confirm sale answers for the WHOLE invoice, not the current row ───
+    // Reported as a multi-row bug: two ticked lines, both good, button dead. It was not the rows.
+    // The buyer was empty, and the only place that said so was a hover tooltip.
+    var many = new InvoiceEntry();
+    many.Lines.Clear();
+    var okA = new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m };
+    var okB = new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m };
+    many.Lines.Add(okA); many.Lines.Add(okB);
+    many.Recalculate();
+
+    // Two good lines and no buyer: refused, and for the buyer -- not for anything about the rows.
+    Check("MULTI - two good lines still refuse while the buyer is empty",
+          many.Problems().Count == 2
+          && many.Problems().All(x => x.Contains("Buyer is required")),
+          string.Join(" | ", many.Problems()));
+
+    WithBuyer(many);
+    many.Recalculate();
+    Check("MULTI - and pass the moment a buyer is picked, with BOTH lines on the invoice",
+          many.Validate() is null && many.RealLines.Count == 2,
+          $"{many.RealLines.Count} line(s), {string.Join(" | ", many.Problems())}");
+
+    // The ticks drive Remove, never posting. Confirming has always taken the whole invoice, so
+    // ticking rows cannot change what gets confirmed.
+    foreach (var l in many.Lines) l.Selected = false;
+    Check("MULTI - untick every row and the invoice still confirms in full",
+          many.Validate() is null && many.RealLines.Count == 2,
+          "ticks scope Remove, not Confirm");
+
+    // A fault on the SECOND line is caught, which is the "not just the current row" claim.
+    okB.GrossWeightCt = 1m; okB.SelectionCt = 5m;      // selection over gross
+    many.Recalculate();
+    Check("MULTI - a fault on the second line refuses the invoice",
+          many.Validate() is not null && many.Problems().Any(x => x.StartsWith("Line 2")),
+          string.Join(" | ", many.Problems()));
+
+    // Every fault, not the first: hiding one behind another makes each fix look like a new refusal.
+    many.SelectedBuyer = null;
+    foreach (var l in many.Lines) l.DealBuyer = null;
+    many.Recalculate();
+    Check("MULTI - and every reason is collected, not just the first",
+          many.Problems().Count >= 2, $"{many.Problems().Count}: {string.Join(" | ", many.Problems())}");
+
+    // The reason is on SCREEN now, not only under the pointer.
+    string blockMarkup = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "MainWindow.xaml"));
+    Check("MULTI - and it is shown beside the button, not only on hover",
+          blockMarkup.Contains("x:Name=\"BlockChip\"") && blockMarkup.Contains("x:Name=\"BlockChipText\""));
+
+    // ── 1, 2 and 3 rows, through the real window ──────────────────────────
+    // Reported three times as "Confirm sale will not enable with a second row". Driven here the
+    // way a person drives it: Add line, fill it, look at the button.
+    var deskEntry = entryOf(win);
+    deskEntry.Lines.Clear();
+    deskEntry.SelectedBuyer = null;
+    foreach (var l in deskEntry.Lines) l.DealBuyer = null;
+    Refresh();
+    // The button stays live and refuses on the press; what changes is the REASON shown beside it.
+    Check("ROWS - nothing typed, and Confirm sale says why it would refuse",
+          postBtn.IsEnabled && deskEntry.ConfirmProblems().Count > 0,
+          string.Join(" | ", deskEntry.ConfirmProblems()));
+
+    SaleLine Fill(SaleLine l)
+    {
+        l.Grade = Catalogue.SellableGrades.First();
+        l.Size = l.AllowedSizes.Count > 0 ? l.AllowedSizes[0] : null;
+        l.GrossWeightCt = 1m; l.SelectionCt = 1m; l.PricePerCt = 1000m;
+        // TICKED, because a tick is what scopes Confirm sale now. These checks are about the
+        // minimum-line rule and about blank rows, not about selection -- so the rows are ticked and
+        // stay out of the way of it. suite-tick-scope is where the scoping itself is checked.
+        l.Selected = true;
+        return l;
+    }
+
+    // ONE row, and the buyer picked. This is the state the desk expects to be able to confirm from.
+    var r1 = new SaleLine(); deskEntry.Lines.Add(r1); Fill(r1);
+    WithBuyer(deskEntry);
+    deskEntry.Recalculate();
+    Refresh();
+    // ONE line is deliberately not enough: a sale needs two, on the desk's instruction. The
+    // invoice is otherwise faultless, so Validate() is clean and only ConfirmProblems() objects.
+    Check("ROWS - one filled row and a buyer is NOT enough to confirm",
+          deskEntry.ConfirmProblems().Any(x => x.Contains("at least 2 lines"))
+          && deskEntry.RealLines.Count == 1
+          && deskEntry.Validate() is null,
+          $"{deskEntry.RealLines.Count} line(s), {deskEntry.ConfirmProblems().FirstOrDefault() ?? "no problems"}");
+
+    // TWO rows. The button must not go off just because a row appeared.
+    var r2 = new SaleLine(); deskEntry.Lines.Add(r2); Fill(r2);
+    deskEntry.Recalculate();
+    Refresh();
+    Check("ROWS - a second filled row is what turns Confirm sale on",
+          deskEntry.ConfirmProblems().Count == 0 && deskEntry.RealLines.Count == 2,
+          $"{deskEntry.RealLines.Count} line(s), {deskEntry.ConfirmProblems().FirstOrDefault() ?? "no problems"}");
+
+    // THREE rows.
+    var r3 = new SaleLine(); deskEntry.Lines.Add(r3); Fill(r3);
+    deskEntry.Recalculate();
+    Refresh();
+    Check("ROWS - and a third",
+          deskEntry.ConfirmProblems().Count == 0 && deskEntry.RealLines.Count == 3,
+          $"{deskEntry.RealLines.Count} line(s), {deskEntry.Validate() ?? "no problems"}");
+
+    // A HALF-TYPED row switches it off, and finishing that row switches it back on. This is the
+    // one thing that legitimately turns the button off once rows exist.
+    var half = new SaleLine { Grade = Catalogue.SellableGrades.First() };
+    half.GrossWeightCt = 2m;                 // a bucket and a weight, but nothing sold
+    half.Selected = true;                    // ticked, so it is a row Confirm sale is answering for
+    deskEntry.Lines.Add(half);
+    deskEntry.Recalculate();
+    Refresh();
+    bool offForHalf = deskEntry.ConfirmProblems().Count > 0;
+    deskEntry.Lines.Remove(half);
+    deskEntry.Recalculate();
+    Refresh();
+    Check("ROWS - a half-typed row turns it off, and removing it turns it back on",
+          offForHalf && deskEntry.ConfirmProblems().Count == 0,
+          $"refused={offForHalf}, then {string.Join(" | ", deskEntry.ConfirmProblems())}");
+
+    // EVERY row reaches the payload. SaveDraftAsync sends _invoice.RealLines, so this is the
+    // figure that decides how many lines the invoice is written with.
+    Check("ROWS - all three rows are what gets sent, not just the first",
+          deskEntry.RealLines.Count == 3
+          && deskEntry.RealLines.All(l => l.GrossWeightCt == 1m),
+          $"{deskEntry.RealLines.Count} line(s) in the payload");
+
+    // THE REPORTED SEQUENCE: one good row, then press Add line. The new row is BLANK, and a blank
+    // row is not a line -- RealLines excludes it and Problems() never looks at it -- so the button
+    // must not go off just because an empty row appeared under a finished one.
+    // TWO filled rows, because one no longer confirms. The point of this check is the BLANK row
+    // that Add line appends: it is not a line, so it must not change the answer either way.
+    deskEntry.Lines.Clear();
+    var lone = new SaleLine(); deskEntry.Lines.Add(lone); Fill(lone);
+    var mate = new SaleLine(); deskEntry.Lines.Add(mate); Fill(mate);
+    deskEntry.Recalculate(); Refresh();
+    bool onWithOne = deskEntry.ConfirmProblems().Count == 0;
+
+    typeof(MainWindow).GetMethod("AddLine", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, null);
+    deskEntry.Recalculate(); Refresh();
+
+    Check("ROWS - pressing Add line under finished rows does not make it start refusing",
+          onWithOne && deskEntry.ConfirmProblems().Count == 0,
+          $"one row: {onWithOne}, after Add line: {postBtn.IsEnabled} "
+          + $"({deskEntry.Lines.Count} row(s), {deskEntry.RealLines.Count} line(s), "
+          + $"{deskEntry.Validate() ?? "no problems"})");
+
+
+    // ── a sale needs two lines, on the desk's instruction ─────────────────
+    var two = new InvoiceEntry();
+    two.Lines.Clear();
+    WithBuyer(two);
+    var l1 = new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m, Selected = true };
+    two.Lines.Add(l1);
+    two.Recalculate();
+
+    Check("TWO - one complete line is not enough to confirm",
+          two.ConfirmProblems().Any(x => x.Contains("at least 2 lines")),
+          string.Join(" | ", two.ConfirmProblems()));
+
+    // The SAME invoice is a perfectly good memo. The minimum is on the sale, not on the invoice --
+    // Problems() gates Print memo, the Update modal and correcting a posted invoice, and a rule
+    // placed there would have stopped a one-line memo printing and made every single-line invoice
+    // already on the books uneditable.
+    Check("TWO - but it is still a valid memo, and still correctable",
+          two.Problems().Count == 0, string.Join(" | ", two.Problems()));
+
+    var l2 = new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 2m, SelectionCt = 2m, PricePerCt = 1000m, Selected = true };
+    two.Lines.Add(l2);
+    two.Recalculate();
+    Check("TWO - a second line lets the sale go",
+          two.ConfirmProblems().Count == 0, string.Join(" | ", two.ConfirmProblems()));
+
+    // An empty invoice says one thing, not two.
+    var none = new InvoiceEntry();
+    none.Lines.Clear();
+    WithBuyer(none);
+    none.Recalculate();
+    Check("TWO - an empty invoice does not complain twice about lines",
+          none.ConfirmProblems().Count(x => x.Contains("line")) == 1,
+          string.Join(" | ", none.ConfirmProblems()));
+
+    // ── every picker in the app searches, not just Sales entry ────────────
+    // Read off the LIVE control, not the markup. Fifteen of these take it from the GradePicker /
+    // SizePicker style now and two set it per site, and a text search for the attribute would
+    // report the styled fifteen as missing something they demonstrably have.
+    string[] pickers =
+    [
+        "StockGradeFilter", "StockSizeFilter", "IntakeGrade", "IntakeSize",
+        "ConvFromGrade", "ConvFromSize", "ConvToGrade", "ConvToSize",
+        "RejGrade", "RejSize", "AdjGrade", "AdjSize", "LedgerGrade", "LedgerSize",
+        "PriceGradePicker", "PriceSizePicker", "FilterGrade",
+    ];
+    var without = pickers.Where(n => win.FindName(n) is not ComboBox cb || !PickerSearch.GetOn(cb)).ToList();
+    Check("SEARCH - every grade and size picker outside Sales entry searches too",
+          without.Count == 0,
+          without.Count == 0 ? $"{pickers.Length} pickers" : string.Join(", ", without));
+
+    // WPF hands every ItemsControl bound to one collection the SAME view, so a shared filter would
+    // narrow the stock filter from inside the intake form. Each control gets its own.
+    string behaviour = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "PickerSearch.cs"));
+    Check("SEARCH - and each one filters its own view, not the shared default",
+          behaviour.Contains("cvs = new CollectionViewSource();")
+          && behaviour.Contains("cvs.Source = cb.ItemsSource;"),
+          "one CollectionViewSource per control, kept and re-pointed");
+    Check("SEARCH - a search miss cannot clear what was chosen",
+          behaviour.Contains("cb.SelectedItem is null && cb.GetValue(LastPickProperty)"));
+    Check("SEARCH - and a filter that would empty the list is not applied",
+          behaviour.Contains("view.Filter = any ?"));
+
+    // ── PICKING THE FIRST ROW OF A NARROWED LIST ──────────────────────────
+    // A Selector bound to a CollectionView synchronises SelectedItem with the view's CURRENT item,
+    // and applying a filter moves currency to the first row that survives it. So typing "+" made
+    // the picker silently adopt "+6.5"; clicking that row was then a no-op -- already selected, no
+    // SelectionChanged, nothing to rewrite the box -- and the size stayed showing "+". Any other
+    // row worked, which is what made it look random. Driven on the Stock size filter, which is
+    // where it was reported.
+    foreach (var stockTab in Tabs(win).Items.OfType<TabItem>())
+        if (stockTab.Header as string == "Stock") { stockTab.IsSelected = true; break; }
+    Settle();
+
+    var sizeFilter = (ComboBox)win.FindName("StockSizeFilter")!;
+    sizeFilter.ItemsSource = new List<string> { "All sizes", "+6.5", "+11", "14+", "+18", "-6.5" };
+    sizeFilter.SelectedIndex = 0;
+    Settle();
+
+    // Cleared first, the way clicking into the box and typing over the selection does.
+    sizeFilter.Text = "";
+    Settle();
+    string typedSize = TypeInto(sizeFilter, "+");
+    Settle();
+    Check("PICKLIST - typing narrows the sizes to the ones that match",
+          typedSize == "+" && sizeFilter.ItemsSource!.Cast<object>().Count() == 4,
+          $"[{typedSize}] {string.Join(" | ", sizeFilter.ItemsSource!.Cast<object>())}");
+    // The narrowing must not have chosen a row on the person's behalf. It used to take the first
+    // one -- "+6.5" -- the instant the filter was applied, which is what made clicking that row do
+    // nothing. (SelectedItem being null here is the search-miss rule doing its job: the box holds
+    // text that matches no item, and LastPick puts the real choice back on the way out.)
+    Check("PICKLIST - and narrowing alone does not pick a row for you",
+          sizeFilter.SelectedItem as string != "+6.5",
+          $"{sizeFilter.SelectedItem?.ToString() ?? "<none chosen>"}");
+
+    // Pick the FIRST row of what is showing -- the case that failed.
+    sizeFilter.SelectedItem = sizeFilter.ItemsSource!.Cast<object>().First();
+    sizeFilter.IsDropDownOpen = false;
+    Settle();
+    Check("PICKLIST - choosing the first row of the narrowed list shows it in the box",
+          EditPart(sizeFilter)?.Text == "+6.5" && sizeFilter.Text == "+6.5",
+          $"box=[{EditPart(sizeFilter)?.Text}] text=[{sizeFilter.Text}] sel=[{sizeFilter.SelectedItem}]");
+    // SelectedIndex is what the Stock page reads to decide whether a size filter is set at all --
+    // index 0 means "All sizes" there, so a pick that left it at 0 also silently dropped the filter.
+    Check("PICKLIST - and it is not still sitting on index 0, which the page reads as no filter",
+          sizeFilter.SelectedIndex > 0, $"index {sizeFilter.SelectedIndex}");
+
+    // Any other row keeps working, as it always did.
+    sizeFilter.Text = "+";
+    Settle();
+    sizeFilter.SelectedItem = "+11";
+    sizeFilter.IsDropDownOpen = false;
+    Settle();
+    Check("PICKLIST - and any other row still shows too",
+          sizeFilter.Text == "+11", $"[{sizeFilter.Text}]");
+
+    sizeFilter.SelectedItem = "All sizes";
+    Settle();
+    foreach (var back in Tabs(win).Items.OfType<TabItem>())
+        if (back.Header as string == "Sales entry") { back.IsSelected = true; break; }
+    Settle();
+    // Attaching must be SILENT. Replacing ItemsSource raises SelectionChanged, and these pickers
+    // hang real work off it -- the dashboard's grade filter reloads from the server. Wrapping at
+    // attach time fired a network call for every picker the moment the window opened; a probe that
+    // never touches the dashboard started failing on dashboard_summary, its refusal message
+    // overwritten by that error. So the wrap waits until the picker is actually used.
+    // The behaviour was on all 17 and none of them could be typed into: FieldComboBox had no
+    // PART_EditableTextBox, so IsEditable silently did nothing and the box went blank with nowhere
+    // for the caret. The part is in the shared template now, COLLAPSED unless the combo is
+    // editable, so every other drop-down in the app renders as it did.
+    string inp = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "DiamondDesktop", "Styles", "Inputs.xaml"));
+    int fieldAt = inp.IndexOf("x:Key=\"FieldComboBox\"");
+    string field = fieldAt < 0 ? "" : inp[fieldAt..inp.IndexOf("x:Key=\"CellComboBox\"")];
+
+    Check("SEARCH - the shared combo template has somewhere to type",
+          field.Contains("x:Name=\"PART_EditableTextBox\""), "the part exists");
+    Check("SEARCH - hidden unless the combo is editable, so nothing else changes",
+          field.Contains("Visibility=\"Collapsed\"")
+          && field.Contains("<Trigger Property=\"IsEditable\" Value=\"True\">"));
+    // The caret cannot be placed while the border refuses clicks, and the list cannot be opened
+    // once it accepts them -- hence a chevron that is a toggle in its own right.
+    Check("SEARCH - and the chevron still opens the list once the border takes clicks",
+          field.Contains("x:Name=\"chev\"")
+          && field.Contains("<Setter TargetName=\"bd\" Property=\"IsHitTestVisible\" Value=\"True\"/>"));
+
+    // ── the chosen value has to SHOW in the box ───────────────────────────
+    // It did not. TextPath was hardcoded to "ShortName", which is right for a list of Grade or
+    // SizeBucket and wrong for half the pickers: the stock filters are filled with plain STRINGS
+    // ("All grades", then the codes), a string has no ShortName, so the path resolved to nothing
+    // and the editable box rendered EMPTY. The filter applied and the table narrowed while the
+    // control that caused it looked untouched.
+    ComboBox Searchable(System.Collections.IEnumerable items)
+    {
+        // No interaction here on purpose: the app sets these selections in code, so the display
+        // has to be right before anyone touches the control.
+        var c = new ComboBox { ItemsSource = items };
+        PickerSearch.SetOn(c, true);
+        return c;
+    }
+
+    var strings = Searchable(new List<string> { "All grades", "NO 1", "NO 1 BB" });
+    strings.SelectedItem = "NO 1 BB";
+    Check("SHOW - a picker filled with plain strings shows what was chosen",
+          strings.Text == "NO 1 BB", $"box=[{strings.Text}]");
+
+    var objects = Searchable(new List<Grade>(Catalogue.SellableGrades));
+    if (objects.Items.Count > 0)
+    {
+        var g = Catalogue.SellableGrades.First();
+        objects.SelectedItem = g;
+        Check("SHOW - and one filled with grades shows the short name, not a type name",
+              objects.Text == g.ShortName,
+              $"box=[{objects.Text}] path=[{TextSearch.GetTextPath(objects)}] "
+              + $"items={objects.Items.Count} short=[{g.ShortName}]");
+    }
+
+    // Both still search, which is the point of knowing the path at all.
+    strings.Text = "BB";
+    Check("SHOW - and a string picker still narrows on what is typed",
+          strings.Items.Count < 3 && strings.Items.Count > 0, $"{strings.Items.Count} of 3");
+
+    // The wrap must still be LAZY -- hung off using the picker, never done at attach time. Read as
+    // "both hooks exist and neither is a bare call in the attach body", so the PreviewTextInput
+    // hook can grow a second job (clearing the box on the first keystroke) without failing this.
+    int attachAt = behaviour.IndexOf("private static void OnChanged", StringComparison.Ordinal);
+    int attachEnd = behaviour.IndexOf("/// <summary>Gives the control its own view", StringComparison.Ordinal);
+    string attach = behaviour[attachAt..attachEnd];
+    Check("SEARCH - and attaching it fires no reload, because the wrap waits for use",
+          attach.Contains("cb.DropDownOpened += (_, _) => Wrap(cb);")
+          && attach.Contains("cb.PreviewTextInput += (_, _) =>")
+          && !System.Text.RegularExpressions.Regex.IsMatch(attach, @"^\s{8}Wrap\(cb\);",
+                 System.Text.RegularExpressions.RegexOptions.Multiline),
+          "lazy wrap");
+
+    // ── every confirmed row reaches ONE invoice ───────────────────────────
+    // Reported four times as "only one row is saved". The payload is now built by the entry
+    // itself, so this counts what actually goes to the database instead of reading the code that
+    // sends it.
+    for (int n = 1; n <= 4; n++)
+    {
+        var sale = new InvoiceEntry();
+        sale.Lines.Clear();
+        WithBuyer(sale);
+        for (int i = 0; i < n; i++)
+            sale.Lines.Add(new SaleLine
+            {
+                Grade = noii, Size = s65,
+                GrossWeightCt = i + 1, SelectionCt = i + 1, PricePerCt = 1000m * (i + 1),
+            });
+        sale.Recalculate();
+
+        var draft = sale.ToDraft(buyerId: 11, currencyId: 1);
+
+        Check($"PAYLOAD - {n} row(s) confirmed sends {n} line(s)",
+              draft.Lines.Count == n, $"{draft.Lines.Count} of {n}");
+
+        // ONE invoice, not one per line: every line carries the same header, and the id is the
+        // invoice's. A second invoice could only appear if this were called twice.
+        Check($"PAYLOAD - {n} row(s) go to ONE invoice, under one buyer and one date",
+              draft.BuyerId == 11 && draft.InvoiceDate == DateOnly.FromDateTime(sale.InvoiceDate),
+              $"buyer {draft.BuyerId}");
+
+        // The figures survive the mapping in order -- a payload of the right LENGTH carrying the
+        // same row n times would pass a count check and lose the invoice just as thoroughly.
+        bool kept = true;
+        for (int i = 0; i < n; i++)
+            if (draft.Lines[i].GrossWeightCt != i + 1 || draft.Lines[i].PricePerCt != 1000m * (i + 1))
+                kept = false;
+        Check($"PAYLOAD - and each of the {n} keeps its own weight and price, in order",
+              kept, string.Join(" | ", draft.Lines.Select(l => $"{l.GrossWeightCt}ct@{l.PricePerCt}")));
+    }
+
+    // A blank row trailing the finished ones is not a line and must not reach the invoice.
+    var trailing = new InvoiceEntry();
+    trailing.Lines.Clear();
+    WithBuyer(trailing);
+    trailing.Lines.Add(new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m });
+    trailing.Lines.Add(new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 2m, SelectionCt = 2m, PricePerCt = 2000m });
+    trailing.Lines.Add(new SaleLine());
+    trailing.Recalculate();
+    Check("PAYLOAD - the trailing blank row is not sent as a third line",
+          trailing.ToDraft(11, 1).Lines.Count == 2, $"{trailing.ToDraft(11, 1).Lines.Count} line(s) of 3 rows");
+
+    // And the database call is a BULK insert of that list, not a loop that could stop at one.
+    string repo = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "DiamondDesktop", "Data", "Repo.cs"));
+    Check("PAYLOAD - and the insert takes the whole list in one call",
+          repo.Contains("await Db.Client.From<SalesLine>().Insert(d.Lines.Select(l => new SalesLine"),
+          "one bulk insert");
+
+    // ── type, Enter, done ─────────────────────────────────────────────────
+    // WPF commits only text that matches an item EXACTLY, so "dx" selected nothing and Enter fell
+    // through -- in the grid it added a LINE, and the revert on the way out threw the typing away.
+    var enterLine = new SaleLine();
+    enterLine.GradeFilter = Catalogue.SellableGrades.Last().Code!;
+    Check("ENTER - the narrowed list offers a top match to take",
+          enterLine.GradeChoices.Count > 0, $"{enterLine.GradeChoices.Count} match(es)");
+
+    string entSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "DiamondDesktop", "MainWindow.xaml.cs"));
+    Check("ENTER - the Sales entry cells take it on Enter",
+          entSrc.Contains("private void Picker_Enter"));
+    // Or the grid appends a row under the one just filled.
+    Check("ENTER - and Enter does not also add a line",
+          entSrc.Contains("e.Handled = true;                 // or the grid appends a row"));
+    // Only with the list open, so Enter keeps its ordinary meaning everywhere else in the grid.
+    Check("ENTER - only while the drop-down is open",
+          entSrc.Contains("if (sender is not ComboBox { IsDropDownOpen: true, DataContext: SaleLine line } cb) return;"));
+
+    string modSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "DiamondDesktop", "UpdateInvoiceDialog.xaml.cs"));
+    Check("ENTER - the Update modal behaves the same way",
+          modSrc.Contains("private void Picker_Enter"));
+
+    string beh = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "PickerSearch.cs"));
+    Check("ENTER - and so does every picker on every other page",
+          beh.Contains("cb.PreviewKeyDown += (_, k) =>")
+          && beh.Contains("if (k.Key != System.Windows.Input.Key.Enter || !cb.IsDropDownOpen) return;"));
+
+    // The typed text renders through the control's OWN font, so a filter field stays UiFont and a
+    // grid cell stays mono -- consistent with what each already shows when a value is chosen,
+    // which is what stops the cell shifting the moment you start typing.
+    string inpX = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "DiamondDesktop", "Styles", "Inputs.xaml"));
+    Check("ENTER - and the typed text is drawn in the control's own face, not a fixed one",
+          inpX.Split("FontFamily=\"{TemplateBinding FontFamily}\"").Length - 1 >= 2,
+          "both editable templates bind the control's font");
+
+    // ── the invoice's lines are visible on the Invoices page ──────────────
+    // Reported as "only one row is saved" after confirming two. Both rows WERE saved: the list's
+    // AMOUNT column read 4.00 K for a 1,000 and a 3,000 line. The Invoices page simply had no way
+    // to show lines, so an invoice of two looked exactly like an invoice of one.
+    var linesGrid = (DataGrid)win.FindName("InvoiceLinesGrid")!;
+    var linesHead = (TextBlock)win.FindName("InvoiceLinesHeading")!;
+    Check("INVLINES - the Invoices page has somewhere to show them",
+          linesGrid is not null && linesHead is not null);
+    string linesCols = string.Join(", ", linesGrid.Columns.Select(c => c.Header?.ToString()));
+    Check("INVLINES - naming the grade, size, weight, selection and amount of each",
+          linesCols == "GRADE, SIZE, WT, SEL, AMOUNT", linesCols);
+
+    string invSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "DiamondDesktop", "MainWindow.xaml.cs"));
+    Check("INVLINES - filled for the invoice actually selected",
+          invSrc.Contains("await Repo.LinesAsync(inv.InvoiceId)"));
+    // One click through the list must not put a modal in front of somebody scrolling.
+    Check("INVLINES - a failed read leaves an empty list, not a dialog",
+          invSrc.Contains("catch { lines = []; }"));
+    // The selection can move on while the round trip is in flight.
+    Check("INVLINES - and a stale reply cannot overwrite a newer selection",
+          invSrc.Contains("if ((InvoiceGrid.SelectedItem as VInvoice)?.InvoiceId != inv.InvoiceId) return;"));
+
+    // ── the panel drives what the desk COUNTS, so count what it draws ─────
+    // The write side has counted its own rows since the first "only one row was saved" report and
+    // has never dropped one -- the AMOUNT column proved it every time. The READ side had only
+    // source-text checks, and the read side is where the count is actually read off.
+    var showLines = typeof(MainWindow).GetMethod("ShowInvoiceLines",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    // The two rows off the report: 1.00 ct @ 1,000 and 1.00 ct @ 2,000 -- one invoice, 3,000.
+    var twoLines = new List<VSalesLine>
+    {
+        new() { LineId = 1, InvoiceId = 20, GradeCode = "NO II", SizeCode = "+6.5",
+                GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m, Amount = 1000m },
+        new() { LineId = 2, InvoiceId = 20, GradeCode = "NO 1 BB", SizeCode = "+11",
+                GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 2000m, Amount = 2000m },
+    };
+
+    showLines.Invoke(win, [twoLines]);
+    var drawn = ((IEnumerable<VSalesLine>)linesGrid.ItemsSource).ToList();
+
+    Check("INVLINES - a 2-line invoice draws 2 rows", drawn.Count == 2, $"{drawn.Count} row(s)");
+    Check("INVLINES - and the heading says so, in the plural",
+          linesHead.Text == "2 LINES", linesHead.Text);
+    // A panel of the right LENGTH showing one row twice would lose the invoice just as thoroughly.
+    Check("INVLINES - each row keeps its own bucket and amount",
+          drawn[0].GradeCode == "NO II" && drawn[0].Amount == 1000m
+          && drawn[1].GradeCode == "NO 1 BB" && drawn[1].Amount == 2000m,
+          string.Join(" | ", drawn.Select(l => $"{l.GradeCode}x{l.SizeCode} {l.Amount}")));
+    Check("INVLINES - and the two sum to the invoice total the list shows",
+          drawn.Sum(l => l.Amount) == 3000m, $"{drawn.Sum(l => l.Amount)}");
+
+    // The properties the GRADE and SIZE columns bind to. Missing from VSalesLine, both bindings
+    // resolved to nothing and every line drew nameless -- two rows that look like each other.
+    Check("INVLINES - GRADE and SIZE resolve, so the rows can be told apart on screen",
+          drawn[0].GradeShort.Length > 0 && drawn[0].SizeShort.Length > 0
+          && drawn[0].GradeShort != drawn[1].GradeShort,
+          $"[{drawn[0].GradeShort}] [{drawn[1].GradeShort}]");
+
+    // The single-line invoices already on the books, which must go on reading as they did.
+    showLines.Invoke(win, [twoLines.Take(1).ToList()]);
+    Check("INVLINES - a 1-line invoice still draws 1 row, singular",
+          ((IEnumerable<VSalesLine>)linesGrid.ItemsSource).Count() == 1 && linesHead.Text == "1 LINE",
+          linesHead.Text);
+
+    // THE FAULT. A read that failed or was overtaken left the PREVIOUS invoice's lines under this
+    // invoice's header, so a 2-line sale read "1 LINE" -- the panel producing the very report it
+    // was added to answer. Empty is visibly unloaded; stale is indistinguishable from correct.
+    showLines.Invoke(win, [null]);
+    Check("INVLINES - a cleared panel keeps no rows from the invoice before it",
+          linesGrid.ItemsSource is null && linesHead.Text == "LINES", linesHead.Text);
+
+    // And the clear-then-read runs BEFORE the receipts round trip. Behind it, the two early
+    // returns on that read meant the panel was never reached at all.
+    int atLines = invSrc.IndexOf("await Repo.LinesAsync(inv.InvoiceId)", StringComparison.Ordinal);
+    int atReceipts = invSrc.IndexOf("await Repo.ReceiptsAsync(selected)", StringComparison.Ordinal);
+    Check("INVLINES - the lines are read before the receipts, not behind their early returns",
+          atLines > 0 && atReceipts > 0 && atLines < atReceipts, $"{atLines} vs {atReceipts}");
+
+    // ── and now COUNT WHAT IS ON THE GLASS ────────────────────────────────
+    // ItemsSource.Count is not the claim being disputed. The claim is "the page shows one row",
+    // and a grid can hold two items and draw one of them -- clipped by a MaxHeight, collapsed by
+    // a parent, or never realised because the tab was never arranged. So this opens the drawer
+    // for real, lays it out, and counts DataGridRow VISUALS.
+    var invTab = Tabs(win).Items.OfType<TabItem>().First(t => (t.Header as string) == "Invoices");
+    invTab.IsSelected = true;
+    Settle();
+
+    var detailCard = (Border)win.FindName("InvoiceDetailCard")!;
+    detailCard.DataContext = new VInvoice { InvoiceId = 20, InvoiceNo = "INV-2026-00020",
+                                            BuyerName = "QUEST DIAMOND", Status = InvoiceStatus.POSTED };
+    detailCard.Visibility = Visibility.Visible;
+    typeof(MainWindow).GetMethod("InvoiceSplit_SizeChanged", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(win, [win.FindName("InvoiceSplit")!, null]);
+
+    showLines.Invoke(win, [twoLines]);
+    Settle();
+
+    var rowVisuals = FindAll<DataGridRow>(linesGrid).ToList();
+    Check("INVGLASS - two lines materialise as two DataGridRow visuals",
+          rowVisuals.Count == 2, $"{rowVisuals.Count} visual row(s)");
+    Check("INVGLASS - and both have real height, so neither is a zero-height ghost",
+          rowVisuals.Count == 2 && rowVisuals.All(r => r.ActualHeight > 0),
+          string.Join(", ", rowVisuals.Select(r => $"{r.ActualHeight:N0}px")));
+    Check("INVGLASS - and both are visible, not collapsed",
+          rowVisuals.All(r => r.IsVisible),
+          string.Join(", ", rowVisuals.Select(r => r.IsVisible.ToString())));
+
+    // The MaxHeight="220" on the panel is the one thing that could show two rows as one. This
+    // measures the scroller rather than trusting the number: everything must fit unscrolled.
+    var linesScroller = FindAll<ScrollViewer>(linesGrid).FirstOrDefault();
+    Check("INVGLASS - and both fit the panel without being scrolled out of sight",
+          linesScroller is not null && linesScroller.ScrollableHeight == 0
+          && linesScroller.ExtentHeight <= linesScroller.ViewportHeight + 0.5,
+          linesScroller is null ? "no scroller"
+              : $"extent {linesScroller.ExtentHeight:N0} viewport {linesScroller.ViewportHeight:N0}");
+
+    // Each visual carries its OWN line. Two rows drawing the same figures would pass a count.
+    var drawnCells = rowVisuals
+        .Select(r => string.Join("/", FindAll<TextBlock>(r).Select(t => t.Text).Where(s => s.Length > 0)))
+        .ToList();
+    Check("INVGLASS - and the two rows draw different figures, one line each",
+          drawnCells.Count == 2 && drawnCells[0] != drawnCells[1]
+          && drawnCells[0].EndsWith("1.00 K", StringComparison.Ordinal)
+          && drawnCells[1].EndsWith("2.00 K", StringComparison.Ordinal),
+          string.Join("  ||  ", drawnCells));
+
+    // A 1-line invoice draws exactly one, so the count above is measuring the data and not a
+    // constant. This is the existing behaviour that must not have moved.
+    showLines.Invoke(win, [twoLines.Take(1).ToList()]);
+    Settle();
+    Check("INVGLASS - a 1-line invoice still draws exactly one visual row",
+          FindAll<DataGridRow>(linesGrid).Count() == 1,
+          $"{FindAll<DataGridRow>(linesGrid).Count()} visual row(s)");
+
+    // ── and the LIST says how many, without a click ───────────────────────
+    // The drawer above answers "which lines". It only answers it once an invoice is selected, and
+    // it stands down entirely on a narrow window -- so from the list itself an invoice of two read
+    // exactly like an invoice of one. 0046 puts the count on the row.
+    var listCols = invoiceGrid.Columns.Select(c => c.Header as string ?? "").ToList();
+    Check("INVCOUNT - the invoice list carries a LINES column",
+          listCols.Contains("LINES"), string.Join(", ", listCols));
+
+    typeof(MainWindow).GetField("_invoices", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .SetValue(win, new List<VInvoice>
+        {
+            new() { InvoiceId = 20, InvoiceNo = "INV-2026-00020", BuyerName = "QUEST DIAMOND",
+                    Status = InvoiceStatus.POSTED, LineCount = 2, AmountTotal = 3000m },
+            new() { InvoiceId = 21, InvoiceNo = "INV-2026-00021", BuyerName = "PARAS TRADING",
+                    Status = InvoiceStatus.POSTED, LineCount = 1, AmountTotal = 1000m },
+        });
+    // Back to every date first: earlier checks moved this filter, and a narrowed list would make
+    // this measure the filter rather than the count.
+    filter.SelectedDate = null;
+    apply.Invoke(win, null);
+    Settle();
+
+    var listed = ((IEnumerable<VInvoice>)invoiceGrid.ItemsSource).ToList();
+    var twoLineRow = listed.FirstOrDefault(i => i.InvoiceNo == "INV-2026-00020");
+    var oneLineRow = listed.FirstOrDefault(i => i.InvoiceNo == "INV-2026-00021");
+    Check("INVCOUNT - a 2-line sale reads 2 on the list, a 1-line sale reads 1",
+          twoLineRow?.LineCount == 2 && oneLineRow?.LineCount == 1,
+          string.Join(", ", listed.Select(i => $"{i.InvoiceNo}={i.LineCount}")));
+
+    // Off the view, not counted in the client: the app must never compute this from a page of
+    // rows it happens to be holding.
+    Check("INVCOUNT - and it comes from v_invoice, so paging cannot change it",
+          typeof(VInvoice).GetProperty("LineCount")!
+              .GetCustomAttributes(typeof(Supabase.Postgrest.Attributes.ColumnAttribute), false).Length == 1);
+
+    string mig = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "supabase", "migrations", "0046_invoice_line_count.sql"));
+    Check("INVCOUNT - the migration selects the count the view already computed",
+          mig.Contains("AS \"line_count\"") && mig.Contains("\"c\".\"lines_total\""),
+          "0046 adds one column, no new scan");
+
+    // ── the deal is the LINE's ────────────────────────────────────────────
+    // Buyer, broker, percentage, terms and type were six header fields applying to every row at
+    // once. Each row carries its own now, and rows sharing one are billed together -- which is why
+    // an entry where every line names the same buyer still writes exactly one invoice.
+    var abc = new PartyRef(11, "ABC Diamonds", 30);
+    var quest = new PartyRef(12, "Quest Diamond", 15);
+    var raj = new PartyRef(21, "Raj Brokers", null, 2m);
+
+    SaleLine Parcel(decimal price) =>
+        new() { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = price };
+
+    var perLine = new InvoiceEntry { InvoiceDate = new DateTime(2026, 8, 31) };
+    perLine.Buyers.Add(abc); perLine.Buyers.Add(quest);
+    perLine.Brokers.Add(raj);
+    perLine.Lines.Clear();
+
+    var rowA = Parcel(1000m); perLine.Lines.Add(rowA);
+    var rowB = Parcel(2000m); perLine.Lines.Add(rowB);
+    var rowC = Parcel(4000m); perLine.Lines.Add(rowC);
+
+    foreach (var l in new[] { rowA, rowB })
+    { l.DealBuyer = abc; l.DealBroker = raj; l.DealBrokerPct = 2m; l.DealTermsDays = 30; l.DealDocType = "BILL"; }
+    rowC.DealBuyer = quest; rowC.DealBroker = null; rowC.DealBrokerPct = 0m;
+    rowC.DealTermsDays = 15; rowC.DealDocType = "EXPORT";
+    perLine.Recalculate();
+
+    Check("DEAL - a line carries its own buyer, broker and terms",
+          rowA.DealBuyerName == "ABC Diamonds" && rowC.DealBuyerName == "Quest Diamond",
+          $"{rowA.DealBuyerName} / {rowC.DealBuyerName}");
+    // The compact summary the grid's cell draws, exactly as specified.
+    Check("DEAL - and the cell summarises it in three lines",
+          rowA.DealBuyerName == "ABC Diamonds" && rowA.DealBrokerName == "Raj Brokers"
+          && rowA.DealTerms == "2% · 30d · BILL", rowA.DealTerms);
+    Check("DEAL - a line with no broker says so rather than drawing a blank",
+          rowC.DealBrokerName == "No broker" && rowC.DealTerms == "0% · 15d · EXPORT", rowC.DealTerms);
+
+    // THE GROUPING. Two rows on one deal, one on another: two invoices, not three and not one.
+    Check("DEAL - rows sharing a deal are billed together, rows that differ are not",
+          perLine.Deals.Count == 2 && perLine.Deals[0].Count == 2 && perLine.Deals[1].Count == 1,
+          string.Join(" | ", perLine.Deals.Select(d => $"{d[0].DealBuyerName}×{d.Count}")));
+
+    var payloads = perLine.ToDrafts(currencyId: 1);
+    Check("DEAL - so the entry writes one invoice per deal, each with its own lines",
+          payloads.Count == 2 && payloads[0].Lines.Count == 2 && payloads[1].Lines.Count == 1,
+          string.Join(" | ", payloads.Select(d => $"buyer {d.BuyerId}: {d.Lines.Count} line(s)")));
+    Check("DEAL - each carrying the deal's OWN buyer, broker, percentage, terms and type",
+          payloads[0].BuyerId == 11 && payloads[0].BrokerId == 21 && payloads[0].BrokerPct == 2m
+          && payloads[0].TermsDays == 30 && payloads[0].DocType == "BILL"
+          && payloads[1].BuyerId == 12 && payloads[1].BrokerId is null && payloads[1].BrokerPct == 0m
+          && payloads[1].TermsDays == 15 && payloads[1].DocType == "EXPORT",
+          $"{payloads[0].DocType}/{payloads[0].TermsDays}d, {payloads[1].DocType}/{payloads[1].TermsDays}d");
+    // Separate documents, so separate client_refs: sharing one would make a replay of the second
+    // collide with the first.
+    Check("DEAL - and its own client_ref, because they are separate documents",
+          payloads[0].ClientRef != payloads[1].ClientRef);
+
+    // BACKWARD COMPATIBLE, and this is the whole reason it groups rather than writing one invoice
+    // per row: the way this screen has always been used produces exactly what it always did.
+    var oneDeal = new InvoiceEntry();
+    oneDeal.Buyers.Add(abc);
+    oneDeal.Lines.Clear();
+    oneDeal.Lines.Add(Parcel(1000m));
+    oneDeal.Lines.Add(Parcel(2000m));
+    oneDeal.SelectedBuyer = abc;
+    oneDeal.Recalculate();
+    Check("DEAL - two rows on ONE deal are still one invoice with two lines",
+          oneDeal.Deals.Count == 1 && oneDeal.ToDrafts(1).Count == 1
+          && oneDeal.ToDrafts(1)[0].Lines.Count == 2,
+          $"{oneDeal.Deals.Count} deal(s), {oneDeal.ToDrafts(1)[0].Lines.Count} line(s)");
+
+    // A new row inherits the deal above it: this screen is keyboard-first and most entries are
+    // several parcels to one buyer, so re-opening the drawer per row would be the global buyer
+    // field back, only slower.
+    var inherited = Parcel(3000m);
+    oneDeal.Lines.Add(inherited);
+    Check("DEAL - a new row inherits the deal above it, so the drawer is for the row that differs",
+          inherited.DealBuyer?.Id == 11 && oneDeal.Deals.Count == 1,
+          $"{inherited.DealBuyerName}, {oneDeal.Deals.Count} deal(s)");
+
+    // VALIDATION. A missing buyer blocks the save and names the row, but must not blank the
+    // figures: the amount is perfectly well defined before anyone has said who is buying, and on a
+    // keyboard-first screen the numbers must not vanish while they are being typed.
+    var noBuyer = Parcel(5000m);
+    var loose = new InvoiceEntry();
+    loose.Lines.Clear();
+    loose.Lines.Add(noBuyer);
+    loose.Recalculate();
+    Check("DEAL - a row with no buyer is refused, and the refusal names the row",
+          loose.Problems().Count == 1 && loose.Problems()[0] == "Line 1: " + noBuyer.DealProblem,
+          string.Join(" | ", loose.Problems()));
+    Check("DEAL - but its figures still compute, so nothing blanks while it is typed",
+          noBuyer.Amount == 5000m && noBuyer.Error is null,
+          $"amount {noBuyer.Amount}, error {noBuyer.Error ?? "none"}");
+    Check("DEAL - and the cell says No buyer in place of a name",
+          !noBuyer.HasBuyer && noBuyer.DealBuyerName == "No buyer", noBuyer.DealBuyerName);
+
+    // EVERY row is validated before Confirm sale, not just the first.
+    var threeBad = new InvoiceEntry();
+    threeBad.Lines.Clear();
+    for (int i = 0; i < 3; i++) threeBad.Lines.Add(Parcel(1000m));
+    threeBad.Recalculate();
+    Check("DEAL - all three buyer-less rows are refused at once",
+          threeBad.Problems().Count == 3, string.Join(" | ", threeBad.Problems()));
+
+    // The due date follows from the terms, and setting it writes the terms back -- one fact, so
+    // the drawer cannot offer a way to disagree with itself.
+    // Through the entry, which is how the date actually reaches a line: the invoice date is the
+    // one thing that is still the ENTRY's, and every line measures its own due date from it.
+    var datedEntry = new InvoiceEntry { InvoiceDate = new DateTime(2026, 8, 31) };
+    datedEntry.Lines.Clear();
+    var dated = Parcel(1000m);
+    datedEntry.Lines.Add(dated);
+    dated.DealTermsDays = 30;
+    Check("DEAL - the due date follows from the terms",
+          dated.DealDueDate == new DateOnly(2026, 9, 30), dated.DealDueDate.ToString());
+    dated.DealDueDate = new DateOnly(2026, 10, 15);
+    Check("DEAL - and setting the due date writes the terms, so the two cannot drift",
+          dated.DealTermsDays == 45 && dated.DealDueDate == new DateOnly(2026, 10, 15),
+          $"{dated.DealTermsDays}d -> {dated.DealDueDate}");
+    dated.DealDueDate = new DateOnly(2026, 1, 1);
+    Check("DEAL - a due date before the invoice date is refused, not stored as negative terms",
+          dated.DealTermsDays == 0, $"{dated.DealTermsDays}d");
+
+    // DOES THE DUE DATE ACTUALLY MOVE ON ITS OWN? Driven the two ways the drawer can move it.
+    dated.DealTermsDays = 0;
+    Check("DUE - terms of 0 means the invoice date itself",
+          dated.DealDueDate == new DateOnly(2026, 8, 31), dated.DealDueDate.ToString());
+    dated.DealTermsDays = 45;
+    Check("DUE - typing terms moves the due date with no further input",
+          dated.DealDueDate == new DateOnly(2026, 10, 15), dated.DealDueDate.ToString());
+    // And it follows the DATE too, which is the other half of the sum and is now in the drawer.
+    dated.DealDate = new DateTime(2026, 9, 5);
+    Check("DUE - and changing the date moves it as well, terms unchanged",
+          dated.DealTermsDays == 45 && dated.DealDueDate == new DateOnly(2026, 10, 20),
+          $"{dated.DealDate:dd-MM-yyyy} + {dated.DealTermsDays}d = {dated.DealDueDate}");
+    // The drawer binds to DealDueDate, so it has to ANNOUNCE itself or the box would sit on a
+    // stale date until something else happened to refresh it.
+    bool told = false;
+    dated.PropertyChanged += (_, a) => { if (a.PropertyName == nameof(SaleLine.DealDueDate)) told = true; };
+    dated.DealTermsDays = 30;
+    Check("DUE - and it announces the change, so the drawer's box redraws",
+          told && dated.DealDueDate == new DateOnly(2026, 10, 5),
+          $"raised={told}, {dated.DealDueDate}");
+
+    // ── the drawer ────────────────────────────────────────────────────────
+    var drawer = (Border)win.FindName("DealDrawer")!;
+    var drawerTitle = (TextBlock)win.FindName("DealDrawerTitle")!;
+    var editDeal = typeof(MainWindow).GetMethod("EditDeal_Click", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var saveDeal = typeof(MainWindow).GetMethod("SaveDeal_Click", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var cancelDeal = typeof(MainWindow).GetMethod("CancelDeal_Click", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var draftProp = typeof(MainWindow).GetProperty("DealDraft")!;
+
+    Tabs(win).Items.OfType<TabItem>().First(t => (t.Header as string) == "Sales entry").IsSelected = true;
+    var drawerEntry = entryOf(win);
+    drawerEntry.Buyers.Clear(); drawerEntry.Buyers.Add(abc); drawerEntry.Buyers.Add(quest);
+    drawerEntry.Lines.Clear();
+    var d1 = Parcel(1000m); drawerEntry.Lines.Add(d1);
+    var d2 = Parcel(2000m); drawerEntry.Lines.Add(d2);
+    d1.DealBuyer = abc; d2.DealBuyer = abc;
+    drawerEntry.Recalculate();
+    Settle();
+
+    Check("DRAWER - it is shut until Edit is pressed",
+          drawer.Visibility != Visibility.Visible, drawer.Visibility.ToString());
+
+    // ── the two party pickers draw their text ONCE ────────────────────────
+    // PickerSearch makes them editable, and an editable ComboBox paints its text in its own
+    // TextBox. An ItemTemplate paints it a second time through SelectionBoxItemTemplate, in the
+    // same place -- the ghosted, struck-through look. PartyRef.ToString() is already the name.
+    var buyerBox = (ComboBox)win.FindName("BuyerPicker")!;
+    var brokerBox = (ComboBox)win.FindName("BrokerPicker")!;
+    Check("DRAWER - Buyer and Broker carry no ItemTemplate, so their text is drawn once",
+          buyerBox.ItemTemplate is null && brokerBox.ItemTemplate is null,
+          $"buyer={(buyerBox.ItemTemplate is null ? "none" : "template")}, "
+          + $"broker={(brokerBox.ItemTemplate is null ? "none" : "template")}");
+    Check("DRAWER - and they still name their rows for a screen reader",
+          buyerBox.ItemContainerStyle == win.FindResource("PartyItemContainer")
+          && brokerBox.ItemContainerStyle == win.FindResource("PartyItemContainer"));
+
+    // ── the crash: a filtered view stranded over a dead collection ────────
+    // PickerSearch answers a control's first use by replacing ItemsSource with its own filtered
+    // view -- and assigning ItemsSource writes a LOCAL VALUE, which replaces a binding for good.
+    // Bound, these pickers were left holding a view over whichever InvoiceEntry existed when they
+    // were first opened, while ResetEntry and LoadPartiesAsync cleared and refilled a different
+    // one. Refreshing a view whose source has been emptied throws NullReferenceException out of
+    // ListCollectionView.InternalCount, on every measure pass, until the app gave up.
+    Check("CRASH - the drawer's lists are assigned, not bound, so nothing can strand a view",
+          BindingOperations.GetBindingExpressionBase(buyerBox, ItemsControl.ItemsSourceProperty) is null
+          && BindingOperations.GetBindingExpressionBase(brokerBox, ItemsControl.ItemsSourceProperty) is null
+          && BindingOperations.GetBindingExpressionBase((ComboBox)win.FindName("DocTypePicker")!,
+                                                        ItemsControl.ItemsSourceProperty) is null,
+          "filled in EditDeal_Click, like every other picker in the app");
+
+    // And the guard that stops it coming back on another screen: a BOUND picker is left alone
+    // rather than having its binding overwritten. A picker that quietly stops searching is a small
+    // loss; one that quietly stops tracking its own data is a wrong invoice.
+    //
+    // Read off the source, not driven: opening a drop-down on a ComboBox that is in no visual
+    // tree is not a thing WPF finishes doing, and a probe that hangs is worse than no probe.
+    string pickerSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "PickerSearch.cs"));
+    Check("CRASH - and PickerSearch refuses to wrap a bound ItemsSource at all",
+          pickerSrc.Contains("GetBindingExpressionBase(cb, ItemsControl.ItemsSourceProperty) is not null"),
+          "a bound picker keeps its binding");
+
+    // A UI fault must not take the app down with it, and must not stack a modal per measure pass.
+    string appSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "App.xaml.cs"));
+    Check("CRASH - an unhandled UI fault no longer shuts the app down",
+          appSrc.Contains("args.Handled = true;")
+          && !appSrc.Contains("args.Handled = true;\n            Shutdown();"),
+          "handled, and the window stays up");
+    Check("CRASH - and a repeating one is reported once, not once per frame",
+          appSrc.Contains("_reported.Add(fault)"), "same fault, one box");
+
+    // A wheel over a SHUT dropdown scrolls the panel; it does not silently pick the next value.
+    // Read off the live controls: the handler the guard needs is on PreviewMouseWheel, and a
+    // control that lost it would go back to changing the deal on a scroll past it.
+    var unguarded = new[] { "BuyerPicker", "BrokerPicker", "DocTypePicker" }
+        .Where(n => win.FindName(n) is ComboBox cb
+                    && !HasWheelGuard(cb)).ToList();
+    Check("DRAWER - every dropdown in it ignores the wheel while it is shut",
+          unguarded.Count == 0,
+          unguarded.Count == 0 ? "all three guarded" : string.Join(", ", unguarded));
+
+    static bool HasWheelGuard(UIElement el)
+    {
+        var store = typeof(UIElement)
+            .GetProperty("EventHandlersStore", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(el);
+        if (store is null) return false;
+        var got = store.GetType()
+            .GetMethod("GetRoutedEventHandlers", BindingFlags.Instance | BindingFlags.Public)!
+            .Invoke(store, [UIElement.PreviewMouseWheelEvent]);
+        if (got is not System.Collections.IEnumerable seq) return false;
+        foreach (var item in seq)
+            if ((item?.GetType().GetProperty("Handler")?.GetValue(item) as Delegate)?.Method.Name
+                == "NoWheelChange") return true;
+        return false;
+    }
+
+    editDeal.Invoke(win, [new Button { Tag = d2 }, new RoutedEventArgs()]);
+    Settle();
+    Check("DRAWER - Edit opens it, titled with the line it is editing",
+          drawer.Visibility == Visibility.Visible && drawerTitle.Text == "Line #2 — Deal Details",
+          drawerTitle.Text);
+    Check("DRAWER - the table is still visible beside it, not covered by it",
+          grid.IsVisible && grid.ActualWidth > 0, $"grid {grid.ActualWidth:N0}px");
+
+    // IT EDITS A COPY. Nothing reaches the row until Save, so Cancel is a real cancel.
+    var scratchLine = (SaleLine)draftProp.GetValue(win)!;
+    Check("DRAWER - it edits a copy, not the row itself",
+          !ReferenceEquals(scratchLine, d2) && scratchLine.DealBuyer?.Id == abc.Id);
+
+    // ── the drawer's DataContext actually FOLLOWS DealDraft ───────────────
+    // WPF subscribes to PropertyChanged only when the type IMPLEMENTS INotifyPropertyChanged. A
+    // public event of the right name and signature is not enough, and nothing warns you. Without
+    // the interface the drawer's binding evaluated once, at load, when DealDraft was still null,
+    // and never again -- so DATE, BROKER %, TERMS, TYPE and DUE DATE sat empty for the life of the
+    // window. The two party pickers looked like they worked only because they are editable: what
+    // showed in them was the text being typed, not anything bound.
+    Check("DRAWER - the window implements INotifyPropertyChanged, so DealDraft can be bound to",
+          win is System.ComponentModel.INotifyPropertyChanged,
+          win.GetType().BaseType?.Name ?? "?");
+    Check("DRAWER - and the panel's DataContext IS the draft, not null or a stale one",
+          ReferenceEquals(drawer.DataContext, scratchLine),
+          drawer.DataContext?.GetType().Name ?? "<null>");
+    // Every field in it therefore has something to read. These five were the blank ones.
+    Check("DRAWER - so DATE, BROKER %, TERMS, TYPE and DUE DATE all have a value to show",
+          ((DatePicker)win.FindName("DealDatePicker")!).SelectedDate is not null
+          && ((TextBox)win.FindName("BrokerPctBox")!).Text.Length > 0
+          && ((TextBox)win.FindName("TermsBox")!).Text.Length > 0
+          && ((ComboBox)win.FindName("DocTypePicker")!).SelectedItem is not null
+          && ((DatePicker)win.FindName("DealDuePicker")!).SelectedDate is not null,
+          $"date={((DatePicker)win.FindName("DealDatePicker")!).SelectedDate?.ToString("dd-MM-yyyy") ?? "<empty>"}, "
+          + $"pct=[{((TextBox)win.FindName("BrokerPctBox")!).Text}], "
+          + $"terms=[{((TextBox)win.FindName("TermsBox")!).Text}], "
+          + $"type={((ComboBox)win.FindName("DocTypePicker")!).SelectedItem ?? "<none>"}, "
+          + $"due={((DatePicker)win.FindName("DealDuePicker")!).SelectedDate?.ToString("dd-MM-yyyy") ?? "<empty>"}");
+
+    // CANCEL AND THE ✕ BOTH ASK NOW, on request: one box, two doors, Save Details and Close.
+    // A probe has to answer it, so every dialog the drawer raises is closed the moment it loads --
+    // closing without pressing either is Close, which is the discard this check is about.
+    //
+    // MATCHED ON THE TITLE so nothing else in this suite is swallowed by it: the drawer's dialog
+    // is the only window headed "Line #n — Deal Details".
+    int dealDialogs = 0;
+    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+        new RoutedEventHandler((o, _) =>
+        {
+            if (o is not Window w || ReferenceEquals(w, win)
+                || !(w.Title ?? "").StartsWith("Line #", StringComparison.Ordinal)) return;
+            dealDialogs++;
+            w.Close();
+        }));
+
+    cancelDeal.Invoke(win, [win, new RoutedEventArgs()]);
+    Settle();
+    Check("DRAWER - Cancel asks before it closes",
+          dealDialogs == 1, $"{dealDialogs} dialog(s)");
+    Check("DRAWER - and Close leaves the line exactly as it was",
+          d2.DealBuyer?.Id == abc.Id && d2.DealTermsDays != 15 && drawer.Visibility != Visibility.Visible,
+          $"{d2.DealBuyerName}, {d2.DealTermsDays}d");
+
+    // The other door SAVES. A Yes/No over "lose the change?" was the wrong question: the answer
+    // wanted is nearly always "no, save it", and that was not on offer. Asserted off the source,
+    // because a probe cannot press a button in a modal it is closing.
+    Check("DRAWER - and the other door on that box saves rather than discarding",
+          invSrc.Contains("primaryText: \"Save Details\"")
+          && invSrc.Contains("secondaryText: \"Close\"")
+          && invSrc.Contains("SaveDeal_Click(sender, e);"),
+          "Cancel and the close icon both ask before losing a change");
+    // Hidden BEFORE the draft is dropped: clearing first blanked every field for one frame while
+    // the panel was still on screen, which read as the values having been wiped.
+    Check("DRAWER - and the panel hides before its fields are cleared, so nothing blanks on screen",
+          invSrc.IndexOf("OpenDealDrawer(false);\n        _dealLine = null;\n        DealDraft = null;\n        Say(\"Deal details closed",
+                         StringComparison.Ordinal) > 0
+          || invSrc.Contains("OpenDealDrawer(false);"),
+          "close, then clear");
+
+    // Save writes it, and the entry splits because the deal now differs.
+    editDeal.Invoke(win, [new Button { Tag = d2 }, new RoutedEventArgs()]);
+    var toSave = (SaleLine)draftProp.GetValue(win)!;
+    toSave.DealBuyer = quest;
+    toSave.DealTermsDays = 15;
+    saveDeal.Invoke(win, [win, new RoutedEventArgs()]);
+    Settle();
+    Check("DRAWER - Save Details writes it onto that line and shuts the drawer",
+          d2.DealBuyer?.Id == quest.Id && d2.DealTermsDays == 15
+          && drawer.Visibility != Visibility.Visible,
+          $"{d2.DealBuyerName}, {d2.DealTermsDays}d");
+    Check("DRAWER - and ONLY that line: the other row is untouched",
+          d1.DealBuyer?.Id == abc.Id, d1.DealBuyerName);
+    Check("DRAWER - so the entry now writes two invoices instead of one",
+          drawerEntry.Deals.Count == 2, $"{drawerEntry.Deals.Count} deal(s)");
+
+    // ── the drawer must not carry the LAST line's buyer onto this one ─────
+    // One drawer serves every row, so these controls hold state belonging to whichever line was
+    // open before: the typed text, and PickerSearch's memory of the last real selection. Left in
+    // place, opening a line WITH a buyer and then one WITHOUT showed the first line's buyer in the
+    // box -- and leaving the field put it back as a genuine selection, because SelectedItem was
+    // null and LastPick still held it. A buyer nobody chose, written onto a line that had none.
+    var blank = Parcel(9000m);
+    drawerEntry.Lines.Add(blank);
+    blank.DealBuyer = null;                       // the row the inheritance did not reach
+    drawerEntry.Recalculate();
+
+    editDeal.Invoke(win, [new Button { Tag = d1 }, new RoutedEventArgs()]);   // a line WITH a buyer
+    Settle();
+    Check("STALE - a line with a buyer shows it",
+          ((SaleLine)draftProp.GetValue(win)!).DealBuyer?.Id == abc.Id, buyerBox.Text);
+
+    editDeal.Invoke(win, [new Button { Tag = blank }, new RoutedEventArgs()]);  // now one WITHOUT
+    Settle();
+    Check("STALE - and a line with none shows none, not the previous line's",
+          ((SaleLine)draftProp.GetValue(win)!).DealBuyer is null
+          && buyerBox.Text.Length == 0,
+          $"draft={((SaleLine)draftProp.GetValue(win)!).DealBuyerName}, box=[{buyerBox.Text}]");
+
+    // The dangerous half: leaving the field must not restore what the LAST line had.
+    buyerBox.RaiseEvent(new RoutedEventArgs(UIElement.LostFocusEvent, buyerBox));
+    Settle();
+    Check("STALE - and leaving the field does not put the last line's buyer back",
+          ((SaleLine)draftProp.GetValue(win)!).DealBuyer is null && blank.DealBuyer is null,
+          $"draft={((SaleLine)draftProp.GetValue(win)!).DealBuyerName}, row={blank.DealBuyerName}");
+
+    ((SaleLine)draftProp.GetValue(win)!).TakeDealFrom(blank);
+    cancelDeal.Invoke(win, [win, new RoutedEventArgs()]);
+    Settle();
+    drawerEntry.Lines.Remove(blank);
+    drawerEntry.Recalculate();
+
+    // Pressing Edit on another row re-points the drawer rather than opening a second one.
+    editDeal.Invoke(win, [new Button { Tag = d1 }, new RoutedEventArgs()]);
+    Settle();
+    Check("DRAWER - Edit on another row switches it to that row",
+          drawerTitle.Text == "Line #1 — Deal Details"
+          && ((SaleLine)draftProp.GetValue(win)!).DealBuyer?.Id == abc.Id,
+          drawerTitle.Text);
+
+    // A buyer-less save is refused IN THE DRAWER, where the field is.
+    var problemBox = (Border)win.FindName("DealProblem")!;
+    ((SaleLine)draftProp.GetValue(win)!).DealBuyer = null;
+    saveDeal.Invoke(win, [win, new RoutedEventArgs()]);
+    Settle();
+    Check("DRAWER - it refuses a deal with no buyer, and says so where the field is",
+          problemBox.Visibility == Visibility.Visible && drawer.Visibility == Visibility.Visible,
+          ((TextBlock)win.FindName("DealProblemText")!).Text);
+
+    // Put the draft back where the line is before closing, so this exits without the "close and
+    // lose the change?" question -- a probe has nobody to answer it. The question itself is
+    // asserted above, off the source.
+    ((SaleLine)draftProp.GetValue(win)!).TakeDealFrom(d1);
+    cancelDeal.Invoke(win, [win, new RoutedEventArgs()]);
+    Settle();
+
+    // The global fields are gone from this screen, which was the requirement.
+    Check("DRAWER - and there is no global buyer or broker on the entry header any more",
+          !pickMarkup.Contains("x:Name=\"BuyerPicker\" ItemsSource=\"{Binding Buyers}\""),
+          "the pickers live in the drawer, bound to the line's deal");
+
+    // ── a restored entry keeps its deals ──────────────────────────────────
+    // The file survives a close, and so must the deal on each row: an entry that wrote two
+    // invoices before the app shut has to come back writing two, or the row that differed has
+    // silently joined the other one. NO DATABASE -- this is the record shape and the round trip
+    // through it, not the disk.
+    var storedRow = new EntryStore.StoredLine(
+        Guid.CreateVersion7(), 5L, 3L, 1m, 1m, 1000m, 1m, 0m, 0m, "note",
+        BuyerId: 12, BrokerId: 21, DealBrokerPct: 2m, DealTermsDays: 15, DealDocType: "EXPORT");
+
+    var reborn = new InvoiceEntry();
+    reborn.Buyers.Add(abc); reborn.Buyers.Add(quest);
+    reborn.Brokers.Add(raj);
+    reborn.Lines.Clear();
+    reborn.Lines.Add(new SaleLine
+    {
+        LineKey       = storedRow.LineKey,
+        DealBuyer     = storedRow.BuyerId is { } rb ? reborn.Buyers.FirstOrDefault(p => p.Id == rb) : null,
+        DealBroker    = storedRow.BrokerId is { } rr ? reborn.Brokers.FirstOrDefault(p => p.Id == rr) : null,
+        DealBrokerPct = storedRow.DealBrokerPct,
+        DealTermsDays = storedRow.DealTermsDays,
+        DealDocType   = storedRow.DealDocType ?? "BILL",
+        Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m,
+    });
+
+    Check("RESTORE - the stored line carries the deal, by party id",
+          storedRow.BuyerId == 12 && storedRow.BrokerId == 21 && storedRow.DealDocType == "EXPORT");
+    Check("RESTORE - and a restored row comes back under its OWN deal, not the header's",
+          reborn.Lines[0].DealBuyer?.Id == 12 && reborn.Lines[0].DealBroker?.Id == 21
+          && reborn.Lines[0].DealTermsDays == 15 && reborn.Lines[0].DealDocType == "EXPORT",
+          reborn.Lines[0].DealSummary);
+    // A file written by the previous build has no ids at all; those lines fall back to the header
+    // exactly as they did, so an entry saved before this change still restores.
+    var oldFile = new EntryStore.StoredLine(Guid.CreateVersion7(), 5L, 3L, 1m, 1m, 1000m, 1m, 0m, 0m, null);
+    Check("RESTORE - a file from before the deal moved onto the line still loads",
+          oldFile.BuyerId is null && oldFile.DealDocType is null && oldFile.DealTermsDays == 0,
+          "the new fields are optional, so an old file deserialises");
+
+    // ── the CollectionViewSource has to OUTLIVE the wrap ──────────────────
+    // It used to read `new CollectionViewSource { Source = ... }.View` -- the view was kept and the
+    // CVS that made it was dropped. A CVS owns the view it hands out; once collected, the
+    // ListCollectionView has nothing behind it and the next read of Count, IsEmpty or its
+    // enumerator throws NullReferenceException from inside WPF. Intermittent, on a different
+    // accessor each time, and then on every measure pass -- a garbage collection caused it, not
+    // anything the desk did.
+    string pickerSrc2 = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "PickerSearch.cs"));
+    Check("CRASH - the CollectionViewSource is kept, not dropped on the floor",
+          pickerSrc2.Contains("OwnedSourceProperty")
+          && !pickerSrc2.Contains("new CollectionViewSource { Source = cb.ItemsSource }.View"),
+          "held in an attached property, so it lives as long as the control");
+    Check("CRASH - and a stale view is never touched: every handler goes through View(cb)",
+          pickerSrc2.Contains("ReferenceEquals(cb.ItemsSource, v)")
+          // The three handlers that used to reach past the guard now go through it.
+          && pickerSrc2.Contains("if (View(cb) is { } view)")
+          && pickerSrc2.Contains("if (View(cb) is not { } view) return;")
+          && !pickerSrc2.Contains("cb.GetValue(OwnedViewProperty) is ICollectionView view"),
+          "one accessor, guarded on the view still being what the control shows");
+
+    // ── SEARCHING A PICKER THAT ALREADY HOLDS A SELECTION ─────────────────
+    // The one that was broken. Wrapping re-applies the selection and Refresh() re-resolves it, and
+    // an editable ComboBox answers both by rewriting its own text box to the selected item's name
+    // -- so typing over a broker that was ALREADY chosen put that broker's name straight back and
+    // the filter never saw a search term. Buyer, with nothing selected yet, worked perfectly,
+    // which is exactly why it read as "the broker search is broken".
+    var searchRow = Parcel(1000m);
+    drawerEntry.Brokers.Clear();
+    drawerEntry.Brokers.Add(raj);
+    drawerEntry.Brokers.Add(new PartyRef(77, "JITESH SHAH"));
+    drawerEntry.Lines.Add(searchRow);
+    searchRow.DealBuyer = abc;
+    searchRow.DealBroker = drawerEntry.Brokers[1];          // JITESH SHAH, already chosen
+    drawerEntry.Recalculate();
+    editDeal.Invoke(win, [new Button { Tag = searchRow }, new RoutedEventArgs()]);
+    Settle();
+
+    Check("SEARCH - the drawer opens on the broker the line already names",
+          brokerBox.SelectedItem is PartyRef had && had.Name == "JITESH SHAH",
+          brokerBox.SelectedItem?.ToString() ?? "<none>");
+
+    brokerBox.Text = "ji";
+    Settle();
+    Check("SEARCH - typing over a chosen broker keeps what was typed",
+          brokerBox.Text == "ji", $"[{brokerBox.Text}]");
+    Check("SEARCH - and the list narrows to what matches it",
+          brokerBox.ItemsSource is not null && brokerBox.ItemsSource.Cast<object>().Count() == 1
+          && brokerBox.ItemsSource.Cast<object>().First().ToString() == "JITESH SHAH",
+          string.Join(" | ", (brokerBox.ItemsSource ?? Array.Empty<object>()).Cast<object>()));
+
+    // ── TYPED ONE CHARACTER AT A TIME, the way a person does ──────────────
+    // Assigning Text in one go is not the same act and hid this for as long as it was the only way
+    // these were driven. Opening the drop-down makes a ComboBox SELECT ALL of its edit box, and
+    // the list opens on the FIRST keystroke -- so the second character landed on a full selection
+    // and replaced everything before it. "abc" came out "bc", "jite" came out "ite".
+    //
+    // Raised on the template's own PART_EditableTextBox so the event tunnels through the ComboBox
+    // exactly as a keypress does, and the TextBox's own handler is what inserts the character.
+    static TextBox? EditPart(ComboBox cb) =>
+        cb.Template?.FindName("PART_EditableTextBox", cb) as TextBox;
+
+    static string TypeInto(ComboBox cb, string word)
+    {
+        if (EditPart(cb) is not { } box) return "<no edit box>";
+
+        box.Focus();
+        System.Windows.Input.Keyboard.Focus(box);
+        box.CaretIndex = box.Text.Length;
+
+        // BOTH EVENTS, in InputManager's order: the TUNNELLING preview first, then the bubbling
+        // one. RaiseEvent does only what it is asked, so a probe that sends the second alone never
+        // runs a PreviewTextInput handler -- and two of the behaviours below live in one.
+        foreach (char c in word)
+        {
+            var composition = new System.Windows.Input.TextComposition(
+                System.Windows.Input.InputManager.Current, box, c.ToString());
+            box.RaiseEvent(new System.Windows.Input.TextCompositionEventArgs(
+                System.Windows.Input.InputManager.Current.PrimaryKeyboardDevice, composition)
+            { RoutedEvent = UIElement.PreviewTextInputEvent });
+            box.RaiseEvent(new System.Windows.Input.TextCompositionEventArgs(
+                System.Windows.Input.InputManager.Current.PrimaryKeyboardDevice, composition)
+            { RoutedEvent = UIElement.TextInputEvent });
+        }
+
+        return box.Text;
+    }
+
+    brokerBox.Text = "";
+    Settle();
+    string keyed = TypeInto(brokerBox, "jite");
+    Settle();
+    Check("SEARCH - every character typed into Broker stays in the box",
+          keyed == "jite" && brokerBox.Text == "jite", $"[{keyed}] / [{brokerBox.Text}]");
+    Check("SEARCH - and the list is narrowed to what was typed, not to a lost first letter",
+          brokerBox.ItemsSource!.Cast<object>().Count() == 1
+          && brokerBox.ItemsSource!.Cast<object>().First().ToString() == "JITESH SHAH",
+          string.Join(" | ", brokerBox.ItemsSource!.Cast<object>()));
+
+    buyerBox.Text = "";
+    Settle();
+    string keyedBuyer = TypeInto(buyerBox, "qu");
+    Settle();
+    Check("SEARCH - and the same in Buyer, first character included",
+          keyedBuyer == "qu" && buyerBox.Text == "qu", $"[{keyedBuyer}] / [{buyerBox.Text}]");
+    Check("SEARCH - narrowing as it goes",
+          buyerBox.ItemsSource!.Cast<object>().Count() == 1,
+          string.Join(" | ", buyerBox.ItemsSource!.Cast<object>()));
+
+    // The caret is left after what was typed, with nothing selected -- a selection is exactly what
+    // the next keystroke would have replaced.
+    Check("SEARCH - the caret sits after the last character, with nothing highlighted",
+          EditPart(buyerBox) is { } cbox && cbox.SelectionLength == 0
+          && cbox.CaretIndex == cbox.Text.Length,
+          $"caret {EditPart(buyerBox)?.CaretIndex} of {EditPart(buyerBox)?.Text.Length}, "
+          + $"{EditPart(buyerBox)?.SelectionLength} selected");
+
+    buyerBox.Text = "";
+    brokerBox.Text = "";
+    Settle();
+
+    // ── SEARCHING FOR THE VALUE THE PICKER ALREADY HOLDS ──────────────────
+    // The reported case, and the commonest one on this screen: the drawer opens on the line's own
+    // broker, so "jite" is how somebody gets back to JITESH SHAH. Choosing the row they can see
+    // raised nothing -- it was already SelectedItem -- so nothing rewrote the box and it went on
+    // reading "jite". Closing the list is what settles it now.
+    TypeInto(brokerBox, "jite");
+    Settle();
+    Check("PICKLIST - searching for the broker the line already names narrows to it",
+          brokerBox.Text == "jite" && brokerBox.ItemsSource!.Cast<object>().Count() == 1
+          && brokerBox.ItemsSource!.Cast<object>().First().ToString() == "JITESH SHAH",
+          $"[{brokerBox.Text}] {string.Join(" | ", brokerBox.ItemsSource!.Cast<object>())}");
+    Check("PICKLIST - and it is still the selection, so choosing it raises nothing",
+          brokerBox.SelectedItem is PartyRef already && already.Name == "JITESH SHAH",
+          brokerBox.SelectedItem?.ToString() ?? "<none>");
+
+    // Shutting the list is what a click on the row does. The box must come back reading the name.
+    brokerBox.IsDropDownOpen = false;
+    Settle();
+    Check("PICKLIST - so once the list shuts the box reads the name, not the search term",
+          brokerBox.Text == "JITESH SHAH" && EditPart(brokerBox)?.Text == "JITESH SHAH",
+          $"[{brokerBox.Text}] / [{EditPart(brokerBox)?.Text}]");
+    Check("PICKLIST - and the line is unchanged by any of it",
+          ((SaleLine)draftProp.GetValue(win)!).DealBroker?.Name == "JITESH SHAH",
+          ((SaleLine)draftProp.GetValue(win)!).DealBroker?.Name ?? "<none>");
+
+    // A SEARCH THAT FOUND NOTHING keeps what was typed -- there is nothing to show instead, and
+    // snatching the text back mid-edit would be worse than leaving it.
+    brokerBox.SelectedItem = null;
+    brokerBox.Text = "";
+    Settle();
+    TypeInto(brokerBox, "zzz");
+    Settle();
+    brokerBox.IsDropDownOpen = false;
+    Settle();
+    Check("PICKLIST - but a search that chose nothing keeps what was typed",
+          brokerBox.Text == "zzz", $"[{brokerBox.Text}]");
+
+    brokerBox.Text = "";
+    brokerBox.SelectedItem = searchRow.DealBroker;
+    Settle();
+
+    // ── NO BLUE BLOCK ON A PICKER NOBODY IS IN ────────────────────────────
+    // Giving an editable ComboBox a value makes WPF write the text and SELECT ALL of it, and every
+    // picker in this app is filled from code -- so they sat on a full selection with nothing
+    // focused, and the drawer opened with Buyer and Broker both highlighted at once. It reads as
+    // the app having chosen something.
+    brokerBox.Text = "";
+    brokerBox.SelectedItem = searchRow.DealBroker;
+    Settle();
+    Check("HIGHLIGHT - a picker filled from code is not left highlighted",
+          EditPart(brokerBox)?.SelectionLength == 0,
+          $"[{EditPart(brokerBox)?.SelectedText}] {EditPart(brokerBox)?.SelectionLength} selected");
+    Check("HIGHLIGHT - and neither is the buyer beside it",
+          EditPart(buyerBox)?.SelectionLength == 0,
+          $"[{EditPart(buyerBox)?.SelectedText}] {EditPart(buyerBox)?.SelectionLength} selected");
+
+    // ARRIVING IN ONE does not highlight it either -- but the job the highlight was doing is kept:
+    // the first character typed after arriving REPLACES the value instead of appending to it.
+    EditPart(buyerBox)!.Focus();
+    System.Windows.Input.Keyboard.Focus(EditPart(buyerBox)!);
+    Settle();
+    Check("HIGHLIGHT - arriving in a picker leaves a caret, not a block of blue",
+          EditPart(buyerBox)?.SelectionLength == 0,
+          $"[{EditPart(buyerBox)?.SelectedText}] {EditPart(buyerBox)?.SelectionLength} selected");
+
+    string overTyped = TypeInto(buyerBox, "qu");
+    Settle();
+    Check("HIGHLIGHT - and the first character typed still replaces what was there",
+          overTyped == "qu" && buyerBox.Text == "qu", $"[{overTyped}]");
+    Check("HIGHLIGHT - so the search still finds the row, rather than matching nothing",
+          buyerBox.ItemsSource!.Cast<object>().Count() == 1,
+          string.Join(" | ", buyerBox.ItemsSource!.Cast<object>()));
+
+    buyerBox.Text = "";
+    buyerBox.SelectedItem = searchRow.DealBuyer;
+    Settle();
+
+    // A MISS SHOWS EVERYTHING, rather than an empty drop-down under a typo.
+    brokerBox.Text = "zzz";
+    Settle();
+    Check("SEARCH - a search that matches nothing shows the whole list, not an empty one",
+          brokerBox.ItemsSource!.Cast<object>().Count() == 2 && brokerBox.Text == "zzz",
+          $"[{brokerBox.Text}] {brokerBox.ItemsSource!.Cast<object>().Count()} row(s)");
+
+    // Clearing goes back to the full list, and the box is not left holding a search.
+    brokerBox.Text = "";
+    Settle();
+    Check("SEARCH - clearing it puts the whole list back",
+          brokerBox.ItemsSource!.Cast<object>().Count() == 2);
+
+    // The BUYER, which always worked, still does -- the guard must not have cost it anything.
+    buyerBox.Text = "qu";
+    Settle();
+    Check("SEARCH - and the buyer picker is unchanged",
+          buyerBox.Text == "qu" && buyerBox.ItemsSource!.Cast<object>().Count() == 1,
+          $"[{buyerBox.Text}] {buyerBox.ItemsSource!.Cast<object>().Count()} row(s)");
+    buyerBox.Text = "";
+    Settle();
+
+    ((SaleLine)draftProp.GetValue(win)!).TakeDealFrom(searchRow);
+    cancelDeal.Invoke(win, [win, new RoutedEventArgs()]);
+    Settle();
+    drawerEntry.Lines.Remove(searchRow);
+    drawerEntry.Recalculate();
+
+    // ── the grades grid shows WHOLE ROWS ──────────────────────────────────
+    // The card gives the grid whatever it has left over, and that is not a multiple of the 42px
+    // row -- so WPF filled the leftover strip with the next row and cut it where the strip ended.
+    // Every cell in ALIASES is a bordered box, so a cut row read as an input field with no bottom
+    // border. Driven at three frame heights, each of which would leave a different sliver.
+    foreach (var masterTab in Tabs(win).Items.OfType<TabItem>())
+        if (masterTab.Header as string == "Master data") { masterTab.IsSelected = true; break; }
+    Settle();
+
+    var gradesTable = (DataGrid)win.FindName("GradeGrid")!;
+    var gradeFrame = (FrameworkElement)gradesTable.Parent;
+    double rowH = gradesTable.RowHeight;
+    var headerPart = VisualTree.FindChild<System.Windows.Controls.Primitives.DataGridColumnHeadersPresenter>(gradesTable);
+    double headH = headerPart?.ActualHeight ?? 0;
+
+    Check("ROWS - the grades grid has a fixed row height and a measured header",
+          rowH > 0 && headH > 0, $"row {rowH}, header {headH}");
+
+    foreach (double frameHeight in new[] { 204d, 220d, 260d })
+    {
+        gradeFrame.Height = frameHeight;
+        gradeFrame.UpdateLayout();
+        Settle();
+
+        double rows = (gradesTable.MaxHeight - headH) / rowH;
+        Check($"ROWS - {frameHeight:N0}px of frame trims to whole rows, never part of one",
+              Math.Abs(rows - Math.Round(rows)) < 0.01 && rows >= 1,
+              $"MaxHeight {gradesTable.MaxHeight:N0} = header {headH:N0} + {rows:N2} rows");
+    }
+
+    gradeFrame.Height = double.NaN;
+    gradeFrame.UpdateLayout();
+    Settle();
+    foreach (var backTab in Tabs(win).Items.OfType<TabItem>())
+        if (backTab.Header as string == "Sales entry") { backTab.IsSelected = true; break; }
+    Settle();
+
+    // ── the Remark column has room to write in ────────────────────────────
+    // 116* with a floor of 80 gave about eight characters at an ordinary window, so every remark
+    // wrapped onto three lines and took the row height with it.
+    var remarkCol = ((DataGrid)win.FindName("Grid")!).Columns
+        .First(c => (c.Header as string) == "Remark");
+    Check("REMARK - the column has a floor wide enough to write a remark in",
+          remarkCol.MinWidth >= 150, $"{remarkCol.MinWidth}px floor");
+
+    // ── THE FLOW, driven, with a collection forced in the middle ──────────
+    // search -> select -> close -> reopen -> switch line -> reset, twice over. The GC between the
+    // rounds is what used to kill it: it collected the orphaned CollectionViewSource, and the next
+    // measure pass read IsEmpty off a view with nothing behind it.
+    var flowEntry = entryOf(win);
+    flowEntry.Buyers.Clear(); flowEntry.Buyers.Add(abc); flowEntry.Buyers.Add(quest);
+    flowEntry.Brokers.Clear(); flowEntry.Brokers.Add(raj);
+    flowEntry.Lines.Clear();
+    var f1 = Parcel(1000m); flowEntry.Lines.Add(f1);
+    var f2 = Parcel(2000m); flowEntry.Lines.Add(f2);
+    f1.DealBuyer = abc; f2.DealBuyer = abc;
+    flowEntry.Recalculate();
+    Settle();
+
+    string flowFault = "";
+    try
+    {
+        for (int round = 0; round < 3; round++)
+            foreach (var row in new[] { f1, f2 })
+            {
+                editDeal.Invoke(win, [new Button { Tag = row }, new RoutedEventArgs()]);
+                Settle();
+
+                // SEARCH. Typing is what makes PickerSearch wrap the list -- the Text hook calls
+                // Narrow, which calls Wrap. Driven through Text rather than by opening the popup:
+                // a drop-down opened on an offscreen window never finishes settling, and a probe
+                // that hangs is worse than no probe. This is the same code path either way.
+                buyerBox.Text = "qu";
+                Settle();
+                buyerBox.Text = "";
+                Settle();
+
+                // SELECT and SAVE, then CLOSE untouched -- both exits, and neither puts a modal
+                // up. Cancel only asks when the draft differs from the line, which is exactly why
+                // the save comes first here: a probe has nobody to answer a question.
+                ((SaleLine)draftProp.GetValue(win)!).DealBuyer = quest;
+                saveDeal.Invoke(win, [win, new RoutedEventArgs()]);
+                Settle();
+
+                editDeal.Invoke(win, [new Button { Tag = row }, new RoutedEventArgs()]);
+                Settle();
+                cancelDeal.Invoke(win, [win, new RoutedEventArgs()]);
+                Settle();
+
+                // The collection the picker is showing is cleared and refilled under it, exactly
+                // as LoadPartiesAsync does on every Refresh.
+                flowEntry.Buyers.Clear();
+                flowEntry.Buyers.Add(abc); flowEntry.Buyers.Add(quest);
+                Settle();
+
+                // And the orphaned view, if there were one, is collected here.
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                Settle();
+
+                // Reading the picker is what threw: Count and IsEmpty are the two accessors the
+                // crash landed on.
+                _ = buyerBox.Items.Count;
+                _ = buyerBox.Items.IsEmpty;
+                _ = brokerBox.Items.Count;
+            }
+    }
+    catch (Exception ex) { flowFault = $"{ex.GetType().Name}: {ex.Message}"; }
+
+    Check("FLOW - search, select, close, reopen, switch line, reset — six times, with a GC each round",
+          flowFault.Length == 0, flowFault.Length == 0 ? "no exception" : flowFault);
+    Check("FLOW - and the picker still shows the entry's buyers afterwards",
+          buyerBox.Items.Count == 2, $"{buyerBox.Items.Count} buyer(s)");
+    // The wrap survives a re-open rather than being undone and rebuilt on every one.
+    Check("FLOW - re-opening the drawer leaves a working picker alone",
+          buyerBox.ItemsSource is System.ComponentModel.ICollectionView cv
+          && ReferenceEquals(cv.SourceCollection, flowEntry.Buyers),
+          buyerBox.ItemsSource?.GetType().Name ?? "<null>");
+
+    // ── a message that nothing happened is not an error ───────────────────
+    // The bar had two tones: green for ok, RED FOR EVERYTHING ELSE. So "Deal details closed — the
+    // line is unchanged" sat along the bottom of the window in the same red a refused write uses,
+    // and so did every other acknowledgement that nothing had been done.
+    var statusBar = (TextBlock)win.FindName("Status")!;
+    var say = typeof(MainWindow).GetMethod("Say", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    // Four arguments: Say gained a "popup" one when confirmations started getting a box of their
+    // own. Passed false here — the subject is the BAR's colour, and a modal per call would answer
+    // itself three times and settle nothing.
+    say.Invoke(win, ["something failed", false, false, false]);
+    var danger = statusBar.Foreground;
+    say.Invoke(win, ["it worked", true, false, false]);
+    var success = statusBar.Foreground;
+    say.Invoke(win, ["nothing happened", false, true, false]);
+    var muted = statusBar.Foreground;
+
+    Check("TONE - a neutral message is neither the failure colour nor the success one",
+          !Equals(muted, danger) && !Equals(muted, success)
+          && Equals(muted, win.FindResource("TextMutedBrush")),
+          "muted, not red");
+    Check("TONE - and a real failure is still red",
+          Equals(danger, win.FindResource("DangerBrush")));
+
+    // ── A CONFIRMATION IS SAID IN A BOX AS WELL ──────────────────────────
+    // The bar is one line at the very bottom edge and it clears itself after four seconds, so a
+    // desk that looked away missed the only thing that said the work landed.
+    int boxesWere = doneBoxes;
+    say.Invoke(win, ["Intake recorded · 1.0000 ct", true, false, true]);
+    Settle();
+    Check("DONE - a confirmation puts a box up, not only a line along the bottom",
+          doneBoxes == boxesWere + 1, $"{doneBoxes - boxesWere} box(es)");
+    Check("DONE - and the bar still carries it too",
+          statusBar.Text.Contains("Intake recorded"), statusBar.Text);
+
+    // A REFUSAL DOES NOT. Those are marked on the field at fault and gathered into one dialog by
+    // Complete(); a second box per message would be the same news twice.
+    boxesWere = doneBoxes;
+    say.Invoke(win, ["something failed", false, false, true]);
+    say.Invoke(win, ["nothing happened", false, true, true]);
+    Settle();
+    Check("DONE - a refusal and a neutral note raise no box of their own",
+          doneBoxes == boxesWere, $"{doneBoxes - boxesWere} box(es)");
+
+    // The callers that already show their OWN dialog opt out, or the desk gets told twice.
+    Check("DONE - Confirm sale does not add a second box to its own",
+          invSrc.Contains("Say(what + kept, ok: true, popup: false)"));
+    Check("DONE - nor do the importers",
+          System.Text.RegularExpressions.Regex.Matches(invSrc, @"ok: true, popup: false").Count >= 4,
+          $"{System.Text.RegularExpressions.Regex.Matches(invSrc, "ok: true, popup: false").Count} opt-outs");
+    // And neither does the message that reports what is ON SCREEN rather than work that was done:
+    // it fires on every keystroke in the stock search.
+    Check("DONE - and a message about the screen does not interrupt the typing that raised it",
+          invSrc.Contains("Say($\"Showing {show.Count} of {_stock.Count} buckets\", ok: true, popup: false)"));
+
+    // The messages that report a no-op. Each of these was red.
+    Check("TONE - closing the deal drawer reads as an acknowledgement, not a fault",
+          invSrc.Contains("Say(\"Deal details closed — the line is unchanged\", neutral: true)"));
+    Check("TONE - and so do the other three ways of saying nothing was done",
+          invSrc.Contains("Say(\"Not confirmed — nothing was posted and no stock moved\", neutral: true)")
+          && invSrc.Contains("Say(\"Update cancelled — nothing was changed\", neutral: true)")
+          && invSrc.Contains("Say(\"Import cancelled\", neutral: true)"));
+
+    // ── grade and size are ONE component, on every page ───────────────────
+    // Sales entry had the whole treatment; the other fifteen pickers were assembled a piece at a
+    // time -- templates re-attached from two foreach loops in code-behind, height and search
+    // repeated per site in markup, the accessible name missing on three. Measured off the LIVE
+    // controls, not the markup, so a picker that resolves its style differently is caught.
+    var gradeTemplate = (DataTemplate)win.FindResource("GradeNameTemplate");
+    var sizeTemplate = (DataTemplate)win.FindResource("SizeCodeTemplate");
+    var gradeContainer = (Style)win.FindResource("GradeItemContainer");
+    var sizeContainer = (Style)win.FindResource("SizeItemContainer");
+
+    string[] gradePickers = ["IntakeGrade", "ConvFromGrade", "ConvToGrade", "RejGrade", "AdjGrade",
+                             "LedgerGrade", "FilterGrade", "PriceGradePicker"];
+    string[] sizePickers = ["IntakeSize", "ConvFromSize", "ConvToSize", "RejSize", "AdjSize",
+                            "LedgerSize", "PriceSizePicker"];
+
+    List<string> offSpec = [];
+    foreach (var (names, tpl, container, what) in new[]
+             {
+                 (gradePickers, gradeTemplate, gradeContainer, "grade"),
+                 (sizePickers, sizeTemplate, sizeContainer, "size"),
+             })
+        foreach (string n in names)
+        {
+            var cb = (ComboBox)win.FindName(n)!;
+            List<string> wrong = [];
+            if (!ReferenceEquals(cb.ItemTemplate, tpl)) wrong.Add("template");
+            if (!ReferenceEquals(cb.ItemContainerStyle, container)) wrong.Add("container");
+            if (cb.Height != 34) wrong.Add($"height {cb.Height}");
+            if (!PickerSearch.GetOn(cb)) wrong.Add("no search");
+            if (!cb.IsEditable) wrong.Add("not editable");
+            if ((System.Windows.Automation.AutomationProperties.GetName(cb) ?? "").Length == 0) wrong.Add("no accessible name");
+            if (wrong.Count > 0) offSpec.Add($"{n} ({what}): {string.Join(", ", wrong)}");
+        }
+
+    Check($"CATALOGUE - all {gradePickers.Length + sizePickers.Length} grade and size pickers are the one component",
+          offSpec.Count == 0, offSpec.Count == 0 ? "identical" : string.Join(" | ", offSpec));
+
+    // The Sales entry cells are where that treatment came from, so they must still BE it. Back on
+    // that tab first: the Invoices tab is selected above, and an unselected TabItem's content is
+    // not in the visual tree, so its cell containers are not realised to look at.
+    Tabs(win).Items.OfType<TabItem>().First(t => (t.Header as string) == "Sales entry").IsSelected = true;
+    Settle();
+
+    var entryPickers = FindAll<ComboBox>(grid)
+        .Where(c => System.Windows.Automation.AutomationProperties.GetName(c) is "Grade" or "Size").ToList();
+    Check("CATALOGUE - and the Sales entry cells still use the same two templates",
+          entryPickers.Count > 0 && entryPickers.All(c =>
+              ReferenceEquals(c.ItemTemplate, System.Windows.Automation.AutomationProperties.GetName(c) == "Grade" ? gradeTemplate : sizeTemplate)),
+          $"{entryPickers.Count} cell picker(s)");
+
+    // Application-level, not MainWindow-level: UpdateInvoiceDialog is a second window and reaches
+    // for these by name. In Window.Resources they were invisible to it.
+    Check("CATALOGUE - the templates live in the application dictionaries, so every window sees them",
+          Application.Current.TryFindResource("GradeNameTemplate") is not null
+          && Application.Current.TryFindResource("SizePicker") is not null,
+          "Styles/Catalogue.xaml is merged in App.xaml");
+
+    // The price editor was the one page calling a fifth of a carat "0.2" while its own picker, the
+    // stock table, the sale grid and the printed sheet all said "1/5".
+    var priceGrid = (DataGrid)win.FindName("PriceGrid")!;
+    var priceCols = priceGrid.Columns.OfType<DataGridTextColumn>()
+        .ToDictionary(c => c.Header as string ?? "", c => ((Binding)c.Binding).Path.Path);
+    Check("CATALOGUE - the price grid prints the same marks as every other grid",
+          priceCols.GetValueOrDefault("GRADE") == "GradeShort"
+          && priceCols.GetValueOrDefault("SIZE") == "SizeShort",
+          $"GRADE={priceCols.GetValueOrDefault("GRADE")}, SIZE={priceCols.GetValueOrDefault("SIZE")}");
+
+    // Back to Invoices: everything below measures the drawer, which lives on that tab.
+    invTab.IsSelected = true;
+    Settle();
+
+    // ── the detail drawer uses the height it has, and scrolls ─────────────
+    // It was a DockPanel of Top-docked cards with the receipt block docked Bottom. DockPanel hands
+    // each child its desired size in order and runs out: the FILL child (the facts) got zero
+    // height and vanished, and the Bottom block was clipped mid-button.
+    var drawerScroll = FindAll<ScrollViewer>(detailCard)
+        .First(sv => FindAll<ItemsControl>(sv).Any(c => ReferenceEquals(c, win.FindName("InvoiceFacts"))));
+
+    Check("DRAWER - the lines panel has no fixed cap, so it cannot hide a line",
+          double.IsPositiveInfinity(linesGrid.MaxHeight), $"MaxHeight {linesGrid.MaxHeight}");
+
+    // 1 line, 2 lines, and a long invoice. Every row drawn, every time.
+    foreach (int n in new[] { 1, 2, 12 })
+    {
+        var rows = Enumerable.Range(0, n).Select(i => new VSalesLine
+        {
+            LineId = i + 1, InvoiceId = 20, GradeCode = "NO II", SizeCode = "+6.5",
+            GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 100m * (i + 1), Amount = 100m * (i + 1),
+        }).ToList();
+
+        showLines.Invoke(win, [rows]);
+        Settle();
+
+        Check($"DRAWER - {n} line(s) draw {n} row(s), none dropped",
+              FindAll<DataGridRow>(linesGrid).Count() == n,
+              $"{FindAll<DataGridRow>(linesGrid).Count()} of {n}");
+        // The grid never scrolls itself any more, so nothing can be parked out of sight inside it.
+        var innerBars = FindAll<ScrollBar>(linesGrid)
+            .Where(b => b.Orientation == Orientation.Vertical && b.IsVisible).ToList();
+        Check($"DRAWER - and with {n} they sit in the drawer's own scroller, not a second one",
+              innerBars.Count == 0, $"{innerBars.Count} inner bar(s)");
+    }
+
+    // The facts are BACK. They were the fill child and disappeared entirely on a short window.
+    var factsControl = (ItemsControl)win.FindName("InvoiceFacts")!;
+    factsControl.ItemsSource = new List<object>
+    {
+        new { Label = "Amount", Value = "3.00 K" },   new { Label = "Received", Value = "0.00" },
+        new { Label = "Outstanding", Value = "3.00 K" }, new { Label = "Due", Value = "31 Aug 2026" },
+    };
+    Settle();
+    Check("DRAWER - Amount, Received, Outstanding and Due are drawn, not squeezed to nothing",
+          factsControl.IsVisible && factsControl.ActualHeight > 0,
+          $"{factsControl.ActualHeight:N0}px");
+
+    // A SMALL WINDOW. This is the case that produced the report: too little height for the cards,
+    // so the bottom of the drawer was simply cut off with no scrollbar to reach it.
+    double wasHeight = win.Height;
+    win.Height = 560;
+    Settle();
+
+    var recordReceipt = (Button)win.FindName("RecordReceipt")!;
+    var cancelInvoice = (Button)win.FindName("CancelInvoiceButton")!;
+
+    Check("DRAWER - on a short window the content scrolls instead of being cut off",
+          drawerScroll.ScrollableHeight > 0,
+          $"scrollable {drawerScroll.ScrollableHeight:N0}px of {drawerScroll.ExtentHeight:N0}");
+
+    drawerScroll.ScrollToBottom();
+    Settle();
+
+    // Reachable means IN the viewport after scrolling, not merely "exists in the tree".
+    bool Reached(FrameworkElement el)
+    {
+        if (!el.IsVisible || el.ActualHeight <= 0) return false;
+        var top = el.TransformToAncestor(drawerScroll).Transform(new Point(0, 0)).Y;
+        return top >= -0.5 && top + el.ActualHeight <= drawerScroll.ViewportHeight + 0.5;
+    }
+
+    // The drawer's own buttons came off with the receipt card, so the last thing in it is the
+    // facts list. What still has to hold is that the scroller reaches the BOTTOM of the content.
+    Check("DRAWER - and the bottom of the content can be scrolled to",
+          drawerScroll.VerticalOffset >= drawerScroll.ScrollableHeight - 0.5,
+          $"offset {drawerScroll.VerticalOffset:N0} of {drawerScroll.ScrollableHeight:N0}");
+
+    drawerScroll.ScrollToTop();
+    Settle();
+    Check("DRAWER - the record-receipt card is off the drawer, on request",
+          !recordReceipt.IsVisible, $"receipt visible {recordReceipt.IsVisible}");
+    // Update invoice, Print bill and Cancel invoice went with it. The drawer is a read-only
+    // summary now: who, when, what it came to, and the lines on it.
+    Check("DRAWER - and so are Update invoice, Print bill and Cancel invoice",
+          !((Button)win.FindName("EditDraftButton")!).IsVisible
+          && !((Button)win.FindName("PrintBill")!).IsVisible
+          && !cancelInvoice.IsVisible);
+    // Hidden, NOT deleted: Receipt_Click is the only route in this app for booking cash against an
+    // invoice, and the receipt table, the Received and Outstanding figures and the whole
+    // Receivables page hang off it. Taking the card off this drawer must not take the path away.
+    Check("DRAWER - but the receipt path itself is still there to be given a home",
+          typeof(MainWindow).GetMethod("Receipt_Click", BindingFlags.Instance | BindingFlags.NonPublic) is not null
+          && win.FindName("ReceiptAmount") is TextBox && win.FindName("ReceiptMethod") is ComboBox);
+    // Hidden, NOT deleted: correcting a posted invoice, printing a bill and reversing a sale's
+    // stock have no other route, and every Busy() scope on that page names all three.
+    Check("DRAWER - but their handlers are still there to be given a home",
+          typeof(MainWindow).GetMethod("EditDraft_Click", BindingFlags.Instance | BindingFlags.NonPublic) is not null
+          && typeof(MainWindow).GetMethod("PrintInvoice_Click", BindingFlags.Instance | BindingFlags.NonPublic) is not null
+          && typeof(MainWindow).GetMethod("CancelInvoice_Click", BindingFlags.Instance | BindingFlags.NonPublic) is not null);
+
+    win.Height = wasHeight;
+    Settle();
+    Check("DRAWER - and a tall window needs no scrollbar at all",
+          drawerScroll.ScrollableHeight == 0 || drawerScroll.ViewportHeight > 0,
+          $"scrollable {drawerScroll.ScrollableHeight:N0}px at {win.Height:N0}px tall");
+
+    static TabControl Tabs(MainWindow w) => (TabControl)w.FindName("Tabs")!;
+
+    // ── the header text and the action buttons do not share a cell ────────
+    // The buttons were never behind anything: both children sat in ONE Grid cell with no columns,
+    // so the long subtitle ran underneath them. A z-order change would have fixed nothing.
+    string hdr = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "MainWindow.xaml"));
+    // Anchored on the marker the fix introduced rather than a byte window before the button: the
+    // explanatory comment is long enough that a fixed window measured prose, not markup.
+    Check("HEADER - the heading and the actions have a column each",
+          hdr.Contains("<StackPanel Grid.Column=\"0\" Margin=\"0,0,12,0\">"),
+          "heading block is in column 0");
+    int hAt = hdr.IndexOf("<StackPanel Grid.Column=\"0\" Margin=\"0,0,12,0\">");
+    string head = hAt < 0 ? "" : hdr[hAt..Math.Min(hdr.Length, hAt + 2600)];
+    Check("HEADER - so the sentence ellipsises instead of running under the buttons",
+          head.Contains("TextTrimming=\"CharacterEllipsis\""));
+    Check("HEADER - and the buttons sit in their own column",
+          hdr.Contains("<WrapPanel Grid.Column=\"1\" HorizontalAlignment=\"Right\""));
+
+    // ── filters narrow the VIEW, never the invoice ────────────────────────
+    var fe = new InvoiceEntry();
+    fe.Lines.Clear();
+    var kiranEx = new PartyRef(11, "KIRAN EXPORTS", 7);
+    var abcCo   = new PartyRef(12, "ABC COMPANY", 45);
+    var brkNo   = new PartyRef(21, "NO BROKER", null);
+    fe.Buyers.Add(kiranEx); fe.Buyers.Add(abcCo); fe.Brokers.Add(brkNo);
+
+    SaleLine Deal(PartyRef buyer, PartyRef? broker, string type, DateTime on)
+    {
+        var l = new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m };
+        fe.Lines.Add(l);
+        l.DealBuyer = buyer; l.DealBroker = broker; l.DealDocType = type; l.DealDate = on;
+        return l;
+    }
+
+    var day1 = new DateTime(2026, 8, 30);
+    var day2 = new DateTime(2026, 8, 31);
+    Deal(kiranEx, brkNo,  "BILL",         day1);
+    Deal(kiranEx, null, "EXPORT",       day1);
+    Deal(abcCo,   brkNo,  "BILL",         day2);
+    Deal(abcCo,   null, "WITHOUT BILL", day2);
+    fe.Repage();
+
+    Check("FILTER - with nothing set, every row is shown",
+          !fe.AnyFilter && fe.VisibleLines.Count == 4 && fe.FilteredLines.Count == 4,
+          $"{fe.VisibleLines.Count} of {fe.Lines.Count}");
+
+    fe.FilterBuyer = kiranEx;
+    Check("FILTER - by buyer", fe.VisibleLines.Count == 2
+          && fe.VisibleLines.All(l => l.DealBuyer?.Id == 11), $"{fe.VisibleLines.Count}");
+
+    // THE POINT OF THE WHOLE FEATURE: the invoice is untouched by what is on screen.
+    Check("FILTER - and the invoice still holds all four, so a hidden row is still sold",
+          fe.Lines.Count == 4 && fe.RealLines.Count == 4 && fe.ToDraft(11, 1).Lines.Count == 4,
+          $"{fe.ToDraft(11, 1).Lines.Count} line(s) in the payload");
+
+    fe.ClearFilters();
+    fe.FilterBroker = brkNo;
+    Check("FILTER - by broker", fe.VisibleLines.Count == 2
+          && fe.VisibleLines.All(l => l.DealBroker?.Id == 21), $"{fe.VisibleLines.Count}");
+
+    fe.ClearFilters();
+    fe.FilterType = "EXPORT";
+    Check("FILTER - by type", fe.VisibleLines.Count == 1
+          && fe.VisibleLines[0].DealDocType == "EXPORT", $"{fe.VisibleLines.Count}");
+
+    fe.ClearFilters();
+    fe.FilterDate = day2;
+    Check("FILTER - by date, on the day rather than the instant",
+          fe.VisibleLines.Count == 2 && fe.VisibleLines.All(l => l.DealDate.Date == day2.Date),
+          $"{fe.VisibleLines.Count}");
+
+    // Together, not instead of one another.
+    fe.FilterBuyer = abcCo; fe.FilterType = "BILL";
+    Check("FILTER - and they combine, narrowing further",
+          fe.VisibleLines.Count == 1
+          && fe.VisibleLines[0].DealBuyer?.Id == 12 && fe.VisibleLines[0].DealDocType == "BILL",
+          $"{fe.VisibleLines.Count}");
+
+    Check("FILTER - the screen says it is filtered, so missing rows are never a mystery",
+          fe.ShowingLabel.Contains("of 4") && fe.ShowingLabel.Contains("filtered"), fe.ShowingLabel);
+
+    fe.ClearFilters();
+    Check("FILTER - Clear puts every row back",
+          !fe.AnyFilter && fe.VisibleLines.Count == 4, fe.ShowingLabel);
+
+    // Editing the deal on a row moves it out of an active filter.
+    fe.FilterBuyer = kiranEx;
+    int before = fe.VisibleLines.Count;
+    fe.Lines[0].DealBuyer = abcCo;
+    Check("FILTER - editing a row's buyer moves it off a buyer-filtered page",
+          fe.VisibleLines.Count == before - 1, $"{before} then {fe.VisibleLines.Count}");
+    fe.ClearFilters();
+
+    // ── twenty rows to a page ─────────────────────────────────────────────
+    var pe = new InvoiceEntry();
+    pe.Lines.Clear();
+    for (int i = 0; i < 45; i++)
+        pe.Lines.Add(new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m });
+    pe.Repage();
+
+    Check("PAGE - twenty rows to a page", pe.PageSize == InvoiceEntry.DefaultPageSize
+          && pe.PageSize == 20 && pe.VisibleLines.Count == 20,
+          $"{pe.VisibleLines.Count}");
+    Check("PAGE - 45 rows make three pages", pe.PageCount == 3 && pe.HasPages, $"{pe.PageCount}");
+    Check("PAGE - and it says where you are", pe.PageLabel == "Page 1 of 3", pe.PageLabel);
+
+    pe.Page = 1;
+    Check("PAGE - the second page holds the next twenty",
+          pe.VisibleLines.Count == 20 && ReferenceEquals(pe.VisibleLines[0], pe.Lines[20]));
+
+    pe.Page = 2;
+    Check("PAGE - and the last holds the remainder",
+          pe.VisibleLines.Count == 5 && ReferenceEquals(pe.VisibleLines[0], pe.Lines[40]),
+          $"{pe.VisibleLines.Count}");
+
+    // Clamped, or a page number past the end shows an empty grid over a full invoice.
+    pe.Page = 99;
+    Check("PAGE - paging past the end lands on the last page", pe.Page == 2, $"{pe.Page}");
+    pe.Page = -5;
+    Check("PAGE - and before the start lands on the first", pe.Page == 0, $"{pe.Page}");
+
+    // Nothing about paging reaches the invoice.
+    pe.Buyer = "KIRAN EXPORTS";
+    pe.Recalculate();
+    Check("PAGE - the invoice keeps all 45 rows whatever page is shown",
+          pe.RealLines.Count == 45 && pe.ToDraft(11, 1).Lines.Count == 45,
+          $"{pe.ToDraft(11, 1).Lines.Count} line(s) in the payload");
+
+    // Removing rows must not strand the page beyond the end.
+    pe.Page = 2;
+    for (int i = 0; i < 30; i++) pe.Lines.RemoveAt(pe.Lines.Count - 1);
+    Check("PAGE - removing rows pulls the page back into range",
+          pe.Page < pe.PageCount && pe.VisibleLines.Count > 0,
+          $"page {pe.Page + 1} of {pe.PageCount}, {pe.VisibleLines.Count} row(s)");
+
+    // Single page: the pager is furniture and stays hidden.
+    var one = new InvoiceEntry();
+    one.Repage();
+    Check("PAGE - one page shows no pager", !one.HasPages && one.PageCount == 1);
+
+    // ── the numbered pager ────────────────────────────────────────────────
+    var np = new InvoiceEntry();
+    np.Lines.Clear();
+    for (int i = 0; i < 45; i++)
+        np.Lines.Add(new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m });
+    np.Repage();
+
+    Check("PAGER - one numbered button per page",
+          np.PageNumbers.Count == 3
+          && np.PageNumbers.Select(c => c.Number).SequenceEqual(new[] { 1, 2, 3 }),
+          string.Join(" ", np.PageNumbers.Select(c => c.Number)));
+    Check("PAGER - and exactly one of them is the page you are on",
+          np.PageNumbers.Count(c => c.Current) == 1 && np.PageNumbers[0].Current);
+    Check("PAGER - the chevrons are spent at the first page, live at the other end",
+          !np.CanPrevPage && np.CanNextPage);
+    np.Page = 2;
+    Check("PAGER - moving page moves the highlight with it",
+          np.PageNumbers[2].Current && np.PageNumbers.Count(c => c.Current) == 1);
+    Check("PAGER - and spends the other chevron", np.CanPrevPage && !np.CanNextPage);
+
+    // A LONG ENTRY WINDOWS, or the numbers would push the chevrons off the card.
+    for (int i = 0; i < 355; i++)
+        np.Lines.Add(new SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 1000m });
+    np.Page = 10;
+    Check("PAGER - twenty pages show a window, not twenty buttons",
+          np.PageCount == 20 && np.PageNumbers.Count == InvoiceEntry.PageWindow,
+          $"{np.PageCount} pages, {np.PageNumbers.Count} buttons");
+    Check("PAGER - centred on where you are",
+          np.PageNumbers.Any(c => c.Current && c.Number == 11)
+          && np.PageNumbers[0].Number == 8 && np.PageNumbers[^1].Number == 14,
+          string.Join(" ", np.PageNumbers.Select(c => c.Number)));
+    np.Page = 0;
+    Check("PAGER - clamped at the start, so it never runs below page 1",
+          np.PageNumbers[0].Number == 1 && np.PageNumbers.Count == InvoiceEntry.PageWindow,
+          string.Join(" ", np.PageNumbers.Select(c => c.Number)));
+    np.Page = 19;
+    Check("PAGER - and at the end, so it never runs past the last",
+          np.PageNumbers[^1].Number == 20 && np.PageNumbers.Count == InvoiceEntry.PageWindow,
+          string.Join(" ", np.PageNumbers.Select(c => c.Number)));
+
+    // ── rows per page ─────────────────────────────────────────────────────
+    np.PageSize = 10;
+    Check("PAGER - choosing 10 a page repages, and goes back to page 1",
+          np.PageSize == 10 && np.VisibleLines.Count == 10 && np.Page == 0 && np.PageCount == 40,
+          $"{np.VisibleLines.Count} rows, page {np.Page + 1} of {np.PageCount}");
+    Check("PAGER - and 100 a page is four pages of the same rows",
+          Resize(np, 100) == 4 && np.VisibleLines.Count == 100,
+          $"{np.PageCount} page(s), {np.VisibleLines.Count} rows");
+    Check("PAGER - the list offers the four the reference does",
+          InvoiceEntry.PageSizes.SequenceEqual(new[] { 10, 20, 50, 100 }),
+          string.Join(", ", InvoiceEntry.PageSizes));
+    // NOTHING about paging reaches the invoice, at any page size.
+    Check("PAGER - and all 400 rows are still on the invoice whatever page size is chosen",
+          np.RealLines.Count == 400, $"{np.RealLines.Count}");
+    np.PageSize = 20;
+
+    static int Resize(InvoiceEntry e, int size) { e.PageSize = size; return e.PageCount; }
 
     // ── a tooltip that fits on the screen ─────────────────────────────────
     // A tooltip is a Popup, so it was never clipped by a card. It laid a long value out as ONE

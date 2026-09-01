@@ -1224,3 +1224,24 @@ public sealed class BusyLatch
     /// <summary>Nothing held. Every operation that started has finished, in whatever order.</summary>
     public bool Idle => _held.Count == 0 && _disabled.Count == 0;
 }
+
+/// <summary>
+/// DateOnly on the model, DateTime? on a DatePicker.
+///
+/// A due date is a DateOnly because that is what the database stores and what Calc.DueDate returns.
+/// WPF's DatePicker only speaks DateTime?, and the alternative -- a shadow DateTime property beside
+/// the real one -- is two due dates that can disagree.
+/// </summary>
+public sealed class DateOnlyConverter : System.Windows.Data.IValueConverter
+{
+    public object? Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture) =>
+        value is DateOnly d ? d.ToDateTime(TimeOnly.MinValue) : null;
+
+    /// <summary>
+    /// A cleared picker is left alone rather than written back. There is no such thing as "no due
+    /// date" -- it follows from the terms, and every invoice has terms -- so a null here means the
+    /// box was emptied, not that the date was removed. DoNothing leaves the line as it was.
+    /// </summary>
+    public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture) =>
+        value is DateTime t ? DateOnly.FromDateTime(t) : System.Windows.Data.Binding.DoNothing;
+}

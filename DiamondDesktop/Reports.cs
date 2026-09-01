@@ -71,18 +71,75 @@ public static class Reports
     /// the address it sits above without the two contradicting each other.
     /// </param>
     public static string? PrintInvoice(VInvoice invoice, List<VSalesLine> lines, Letterhead? head = null)
+        => PrintApprovalNotes([(invoice, lines)], head);
+
+    /// <summary>
+    /// One document, ONE APPROVAL NOTE PER BUYER, in the order they were selected.
+    ///
+    /// It used to be one call per buyer, so two buyers meant two print dialogs and two separate
+    /// documents — two jobs to collect from the printer, and no way to save them as a single PDF.
+    /// One dialog, one paginator, a page break before every note after the first.
+    ///
+    /// EACH NOTE IS BUILT BY BuildApprovalNote, UNCHANGED. Nothing about the template knows there
+    /// is more than one: a buyer's page is the same page it was, carrying that buyer's own lines
+    /// and nobody else's, because the lines were divided before they got here.
+    ///
+    /// The FIRST note's document IS the document. Its page size, padding, column width and font
+    /// are the note's own, and reusing it rather than declaring a second set means the composite
+    /// can never drift from the single-buyer case — which is also why one buyer still comes out
+    /// exactly as it always did, one page, no wrapper.
+    /// </summary>
+    public static string? PrintApprovalNotes(
+        IReadOnlyList<(VInvoice Invoice, List<VSalesLine> Lines)> notes, Letterhead? head = null)
     {
+        if (notes.Count == 0) return "Nothing to print";
+
         var dialog = new PrintDialog();
         // No printer installed makes ShowDialog itself throw, and this is called from an async void
         // handler where that ends the process rather than the print job.
         try { if (dialog.ShowDialog() != true) return null; }
         catch (Exception e) { return $"No printer available — {e.Message}"; }
 
-        var doc = BuildApprovalNote(invoice, lines, head ?? new Letterhead());
+        var doc = BuildApprovalNotes(notes, head);
+        string what = notes.Count == 1
+            ? $"Invoice {notes[0].Invoice.InvoiceNo}"
+            : $"{notes.Count} approval notes";
 
-        try { dialog.PrintDocument(((IDocumentPaginatorSource)doc).DocumentPaginator, $"Invoice {invoice.InvoiceNo}"); }
-        catch (Exception e) { return $"Could not print {invoice.InvoiceNo} — {e.Message}"; }
-        return $"Sent {invoice.InvoiceNo} to the printer";
+        try { dialog.PrintDocument(((IDocumentPaginatorSource)doc).DocumentPaginator, what); }
+        catch (Exception e) { return $"Could not print {what} — {e.Message}"; }
+
+        return notes.Count == 1
+            ? $"Sent {notes[0].Invoice.InvoiceNo} to the printer"
+            : $"Sent {notes.Count} approval notes to the printer, one page each";
+    }
+
+    /// <summary>
+    /// The notes as one printable document. Split out of PrintApprovalNotes so the page breaks can
+    /// be checked without a printer.
+    /// </summary>
+    public static FlowDocument BuildApprovalNotes(
+        IReadOnlyList<(VInvoice Invoice, List<VSalesLine> Lines)> notes, Letterhead? head = null)
+    {
+        var stationery = head ?? new Letterhead();
+        var doc = BuildApprovalNote(notes[0].Invoice, notes[0].Lines, stationery);
+
+        for (int i = 1; i < notes.Count; i++)
+        {
+            var next = BuildApprovalNote(notes[i].Invoice, notes[i].Lines, stationery);
+
+            // MOVED, not copied. A Block belongs to one parent, so it has to leave the document it
+            // was built in before it can join this one — and taking a snapshot first is what stops
+            // the collection being edited while it is walked.
+            var section = new Section { BreakPageBefore = true, Margin = new Thickness(0) };
+            foreach (var block in next.Blocks.ToList())
+            {
+                next.Blocks.Remove(block);
+                section.Blocks.Add(block);
+            }
+            doc.Blocks.Add(section);
+        }
+
+        return doc;
     }
 
     /// <summary>

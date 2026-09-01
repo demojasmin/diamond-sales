@@ -36,10 +36,23 @@ public static class EntryStore
     /// One line, as it was typed. Grade and size travel as IDS, which is what the reservation is
     /// keyed on and what the catalogue can be looked up by -- and the file is per database, so an
     /// id restored here always means the same bucket it meant when it was written.
+    /// <param name="BuyerId">
+    /// The line's own deal, since the buyer, broker, percentage, terms and type stopped being one
+    /// set per screen. Without these a restored entry came back with every row sold to nobody --
+    /// which is not merely a blank field: an entry that wrote two invoices before it was closed
+    /// would come back as one, and the row that differed would have silently joined the other.
+    ///
+    /// IDS for the parties, as grade and size already travel: the file is per database, so an id
+    /// restored here always means the party it meant when it was written, and a party renamed in
+    /// the meantime still resolves. Nullable because a broker is optional and a buyer may not have
+    /// been chosen yet.
+    /// </param>
     public sealed record StoredLine(
         Guid LineKey, long? GradeId, long? SizeId,
         decimal GrossWeightCt, decimal SelectionCt, decimal PricePerCt,
-        decimal ExRate, decimal Less1Pct, decimal Less2Pct, string? Remark);
+        decimal ExRate, decimal Less1Pct, decimal Less2Pct, string? Remark,
+        long? BuyerId = null, long? BrokerId = null, decimal DealBrokerPct = 0m,
+        int DealTermsDays = 0, string? DealDocType = null);
 
     public sealed record StoredEntry(
         Guid ClientRef, DateTime InvoiceDate, string? Buyer, string? Broker,
