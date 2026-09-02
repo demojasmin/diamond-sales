@@ -1,5 +1,5 @@
 -- ---------------------------------------------------------------------------
--- Which of 0040 to 0045 is on THIS database?
+-- Which of 0040 to 0052 is on THIS database?
 --
 -- READ ONLY. Selects from the catalogue and nothing else: no table is written, no function is
 -- called, no row changes. Safe to run against the client's live database.
@@ -42,8 +42,55 @@ with checks as (
     select '0045  audit reserve and release', 6,
            exists (select 1 from pg_trigger
                     where tgname = 'trg_audit_stock_reservation' and not tgisinternal)
+
+    -- 0046 adds a column to a view that already existed, so the view proves nothing.
+    union all
+    select '0046  line_count on v_invoice', 7,
+           exists (select 1 from information_schema.columns
+                    where table_schema = 'public' and table_name = 'v_invoice'
+                      and column_name = 'line_count')
+
+    -- 0047 REMOVED 0038's negative-stock refusal from import_stock. It adds no object, so the only
+    -- evidence is that the refusal is gone from the body -- present means 0038 is still standing.
+    union all
+    select '0047  stock import allows a negative position', 8,
+           coalesce(pg_get_functiondef('public.import_stock'::regproc)
+                    not ilike '%would be left below zero%', false)
+
+    -- 0048, 0049, 0050 and 0051 each REWRITE replace_imported_sales, so the function existing
+    -- proves nothing and they cannot be four rows: applying an earlier one over a later one undoes
+    -- it. ONE row, for the newest, and the comment the function carries is the only evidence of
+    -- which version is really installed -- they are written so the prefix is the number. What is
+    -- actually there is printed underneath, so a "NO" says which version it has instead.
+    union all
+    select '0051  the import never drives stock negative', 9,
+           coalesce(obj_description('public.replace_imported_sales'::regproc) like '0051.%', false)
+
+    -- 0052 REMOVES 0026's MIG- exclusion from v_reconciliation, so this reads the opposite way to
+    -- 0041's check above: the exclusion still being in the definition is the thing that means NO.
+    union all
+    select '0052  reconciliation counts imported sales', 10,
+           coalesce(pg_get_viewdef('public.v_reconciliation'::regclass) not like '%MIG-%%', false)
 )
 select migration,
        case when present then 'yes' else 'NO - apply it' end as applied
   from checks
  order by ord;
+
+
+-- ---------------------------------------------------------------------------
+-- And which version of the sales importer is installed, in its own words.
+--
+-- 0048 to 0051 all leave a function of the same name behind, so this is the one
+-- thing that separates them. The first line of the comment is the number.
+--
+--   0048  deducts only the sales dated after the last stock count
+--   0049  deducts every imported line in full, position free to go negative
+--   0050  the same, and reports the carat total to the import dialog
+--   0051  caps each line at what its bucket holds, and reports what it could
+--         not take as short_ct / short_buckets
+-- ---------------------------------------------------------------------------
+select coalesce(left(obj_description('public.replace_imported_sales'::regproc), 4),
+                '(no comment - too old to say, or the function is missing)')
+           as sales_importer_version,
+       obj_description('public.replace_imported_sales'::regproc) as in_full;

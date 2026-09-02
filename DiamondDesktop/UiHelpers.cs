@@ -732,7 +732,16 @@ public sealed class SettingItem : System.ComponentModel.INotifyPropertyChanged
                 "Whether the margin figures are visible to managers as well as owners."),
         };
 
-    public static readonly string[] Categories = ["General", "Inventory", "Security", "Other"];
+    public static readonly string[] Categories = ["General", "Inventory", "Security", Other];
+
+    /// <summary>
+    /// Where a key the app does not document lands.
+    ///
+    /// Named rather than spelled out at each use because the Settings page now DROPS this card on
+    /// request, and a category that is filtered out by a string literal is one rename away from
+    /// silently coming back.
+    /// </summary>
+    public const string Other = "Other";
 
     /// <summary>
     /// What each known key will accept. The value box is plain text and every value was written
@@ -789,7 +798,7 @@ public sealed class SettingItem : System.ComponentModel.INotifyPropertyChanged
     {
         var known = Known.TryGetValue(key, out var k)
             ? k
-            : ("Other", Humanise(key), "Not one of the documented settings — shown so it cannot be missed.");
+            : (Other, Humanise(key), "Not one of the documented settings — shown so it cannot be missed.");
 
         return new SettingItem
         {

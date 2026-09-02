@@ -70,6 +70,7 @@ public static class GradeNames
         ["NO 7"] = "7",
         ["TOP-COL"] = "TOP co",
         ["COL"] = "color",
+        ["GH"] = "GH VS",
     };
 
     public static string Short(string? code) =>

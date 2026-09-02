@@ -1398,8 +1398,17 @@
                                 ui:PickerSearch.On="True" PreviewMouseWheel="NoWheelChange" TabIndex="1"
                                 AutomationProperties.Name="Buyer"
                                 AutomationProperties.HelpText="Required"/>
+                      <!-- KEYED ON THE BOX'S TEXT, not on the line's buyer. These are EDITABLE
+                           combos: the typed text is drawn in the same place as this hint, and a
+                           search miss leaves SelectedItem null on purpose (see PickerSearch) — so
+                           keying off DealBuyer meant "Select buyer" sat on top of "abc" while it
+                           was being typed, and the two read as one smeared word. Text is the
+                           honest question: is anything drawn in this box already?
+                           The Size and Grade cells in the grid above solved the same thing with
+                           SizePlaceholder / GradePlaceholder; this is that fix, for the drawer. -->
                       <TextBlock Text="Select buyer" Style="{StaticResource FieldPlaceholder}"
-                                 Visibility="{Binding DealBuyer, Converter={StaticResource Empty}}"/>
+                                 Visibility="{Binding Text, ElementName=BuyerPicker,
+                                                      Converter={StaticResource Empty}}"/>
                     </Grid>
 
                     <TextBlock Text="BROKER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
@@ -1410,7 +1419,8 @@
                                 ui:PickerSearch.On="True" PreviewMouseWheel="NoWheelChange" TabIndex="2"
                                 AutomationProperties.Name="Broker"/>
                       <TextBlock Text="Select broker" Style="{StaticResource FieldPlaceholder}"
-                                 Visibility="{Binding DealBroker, Converter={StaticResource Empty}}"/>
+                                 Visibility="{Binding Text, ElementName=BrokerPicker,
+                                                      Converter={StaticResource Empty}}"/>
                     </Grid>
 
                     <Grid Margin="0,0,0,12">

@@ -334,7 +334,24 @@ public static class Repo
     /// Ids are deleted in batches because they travel in the URL.
     /// </summary>
     /// <summary>What replace_imported_sales wrote, straight from its jsonb result.</summary>
-    public sealed record SalesImportOutcome(int Deleted, int Invoices, int Lines, int Receipts);
+    /// <param name="StockLines">
+    /// 0049. How many imported lines took carats OUT of stock. Every line that sold anything does,
+    /// so this normally matches the line count — a line reading zero sold is the only one that
+    /// does not.
+    /// </param>
+    /// <param name="StockCt">
+    /// 0050. The WEIGHT those lines took out, summed off the movements themselves rather than off
+    /// the lines — the movements are what actually left stock.
+    /// </param>
+    /// <param name="ShortCt">
+    /// 0051. The carats the sheet wanted and the shelf did not have. An import empties a bucket but
+    /// never overdraws it, so this is the difference between what the lines say and what left —
+    /// zero on a sheet the stock could cover, which is the normal case.
+    /// </param>
+    /// <param name="ShortBuckets">0051. How many grade × size buckets ran out.</param>
+    public sealed record SalesImportOutcome(int Deleted, int Invoices, int Lines, int Receipts,
+                                            int StockLines = 0, decimal StockCt = 0m,
+                                            decimal ShortCt = 0m, int ShortBuckets = 0);
 
     /// <summary>
     /// Clears the previous sale import and writes the new one in a single transaction (0018).
@@ -353,7 +370,9 @@ public static class Repo
 
         var outcome = Json(res.Content);
         return new SalesImportOutcome(Int(outcome, "deleted"), Int(outcome, "invoices"),
-                                      Int(outcome, "lines"), Int(outcome, "receipts"));
+                                      Int(outcome, "lines"), Int(outcome, "receipts"),
+                                      Int(outcome, "stock_lines"), Num(outcome, "stock_ct"),
+                                      Num(outcome, "short_ct"), Int(outcome, "short_buckets"));
     }
 
     /// <summary>Creates any buyer named in the file that the database does not have yet, seeding
