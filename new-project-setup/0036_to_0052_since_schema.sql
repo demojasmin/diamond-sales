@@ -51,7 +51,7 @@ end $guard$;
 
 
 -- ###########################################################################
--- SECTION 1 of 12 : 0036_add_size_restores_retired.sql
+-- SECTION 1 of 17 : 0036_add_size_restores_retired.sql
 -- ###########################################################################
 
 -- ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ select 'sizes, live and retired',
 
 
 -- ###########################################################################
--- SECTION 2 of 12 : 0037_sieve_key_ignores_excel_prefixes.sql
+-- SECTION 2 of 17 : 0037_sieve_key_ignores_excel_prefixes.sql
 -- ###########################################################################
 
 -- ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ select 'still one bucket per sieve',
 
 
 -- ###########################################################################
--- SECTION 3 of 12 : 0038_import_stock_refuses_negative.sql
+-- SECTION 3 of 17 : 0038_import_stock_refuses_negative.sql
 -- ###########################################################################
 
 -- ---------------------------------------------------------------------------
@@ -537,7 +537,7 @@ select 'buckets negative right now',
 
 
 -- ###########################################################################
--- SECTION 4 of 12 : 0039_unknown_grade.sql
+-- SECTION 4 of 17 : 0039_unknown_grade.sql
 -- ###########################################################################
 
 -- ---------------------------------------------------------------------------
@@ -592,7 +592,7 @@ select 'running it twice creates nothing',
 
 
 -- ###########################################################################
--- SECTION 5 of 12 : 0040_edit_posted_invoice.sql
+-- SECTION 5 of 17 : 0040_edit_posted_invoice.sql
 -- ###########################################################################
 
 -- ---------------------------------------------------------------------------
@@ -865,7 +865,7 @@ select 'buckets negative right now',
 
 
 -- ###########################################################################
--- SECTION 6 of 12 : 0041_reconciliation_nets_cancellations_again.sql
+-- SECTION 6 of 17 : 0041_reconciliation_nets_cancellations_again.sql
 -- ###########################################################################
 
 -- ---------------------------------------------------------------------------
@@ -983,7 +983,7 @@ select 'buckets negative right now',
 
 
 -- ###########################################################################
--- SECTION 7 of 12 : 0042_edit_imported_invoice.sql
+-- SECTION 7 of 17 : 0042_edit_imported_invoice.sql
 -- ###########################################################################
 
 -- ---------------------------------------------------------------------------
@@ -1478,7 +1478,7 @@ commit;
 
 
 -- ###########################################################################
--- SECTION 8 of 12 : 0043_reserve_stock_at_entry.sql
+-- SECTION 8 of 17 : 0043_reserve_stock_at_entry.sql
 -- ###########################################################################
 
 -- ---------------------------------------------------------------------------
@@ -1787,7 +1787,7 @@ commit;
 
 
 -- ###########################################################################
--- SECTION 9 of 12 : 0044_stock_position_ledger_column.sql
+-- SECTION 9 of 17 : 0044_stock_position_ledger_column.sql
 -- ###########################################################################
 
 begin;
@@ -1888,7 +1888,7 @@ commit;
 
 
 -- ###########################################################################
--- SECTION 10 of 12 : 0045_audit_stock_reservation.sql
+-- SECTION 10 of 17 : 0045_audit_stock_reservation.sql
 -- ###########################################################################
 
 begin;
@@ -1952,7 +1952,7 @@ commit;
 
 
 -- ###########################################################################
--- SECTION 11 of 12 : 0046_invoice_line_count.sql
+-- SECTION 11 of 17 : 0046_invoice_line_count.sql
 -- ###########################################################################
 
 begin;
@@ -2049,7 +2049,7 @@ commit;
 
 
 -- ###########################################################################
--- SECTION 12 of 12 : 0047_import_stock_allows_negative.sql
+-- SECTION 12 of 17 : 0047_import_stock_allows_negative.sql
 -- ###########################################################################
 
 -- ---------------------------------------------------------------------------
@@ -2166,6 +2166,1080 @@ grant execute on function public.import_stock(date, jsonb, boolean, uuid, text) 
 
 commit;
 
+
+-- ###########################################################################
+-- SECTION 13 of 17 : 0048_imported_sales_after_count_deduct_stock.sql
+-- ###########################################################################
+
+-- ---------------------------------------------------------------------------
+-- 0048. An imported sale made AFTER the stock count takes its carats out.
+--
+-- THE RULE, in one line: a sale dated on or before the count is already in it;
+-- a sale dated after it is not.
+--
+-- The stock importer lands a COUNTED POSITION, not an opening balance. When the
+-- shelf was counted on 1 September, every parcel sold before that date was
+-- already gone from it -- which is why replace_imported_sales has never written
+-- a stock movement, and why it must not start writing one for those sales.
+-- Doing so would take the same carats out twice.
+--
+-- What was missing is the other half. A sheet of sales that runs PAST the count
+-- date carries invoices whose carats are still on the shelf as far as the
+-- ledger knows, and nothing ever took them off. The position read high by
+-- exactly those lines, silently, with no row to point at.
+--
+-- WHAT THIS CHANGES, precisely:
+--
+--   imported sale dated <= the count   nothing, exactly as before
+--   imported sale dated >  the count   SALE + REJECTION movements, as a posted
+--                                      sale writes them
+--   no stock count in the database     nothing, exactly as before
+--
+-- NOTHING IS APPLIED TO DATA ALREADY IMPORTED. This writes movements during an
+-- import and at no other time, so an existing position does not move when the
+-- migration is applied. The next import of the same sheet is what brings it
+-- into line -- and that import first removes the movements the previous one
+-- wrote, so importing twice deducts once.
+--
+-- Tagged ref_type = 'sales_line' deliberately, so the two functions that
+-- already understand that tag keep working untouched:
+--
+--   cancel_invoice        reverses SALE/REJECTION rows by this tag, so
+--                         cancelling an imported invoice returns its carats
+--   edit_posted_invoice   adds a signed delta for a MIG- invoice rather than
+--                         rewriting its movements, so old + delta is still right
+-- ---------------------------------------------------------------------------
+
+begin;
+
+create or replace function public.replace_imported_sales(p_payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    v_old_ids     bigint[];
+    v_deleted     integer := 0;
+    v_invoices    integer := 0;
+    v_lines       integer := 0;
+    v_receipts    integer := 0;
+    v_currency    bigint;
+    v_counted     date;          -- 0048. the day the stock was last counted
+    v_stock_lines integer := 0;  -- 0048. lines whose carats this import took out
+begin
+    if p_payload is null or jsonb_typeof(p_payload->'invoices') <> 'array' then
+        raise exception 'replace_imported_sales expects {"invoices": [...]}';
+    end if;
+
+    if jsonb_array_length(p_payload->'invoices') = 0 then
+        raise exception 'replace_imported_sales was given no invoices';
+    end if;
+
+    v_currency := (p_payload->>'currency_id')::bigint;
+    if v_currency is null then
+        raise exception 'replace_imported_sales needs a currency_id';
+    end if;
+
+    -- Only ever the previous import. A live invoice carries INV-yyyy-nnnnn and
+    -- is not matched by this; 08 §4 is why migrated numbers are prefixed at all.
+    select coalesce(array_agg(invoice_id), '{}')
+      into v_old_ids
+      from public.sales_invoice
+     where invoice_no like 'MIG-%';
+
+    if array_length(v_old_ids, 1) is not null then
+        -- 0042. An imported invoice can now carry an import_edit stock adjustment, from having
+        -- been corrected here. Restoring the sheet's original lines while leaving that adjustment
+        -- applied would hold stock at a correction whose invoice is being replaced. Cleared first,
+        -- inside the same transaction, so the sheet and the stock cannot disagree.
+        perform public.clear_import_edits(v_old_ids);
+
+        -- 0048. And the SALE/REJECTION movements this importer wrote for invoices dated after the
+        -- stock count. BEFORE the lines go: they are found through sales_line.line_id, and once the
+        -- lines are deleted there is nothing left to find them by -- they would sit in the ledger
+        -- deducting carats for an invoice that no longer exists.
+        delete from public.stock_movement
+         where ref_type = 'sales_line'
+           and ref_id in (select line_id from public.sales_line
+                           where invoice_id = any(v_old_ids));
+
+        delete from public.receipt     where invoice_id = any(v_old_ids);
+        delete from public.sales_line  where invoice_id = any(v_old_ids);
+        delete from public.sales_invoice where invoice_id = any(v_old_ids);
+        get diagnostics v_deleted = row_count;
+    end if;
+
+    -- Invoices first, keeping invoice_no as the handle to hang lines off: the
+    -- ids are assigned by the sequence and the payload cannot know them.
+    with incoming as (
+        select inv from jsonb_array_elements(p_payload->'invoices') as inv
+    ),
+    written as (
+        insert into public.sales_invoice
+            (invoice_no, invoice_date, buyer_id, broker_id, broker_pct,
+             terms_days, doc_type, currency_id, status,
+             created_by, updated_by)
+        select inv->>'invoice_no',
+               (inv->>'invoice_date')::date,
+               (inv->>'buyer_id')::bigint,
+               nullif(inv->>'broker_id', '')::bigint,
+               coalesce((inv->>'broker_pct')::numeric, 0),
+               coalesce((inv->>'terms_days')::integer, 0),
+               coalesce(inv->>'doc_type', 'BILL'),
+               v_currency,
+               'POSTED',
+               auth.uid(),
+               auth.uid()
+          from incoming
+        returning invoice_id, invoice_no
+    )
+    select count(*) into v_invoices from written;
+
+    -- Lines, matched back by invoice_no.
+    with incoming as (
+        select inv->>'invoice_no' as no,
+               jsonb_array_elements(coalesce(inv->'lines', '[]'::jsonb)) as ln
+          from jsonb_array_elements(p_payload->'invoices') as inv
+    )
+    insert into public.sales_line
+        (invoice_id, grade_id, size_id, gross_weight_ct, selection_ct,
+         price_per_ct, ex_rate, less1_pct, less2_pct, remark)
+    select i.invoice_id,
+           (c.ln->>'grade_id')::bigint,
+           (c.ln->>'size_id')::bigint,
+           (c.ln->>'gross_weight_ct')::numeric,
+           (c.ln->>'selection_ct')::numeric,
+           (c.ln->>'price_per_ct')::numeric,
+           coalesce((c.ln->>'ex_rate')::numeric, 1),
+           coalesce((c.ln->>'less1_pct')::numeric, 0),
+           coalesce((c.ln->>'less2_pct')::numeric, 0),
+           nullif(c.ln->>'remark', '')
+      from incoming c
+      join public.sales_invoice i on i.invoice_no = c.no;
+
+    get diagnostics v_lines = row_count;
+
+    -- One receipt per invoice that carried money, exactly as the workbook's
+    -- single overwritten "Rec. Amt" cell states it (DQ-11: there is no payment
+    -- history to migrate, only a running total). Dated the invoice date, since
+    -- the sheet records no payment date -- docs/08 §5 says declare it, not bury
+    -- it. Method 'IMPORTED', unchanged from the client-side importer.
+    --
+    -- `received` arrives ALREADY CAPPED at the invoice total. The cap stays on
+    -- the client because it needs the line amounts CALC-1 produces, and those
+    -- are the calculation engine's to compute, not this function's.
+    with incoming as (
+        select inv->>'invoice_no' as no,
+               (inv->>'received')::numeric as received,
+               (inv->>'invoice_date')::date as on_date
+          from jsonb_array_elements(p_payload->'invoices') as inv
+    )
+    insert into public.receipt (invoice_id, receipt_date, amount, method, created_by)
+    select i.invoice_id, c.on_date, c.received, 'IMPORTED', auth.uid()
+      from incoming c
+      join public.sales_invoice i on i.invoice_no = c.no
+     where c.received is not null and c.received > 0;
+
+    get diagnostics v_receipts = row_count;
+
+    -- 0048 - sales made AFTER the count come out of stock.
+    --
+    -- An imported sale dated on or before the stock count is already accounted for: the count was
+    -- taken with those carats gone, so deducting again would take the same parcel out twice. A sale
+    -- dated AFTER it is not in the count, and until now nothing took it out at all -- the position
+    -- read high by exactly those carats.
+    select max(movement_date) into v_counted
+      from public.stock_movement
+     where ref_type = 'stock_import';
+
+    -- NO COUNT, NO DEDUCTION. A database that has never imported a stock sheet has no date to
+    -- compare against, and guessing one either way would be inventing a position. Behaves exactly
+    -- as it did before 0048.
+    if v_counted is not null then
+        -- SALE and REJECTION, the same pair post_invoice writes, tagged 'sales_line' for the same
+        -- reason: cancel_invoice reverses movements by that tag, so a cancelled import gives its
+        -- carats back without a line of new code. edit_posted_invoice is unaffected -- its MIG-
+        -- branch adds a signed delta rather than rewriting, so old + delta is still the new figure.
+        --
+        -- Dated the INVOICE date, not today, so the Stock page counts them where they belong.
+        insert into public.stock_movement
+            (movement_date, grade_id, size_id, movement_type, weight_ct,
+             price_per_ct, ref_type, ref_id, created_by)
+        select i.invoice_date, l.grade_id, l.size_id, 'SALE', l.selection_ct,
+               l.price_per_ct, 'sales_line', l.line_id, auth.uid()
+          from public.sales_line l
+          join public.sales_invoice i on i.invoice_id = l.invoice_id
+         where i.invoice_no like 'MIG-%'
+           and i.invoice_date > v_counted
+           and l.selection_ct > 0;
+
+        get diagnostics v_stock_lines = row_count;
+
+        insert into public.stock_movement
+            (movement_date, grade_id, size_id, movement_type, weight_ct,
+             price_per_ct, ref_type, ref_id, created_by)
+        select i.invoice_date, l.grade_id, l.size_id, 'REJECTION', l.rejection_ct,
+               l.price_per_ct, 'sales_line', l.line_id, auth.uid()
+          from public.sales_line l
+          join public.sales_invoice i on i.invoice_id = l.invoice_id
+         where i.invoice_no like 'MIG-%'
+           and i.invoice_date > v_counted
+           and l.rejection_ct > 0;
+    end if;
+
+    return jsonb_build_object('ok', true, 'deleted', v_deleted,
+                              'invoices', v_invoices, 'lines', v_lines,
+                              'receipts', v_receipts,
+                              'counted_as_at', v_counted,
+                              'stock_lines', v_stock_lines);
+end;
+$$;
+
+comment on function public.replace_imported_sales is
+    '0048. Replaces the imported MIG- sales history in one transaction, and takes stock out for the imported sales dated AFTER the newest stock_import movement - those are the ones the counted position does not already account for. Sales on or before the count write no movement, because the count was taken with those carats already gone. A database with no stock import writes none at all. A re-import removes the movements the previous import wrote before writing its own.';
+
+commit;
+
+
+-- ###########################################################################
+-- SECTION 14 of 17 : 0049_imported_sales_always_deduct_stock.sql
+-- ###########################################################################
+
+-- ---------------------------------------------------------------------------
+-- 0049. EVERY imported sale takes its carats out of stock.
+--
+-- SUPERSEDES 0048 RATHER THAN EDITING IT, the same way 0047 supersedes 0038: an
+-- applied migration is a record of what a database was told, and rewriting one
+-- in place makes two databases with identical migration lists behave
+-- differently. 0048 stays on disk and stays applied; this replaces the function
+-- it installed.
+--
+-- WHAT 0048 DID, and why it is going:
+--
+--   sale dated <= the last stock count   no movement
+--   sale dated >  the last stock count   SALE + REJECTION
+--
+-- That read the stock sheet as a COUNT taken after those sales, so their carats
+-- were already off the shelf and deducting again would remove them twice. The
+-- desk has decided otherwise: an imported sale is a sale, and it moves stock
+-- exactly as one typed into the app does. The date is no longer consulted.
+--
+-- WHAT THIS DOES:
+--
+--   every imported MIG- line   SALE for what was sold, REJECTION for what was
+--                              rejected -- the same pair post_invoice writes
+--                              for a live sale
+--
+-- THE CONSEQUENCE, stated once and plainly. If the stock sheet is a count taken
+-- AFTER the sales imported alongside it, this takes the same carats out a second
+-- time and the position falls below what is physically in the drawer. Negative
+-- stock is allowed (0047), so nothing refuses and nothing warns. If the sheet is
+-- an OPENING balance, this is right and 0048 was the bug. Which of the two it is
+-- is the office's call, not this function's.
+--
+-- NO DOUBLE DEDUCTION ON RE-IMPORT. The function removes the movements the
+-- previous import wrote before writing its own, so importing the same sheet ten
+-- times deducts once. These rows are written here and nowhere else, which is
+-- what makes that guard sufficient.
+--
+-- NOTHING IS APPLIED TO DATA ALREADY IMPORTED. Movements are written during an
+-- import and at no other time, so an existing position does not move when this
+-- migration is applied. The next import is what brings it into line.
+-- ---------------------------------------------------------------------------
+
+begin;
+
+create or replace function public.replace_imported_sales(p_payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    v_old_ids     bigint[];
+    v_deleted     integer := 0;
+    v_invoices    integer := 0;
+    v_lines       integer := 0;
+    v_receipts    integer := 0;
+    v_currency    bigint;
+    v_stock_lines integer := 0;  -- 0049. lines whose carats this import took out
+begin
+    if p_payload is null or jsonb_typeof(p_payload->'invoices') <> 'array' then
+        raise exception 'replace_imported_sales expects {"invoices": [...]}';
+    end if;
+
+    if jsonb_array_length(p_payload->'invoices') = 0 then
+        raise exception 'replace_imported_sales was given no invoices';
+    end if;
+
+    v_currency := (p_payload->>'currency_id')::bigint;
+    if v_currency is null then
+        raise exception 'replace_imported_sales needs a currency_id';
+    end if;
+
+    -- Only ever the previous import. A live invoice carries INV-yyyy-nnnnn and
+    -- is not matched by this; 08 §4 is why migrated numbers are prefixed at all.
+    select coalesce(array_agg(invoice_id), '{}')
+      into v_old_ids
+      from public.sales_invoice
+     where invoice_no like 'MIG-%';
+
+    if array_length(v_old_ids, 1) is not null then
+        -- 0042. An imported invoice can now carry an import_edit stock adjustment, from having
+        -- been corrected here. Restoring the sheet's original lines while leaving that adjustment
+        -- applied would hold stock at a correction whose invoice is being replaced. Cleared first,
+        -- inside the same transaction, so the sheet and the stock cannot disagree.
+        perform public.clear_import_edits(v_old_ids);
+
+        -- 0049. And the SALE/REJECTION movements the previous import wrote. This is the whole of
+        -- what stops a re-import deducting twice. BEFORE the lines go: they are found through sales_line.line_id, and once the
+        -- lines are deleted there is nothing left to find them by -- they would sit in the ledger
+        -- deducting carats for an invoice that no longer exists.
+        delete from public.stock_movement
+         where ref_type = 'sales_line'
+           and ref_id in (select line_id from public.sales_line
+                           where invoice_id = any(v_old_ids));
+
+        delete from public.receipt     where invoice_id = any(v_old_ids);
+        delete from public.sales_line  where invoice_id = any(v_old_ids);
+        delete from public.sales_invoice where invoice_id = any(v_old_ids);
+        get diagnostics v_deleted = row_count;
+    end if;
+
+    -- Invoices first, keeping invoice_no as the handle to hang lines off: the
+    -- ids are assigned by the sequence and the payload cannot know them.
+    with incoming as (
+        select inv from jsonb_array_elements(p_payload->'invoices') as inv
+    ),
+    written as (
+        insert into public.sales_invoice
+            (invoice_no, invoice_date, buyer_id, broker_id, broker_pct,
+             terms_days, doc_type, currency_id, status,
+             created_by, updated_by)
+        select inv->>'invoice_no',
+               (inv->>'invoice_date')::date,
+               (inv->>'buyer_id')::bigint,
+               nullif(inv->>'broker_id', '')::bigint,
+               coalesce((inv->>'broker_pct')::numeric, 0),
+               coalesce((inv->>'terms_days')::integer, 0),
+               coalesce(inv->>'doc_type', 'BILL'),
+               v_currency,
+               'POSTED',
+               auth.uid(),
+               auth.uid()
+          from incoming
+        returning invoice_id, invoice_no
+    )
+    select count(*) into v_invoices from written;
+
+    -- Lines, matched back by invoice_no.
+    with incoming as (
+        select inv->>'invoice_no' as no,
+               jsonb_array_elements(coalesce(inv->'lines', '[]'::jsonb)) as ln
+          from jsonb_array_elements(p_payload->'invoices') as inv
+    )
+    insert into public.sales_line
+        (invoice_id, grade_id, size_id, gross_weight_ct, selection_ct,
+         price_per_ct, ex_rate, less1_pct, less2_pct, remark)
+    select i.invoice_id,
+           (c.ln->>'grade_id')::bigint,
+           (c.ln->>'size_id')::bigint,
+           (c.ln->>'gross_weight_ct')::numeric,
+           (c.ln->>'selection_ct')::numeric,
+           (c.ln->>'price_per_ct')::numeric,
+           coalesce((c.ln->>'ex_rate')::numeric, 1),
+           coalesce((c.ln->>'less1_pct')::numeric, 0),
+           coalesce((c.ln->>'less2_pct')::numeric, 0),
+           nullif(c.ln->>'remark', '')
+      from incoming c
+      join public.sales_invoice i on i.invoice_no = c.no;
+
+    get diagnostics v_lines = row_count;
+
+    -- One receipt per invoice that carried money, exactly as the workbook's
+    -- single overwritten "Rec. Amt" cell states it (DQ-11: there is no payment
+    -- history to migrate, only a running total). Dated the invoice date, since
+    -- the sheet records no payment date -- docs/08 §5 says declare it, not bury
+    -- it. Method 'IMPORTED', unchanged from the client-side importer.
+    --
+    -- `received` arrives ALREADY CAPPED at the invoice total. The cap stays on
+    -- the client because it needs the line amounts CALC-1 produces, and those
+    -- are the calculation engine's to compute, not this function's.
+    with incoming as (
+        select inv->>'invoice_no' as no,
+               (inv->>'received')::numeric as received,
+               (inv->>'invoice_date')::date as on_date
+          from jsonb_array_elements(p_payload->'invoices') as inv
+    )
+    insert into public.receipt (invoice_id, receipt_date, amount, method, created_by)
+    select i.invoice_id, c.on_date, c.received, 'IMPORTED', auth.uid()
+      from incoming c
+      join public.sales_invoice i on i.invoice_no = c.no
+     where c.received is not null and c.received > 0;
+
+    get diagnostics v_receipts = row_count;
+
+    -- 0049 - EVERY imported sale comes out of stock.
+    --
+    -- 0048 deducted only the sales dated after the last stock count, reading the sheet as a COUNT
+    -- taken with the earlier ones already gone. The desk has decided otherwise: an imported sale is
+    -- a sale, and it moves stock exactly as one typed into the app does. The date is not consulted.
+    --
+    -- WORTH KNOWING, because it is why 0048 read the other way: if the stock sheet IS a count taken
+    -- after these sales, this takes the same carats out a second time and the position falls below
+    -- what is in the drawer. Negative stock is allowed (0047), so nothing refuses and nothing warns.
+    --
+    -- SALE and REJECTION, the same pair post_invoice writes, tagged 'sales_line' for the same
+    -- reason: cancel_invoice reverses movements by that tag, so a cancelled import gives its carats
+    -- back without a line of new code. edit_posted_invoice is unaffected -- its MIG- branch adds a
+    -- signed delta rather than rewriting, so old + delta is still the new figure.
+    --
+    -- Dated the INVOICE date, not today, so the Stock page counts them where they belong in time.
+    insert into public.stock_movement
+        (movement_date, grade_id, size_id, movement_type, weight_ct,
+         price_per_ct, ref_type, ref_id, created_by)
+    select i.invoice_date, l.grade_id, l.size_id, 'SALE', l.selection_ct,
+           l.price_per_ct, 'sales_line', l.line_id, auth.uid()
+      from public.sales_line l
+      join public.sales_invoice i on i.invoice_id = l.invoice_id
+     where i.invoice_no like 'MIG-%'
+       and l.selection_ct > 0;
+
+    get diagnostics v_stock_lines = row_count;
+
+    insert into public.stock_movement
+        (movement_date, grade_id, size_id, movement_type, weight_ct,
+         price_per_ct, ref_type, ref_id, created_by)
+    select i.invoice_date, l.grade_id, l.size_id, 'REJECTION', l.rejection_ct,
+           l.price_per_ct, 'sales_line', l.line_id, auth.uid()
+      from public.sales_line l
+      join public.sales_invoice i on i.invoice_id = l.invoice_id
+     where i.invoice_no like 'MIG-%'
+       and l.rejection_ct > 0;
+
+    return jsonb_build_object('ok', true, 'deleted', v_deleted,
+                              'invoices', v_invoices, 'lines', v_lines,
+                              'receipts', v_receipts,
+                              'stock_lines', v_stock_lines);
+end;
+$$;
+
+comment on function public.replace_imported_sales is
+    '0049. Replaces the imported MIG- sales history in one transaction and takes stock out for EVERY imported line - SALE for what was sold, REJECTION for what was rejected - exactly as a sale entered in the app does. Supersedes 0048, which deducted only the sales dated after the last stock count. A re-import removes the movements the previous import wrote before writing its own, so importing the same sheet twice deducts once.';
+
+commit;
+
+
+-- ###########################################################################
+-- SECTION 15 of 17 : 0050_import_reports_carats_deducted.sql
+-- ###########################################################################
+
+-- ---------------------------------------------------------------------------
+-- 0050. The import says how many CARATS it took out, not just how many lines.
+--
+-- SUPERSEDES 0049 RATHER THAN EDITING IT, as 0049 supersedes 0048: an applied
+-- migration is a record of what a database was told. 0049 stays on disk and
+-- stays applied; this replaces the function it installed.
+--
+-- NOTHING ABOUT THE DEDUCTION CHANGES. The same lines write the same SALE and
+-- REJECTION movements for the same weights on the same dates. This adds one
+-- number to what the function REPORTS, so the completion dialog can say
+-- "134,416.9100 ct" beside "1,446 line(s)" instead of leaving the weight to be
+-- looked up in SQL afterwards.
+--
+-- WHY IT IS SUMMED OFF THE MOVEMENTS, not off the lines. The movements are what
+-- actually left stock. A line that sold nothing writes no SALE row, so it
+-- contributes only whatever its REJECTION took -- which is the honest figure for
+-- "carats deducted". Summing the lines instead would report weight that no
+-- movement ever moved.
+--
+-- So a sheet of 1,447 lines where one sold nothing reports 1,446 lines and the
+-- weight of every movement written, the zero-sold line included at its rejection
+-- and excluded when it rejected nothing either.
+-- ---------------------------------------------------------------------------
+
+begin;
+
+create or replace function public.replace_imported_sales(p_payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    v_old_ids     bigint[];
+    v_deleted     integer := 0;
+    v_invoices    integer := 0;
+    v_lines       integer := 0;
+    v_receipts    integer := 0;
+    v_currency    bigint;
+    v_stock_lines integer := 0;  -- 0049. lines whose carats this import took out
+    v_stock_ct    numeric := 0;  -- 0050. and how many carats that came to
+begin
+    if p_payload is null or jsonb_typeof(p_payload->'invoices') <> 'array' then
+        raise exception 'replace_imported_sales expects {"invoices": [...]}';
+    end if;
+
+    if jsonb_array_length(p_payload->'invoices') = 0 then
+        raise exception 'replace_imported_sales was given no invoices';
+    end if;
+
+    v_currency := (p_payload->>'currency_id')::bigint;
+    if v_currency is null then
+        raise exception 'replace_imported_sales needs a currency_id';
+    end if;
+
+    -- Only ever the previous import. A live invoice carries INV-yyyy-nnnnn and
+    -- is not matched by this; 08 §4 is why migrated numbers are prefixed at all.
+    select coalesce(array_agg(invoice_id), '{}')
+      into v_old_ids
+      from public.sales_invoice
+     where invoice_no like 'MIG-%';
+
+    if array_length(v_old_ids, 1) is not null then
+        -- 0042. An imported invoice can now carry an import_edit stock adjustment, from having
+        -- been corrected here. Restoring the sheet's original lines while leaving that adjustment
+        -- applied would hold stock at a correction whose invoice is being replaced. Cleared first,
+        -- inside the same transaction, so the sheet and the stock cannot disagree.
+        perform public.clear_import_edits(v_old_ids);
+
+        -- 0049. And the SALE/REJECTION movements the previous import wrote. This is the whole of
+        -- what stops a re-import deducting twice. BEFORE the lines go: they are found through sales_line.line_id, and once the
+        -- lines are deleted there is nothing left to find them by -- they would sit in the ledger
+        -- deducting carats for an invoice that no longer exists.
+        delete from public.stock_movement
+         where ref_type = 'sales_line'
+           and ref_id in (select line_id from public.sales_line
+                           where invoice_id = any(v_old_ids));
+
+        delete from public.receipt     where invoice_id = any(v_old_ids);
+        delete from public.sales_line  where invoice_id = any(v_old_ids);
+        delete from public.sales_invoice where invoice_id = any(v_old_ids);
+        get diagnostics v_deleted = row_count;
+    end if;
+
+    -- Invoices first, keeping invoice_no as the handle to hang lines off: the
+    -- ids are assigned by the sequence and the payload cannot know them.
+    with incoming as (
+        select inv from jsonb_array_elements(p_payload->'invoices') as inv
+    ),
+    written as (
+        insert into public.sales_invoice
+            (invoice_no, invoice_date, buyer_id, broker_id, broker_pct,
+             terms_days, doc_type, currency_id, status,
+             created_by, updated_by)
+        select inv->>'invoice_no',
+               (inv->>'invoice_date')::date,
+               (inv->>'buyer_id')::bigint,
+               nullif(inv->>'broker_id', '')::bigint,
+               coalesce((inv->>'broker_pct')::numeric, 0),
+               coalesce((inv->>'terms_days')::integer, 0),
+               coalesce(inv->>'doc_type', 'BILL'),
+               v_currency,
+               'POSTED',
+               auth.uid(),
+               auth.uid()
+          from incoming
+        returning invoice_id, invoice_no
+    )
+    select count(*) into v_invoices from written;
+
+    -- Lines, matched back by invoice_no.
+    with incoming as (
+        select inv->>'invoice_no' as no,
+               jsonb_array_elements(coalesce(inv->'lines', '[]'::jsonb)) as ln
+          from jsonb_array_elements(p_payload->'invoices') as inv
+    )
+    insert into public.sales_line
+        (invoice_id, grade_id, size_id, gross_weight_ct, selection_ct,
+         price_per_ct, ex_rate, less1_pct, less2_pct, remark)
+    select i.invoice_id,
+           (c.ln->>'grade_id')::bigint,
+           (c.ln->>'size_id')::bigint,
+           (c.ln->>'gross_weight_ct')::numeric,
+           (c.ln->>'selection_ct')::numeric,
+           (c.ln->>'price_per_ct')::numeric,
+           coalesce((c.ln->>'ex_rate')::numeric, 1),
+           coalesce((c.ln->>'less1_pct')::numeric, 0),
+           coalesce((c.ln->>'less2_pct')::numeric, 0),
+           nullif(c.ln->>'remark', '')
+      from incoming c
+      join public.sales_invoice i on i.invoice_no = c.no;
+
+    get diagnostics v_lines = row_count;
+
+    -- One receipt per invoice that carried money, exactly as the workbook's
+    -- single overwritten "Rec. Amt" cell states it (DQ-11: there is no payment
+    -- history to migrate, only a running total). Dated the invoice date, since
+    -- the sheet records no payment date -- docs/08 §5 says declare it, not bury
+    -- it. Method 'IMPORTED', unchanged from the client-side importer.
+    --
+    -- `received` arrives ALREADY CAPPED at the invoice total. The cap stays on
+    -- the client because it needs the line amounts CALC-1 produces, and those
+    -- are the calculation engine's to compute, not this function's.
+    with incoming as (
+        select inv->>'invoice_no' as no,
+               (inv->>'received')::numeric as received,
+               (inv->>'invoice_date')::date as on_date
+          from jsonb_array_elements(p_payload->'invoices') as inv
+    )
+    insert into public.receipt (invoice_id, receipt_date, amount, method, created_by)
+    select i.invoice_id, c.on_date, c.received, 'IMPORTED', auth.uid()
+      from incoming c
+      join public.sales_invoice i on i.invoice_no = c.no
+     where c.received is not null and c.received > 0;
+
+    get diagnostics v_receipts = row_count;
+
+    -- 0049 - EVERY imported sale comes out of stock.
+    --
+    -- 0048 deducted only the sales dated after the last stock count, reading the sheet as a COUNT
+    -- taken with the earlier ones already gone. The desk has decided otherwise: an imported sale is
+    -- a sale, and it moves stock exactly as one typed into the app does. The date is not consulted.
+    --
+    -- WORTH KNOWING, because it is why 0048 read the other way: if the stock sheet IS a count taken
+    -- after these sales, this takes the same carats out a second time and the position falls below
+    -- what is in the drawer. Negative stock is allowed (0047), so nothing refuses and nothing warns.
+    --
+    -- SALE and REJECTION, the same pair post_invoice writes, tagged 'sales_line' for the same
+    -- reason: cancel_invoice reverses movements by that tag, so a cancelled import gives its carats
+    -- back without a line of new code. edit_posted_invoice is unaffected -- its MIG- branch adds a
+    -- signed delta rather than rewriting, so old + delta is still the new figure.
+    --
+    -- Dated the INVOICE date, not today, so the Stock page counts them where they belong in time.
+    insert into public.stock_movement
+        (movement_date, grade_id, size_id, movement_type, weight_ct,
+         price_per_ct, ref_type, ref_id, created_by)
+    select i.invoice_date, l.grade_id, l.size_id, 'SALE', l.selection_ct,
+           l.price_per_ct, 'sales_line', l.line_id, auth.uid()
+      from public.sales_line l
+      join public.sales_invoice i on i.invoice_id = l.invoice_id
+     where i.invoice_no like 'MIG-%'
+       and l.selection_ct > 0;
+
+    get diagnostics v_stock_lines = row_count;
+
+    insert into public.stock_movement
+        (movement_date, grade_id, size_id, movement_type, weight_ct,
+         price_per_ct, ref_type, ref_id, created_by)
+    select i.invoice_date, l.grade_id, l.size_id, 'REJECTION', l.rejection_ct,
+           l.price_per_ct, 'sales_line', l.line_id, auth.uid()
+      from public.sales_line l
+      join public.sales_invoice i on i.invoice_id = l.invoice_id
+     where i.invoice_no like 'MIG-%'
+       and l.rejection_ct > 0;
+
+    -- 0050 - and the WEIGHT those movements came to.
+    --
+    -- Summed off the movements themselves rather than off the lines, because the movements are
+    -- the thing that actually left stock: a line that sold nothing wrote no SALE row and is
+    -- counted here at whatever its REJECTION took, which is the honest figure. Reading the lines
+    -- instead would report carats that no movement ever moved.
+    --
+    -- Safe to sum the whole MIG- set: the delete at the top of this function cleared the previous
+    -- import's rows, so every one of these was written a few statements ago.
+    select coalesce(sum(m.weight_ct), 0) into v_stock_ct
+      from public.stock_movement m
+      join public.sales_line l on l.line_id = m.ref_id and m.ref_type = 'sales_line'
+      join public.sales_invoice i on i.invoice_id = l.invoice_id
+     where i.invoice_no like 'MIG-%';
+
+    return jsonb_build_object('ok', true, 'deleted', v_deleted,
+                              'invoices', v_invoices, 'lines', v_lines,
+                              'receipts', v_receipts,
+                              'stock_lines', v_stock_lines,
+                              'stock_ct', v_stock_ct);
+end;
+$$;
+
+comment on function public.replace_imported_sales is
+    '0050. Replaces the imported MIG- sales history in one transaction and takes stock out for every imported line - SALE for what was sold, REJECTION for what was rejected - exactly as a sale entered in the app does. Reports stock_lines and stock_ct, the number of lines and the weight the movements came to. Supersedes 0049, which reported the line count alone. A re-import removes the movements the previous import wrote before writing its own, so importing the same sheet twice deducts once.';
+
+commit;
+
+
+-- ###########################################################################
+-- SECTION 16 of 17 : 0051_import_never_drives_stock_negative.sql
+-- ###########################################################################
+
+-- ---------------------------------------------------------------------------
+-- 0051. The import takes what the shelf has and no more. It never goes negative.
+--
+-- SUPERSEDES 0050 RATHER THAN EDITING IT, as 0050 supersedes 0049 and 0049
+-- supersedes 0048: an applied migration is a record of what a database was told.
+-- 0050 stays on disk and stays applied; this replaces the function it installed.
+--
+-- WHAT CHANGES. 0049 deducted every imported line in full, and on a sheet whose
+-- sales predate the stock count that drove the position far below zero -- the
+-- desk saw -131,503 ct. The rule is now: an import may empty a bucket but may
+-- not overdraw it. What the shelf could not cover is reported instead, as
+-- short_ct and short_buckets, so the import dialog can warn about it.
+--
+-- WHAT DOES NOT CHANGE. Which lines write movements, their type, date, price and
+-- tag; the delete-then-rewrite that stops a re-import deducting twice; every
+-- number 0050 already reported. Only the WEIGHT on a capped line differs, and
+-- only where there were not carats enough to take.
+-- ---------------------------------------------------------------------------
+
+begin;
+
+create or replace function public.replace_imported_sales(p_payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    v_old_ids     bigint[];
+    v_deleted     integer := 0;
+    v_invoices    integer := 0;
+    v_lines       integer := 0;
+    v_receipts    integer := 0;
+    v_currency    bigint;
+    v_stock_lines integer := 0;  -- 0049. lines whose carats this import took out
+    v_stock_ct    numeric := 0;  -- 0050. and how many carats that came to
+    v_short_ct    numeric := 0;  -- 0051. carats the sheet wanted and the shelf did not have
+    v_short_bkts  integer := 0;  -- 0051. how many grade x size buckets ran out
+begin
+    if p_payload is null or jsonb_typeof(p_payload->'invoices') <> 'array' then
+        raise exception 'replace_imported_sales expects {"invoices": [...]}';
+    end if;
+
+    if jsonb_array_length(p_payload->'invoices') = 0 then
+        raise exception 'replace_imported_sales was given no invoices';
+    end if;
+
+    v_currency := (p_payload->>'currency_id')::bigint;
+    if v_currency is null then
+        raise exception 'replace_imported_sales needs a currency_id';
+    end if;
+
+    -- Only ever the previous import. A live invoice carries INV-yyyy-nnnnn and
+    -- is not matched by this; 08 §4 is why migrated numbers are prefixed at all.
+    select coalesce(array_agg(invoice_id), '{}')
+      into v_old_ids
+      from public.sales_invoice
+     where invoice_no like 'MIG-%';
+
+    if array_length(v_old_ids, 1) is not null then
+        -- 0042. An imported invoice can now carry an import_edit stock adjustment, from having
+        -- been corrected here. Restoring the sheet's original lines while leaving that adjustment
+        -- applied would hold stock at a correction whose invoice is being replaced. Cleared first,
+        -- inside the same transaction, so the sheet and the stock cannot disagree.
+        perform public.clear_import_edits(v_old_ids);
+
+        -- 0049. And the SALE/REJECTION movements the previous import wrote. This is the whole of
+        -- what stops a re-import deducting twice. BEFORE the lines go: they are found through sales_line.line_id, and once the
+        -- lines are deleted there is nothing left to find them by -- they would sit in the ledger
+        -- deducting carats for an invoice that no longer exists.
+        delete from public.stock_movement
+         where ref_type = 'sales_line'
+           and ref_id in (select line_id from public.sales_line
+                           where invoice_id = any(v_old_ids));
+
+        delete from public.receipt     where invoice_id = any(v_old_ids);
+        delete from public.sales_line  where invoice_id = any(v_old_ids);
+        delete from public.sales_invoice where invoice_id = any(v_old_ids);
+        get diagnostics v_deleted = row_count;
+    end if;
+
+    -- Invoices first, keeping invoice_no as the handle to hang lines off: the
+    -- ids are assigned by the sequence and the payload cannot know them.
+    with incoming as (
+        select inv from jsonb_array_elements(p_payload->'invoices') as inv
+    ),
+    written as (
+        insert into public.sales_invoice
+            (invoice_no, invoice_date, buyer_id, broker_id, broker_pct,
+             terms_days, doc_type, currency_id, status,
+             created_by, updated_by)
+        select inv->>'invoice_no',
+               (inv->>'invoice_date')::date,
+               (inv->>'buyer_id')::bigint,
+               nullif(inv->>'broker_id', '')::bigint,
+               coalesce((inv->>'broker_pct')::numeric, 0),
+               coalesce((inv->>'terms_days')::integer, 0),
+               coalesce(inv->>'doc_type', 'BILL'),
+               v_currency,
+               'POSTED',
+               auth.uid(),
+               auth.uid()
+          from incoming
+        returning invoice_id, invoice_no
+    )
+    select count(*) into v_invoices from written;
+
+    -- Lines, matched back by invoice_no.
+    with incoming as (
+        select inv->>'invoice_no' as no,
+               jsonb_array_elements(coalesce(inv->'lines', '[]'::jsonb)) as ln
+          from jsonb_array_elements(p_payload->'invoices') as inv
+    )
+    insert into public.sales_line
+        (invoice_id, grade_id, size_id, gross_weight_ct, selection_ct,
+         price_per_ct, ex_rate, less1_pct, less2_pct, remark)
+    select i.invoice_id,
+           (c.ln->>'grade_id')::bigint,
+           (c.ln->>'size_id')::bigint,
+           (c.ln->>'gross_weight_ct')::numeric,
+           (c.ln->>'selection_ct')::numeric,
+           (c.ln->>'price_per_ct')::numeric,
+           coalesce((c.ln->>'ex_rate')::numeric, 1),
+           coalesce((c.ln->>'less1_pct')::numeric, 0),
+           coalesce((c.ln->>'less2_pct')::numeric, 0),
+           nullif(c.ln->>'remark', '')
+      from incoming c
+      join public.sales_invoice i on i.invoice_no = c.no;
+
+    get diagnostics v_lines = row_count;
+
+    -- One receipt per invoice that carried money, exactly as the workbook's
+    -- single overwritten "Rec. Amt" cell states it (DQ-11: there is no payment
+    -- history to migrate, only a running total). Dated the invoice date, since
+    -- the sheet records no payment date -- docs/08 §5 says declare it, not bury
+    -- it. Method 'IMPORTED', unchanged from the client-side importer.
+    --
+    -- `received` arrives ALREADY CAPPED at the invoice total. The cap stays on
+    -- the client because it needs the line amounts CALC-1 produces, and those
+    -- are the calculation engine's to compute, not this function's.
+    with incoming as (
+        select inv->>'invoice_no' as no,
+               (inv->>'received')::numeric as received,
+               (inv->>'invoice_date')::date as on_date
+          from jsonb_array_elements(p_payload->'invoices') as inv
+    )
+    insert into public.receipt (invoice_id, receipt_date, amount, method, created_by)
+    select i.invoice_id, c.on_date, c.received, 'IMPORTED', auth.uid()
+      from incoming c
+      join public.sales_invoice i on i.invoice_no = c.no
+     where c.received is not null and c.received > 0;
+
+    get diagnostics v_receipts = row_count;
+
+    -- 0051 - EVERY imported sale comes out of stock, BUT NEVER BELOW ZERO.
+    --
+    -- 0049 took every line in full and let the position go negative. It is allowed to (0047), but
+    -- on a sheet of historic sales it reads as thousands of carats owed that nobody owes. The desk
+    -- has settled it: take what is on the shelf, leave what is not there, and say what was left.
+    --
+    -- HOW THE SHELF IS SHARED OUT. Lines are walked per grade x size bucket in invoice-date order,
+    -- oldest first, with a running total of what earlier lines already took. Each line gets what is
+    -- left of the bucket and no more, so the earliest sales come out whole and the shortfall lands
+    -- on the latest ones. Spreading it pro-rata instead would leave every line slightly wrong
+    -- rather than a named few plainly short, and "which sales could not be taken out" is a question
+    -- the office can act on.
+    --
+    -- SALE BEFORE REJECTION inside a line, for the same reason: what was sold is the part that
+    -- matters, so a line with only some room left records the sale and drops the rejection.
+    --
+    -- WHAT THIS COSTS, said plainly. A capped line's movements weigh LESS than the line does, so
+    -- for that line the ledger and the invoice disagree -- by exactly the carats the shelf did not
+    -- have. That disagreement is the point, and it is reported as short_ct / short_buckets rather
+    -- than left for somebody to find.
+    --
+    -- The room is read from v_stock_position.balance_ct, which is net of reservations (0043), so an
+    -- import cannot take carats a half-typed sales entry is holding. Floored at zero: a bucket
+    -- already negative from earlier trading has nothing to give, and an import must not be the
+    -- thing that digs it deeper. And it is the position BEFORE this import writes anything -- the
+    -- movements below are inserted in the same statement that reads it.
+    --
+    -- Type, date, price and tag are 0049's unchanged: SALE and REJECTION, the pair post_invoice
+    -- writes, tagged 'sales_line' so cancel_invoice reverses them, dated the INVOICE date so the
+    -- Stock page counts them where they belong in time.
+    with wanted as (
+        select l.line_id, l.grade_id, l.size_id, l.price_per_ct,
+               i.invoice_date,
+               coalesce(l.selection_ct, 0) as selection_ct,
+               coalesce(l.rejection_ct, 0) as rejection_ct,
+               coalesce(l.selection_ct, 0) + coalesce(l.rejection_ct, 0) as gross_ct
+          from public.sales_line l
+          join public.sales_invoice i on i.invoice_id = l.invoice_id
+         where i.invoice_no like 'MIG-%'
+    ),
+    running as (
+        select w.*,
+               greatest(coalesce(p.balance_ct, 0), 0) as room,
+               coalesce(sum(w.gross_ct) over (partition by w.grade_id, w.size_id
+                                              order by w.invoice_date, w.line_id
+                                              rows between unbounded preceding and 1 preceding), 0)
+                   as taken_before
+          from wanted w
+          left join public.v_stock_position p
+                 on p.grade_id = w.grade_id and p.size_id = w.size_id
+    ),
+    capped as (
+        select r.*,
+               greatest(0, least(r.gross_ct, r.room - r.taken_before)) as allow_ct
+          from running r
+    ),
+    split as (
+        select c.*,
+               least(c.selection_ct, c.allow_ct) as sale_out,
+               least(c.rejection_ct, c.allow_ct - least(c.selection_ct, c.allow_ct)) as rej_out
+          from capped c
+    ),
+    wrote as (
+        insert into public.stock_movement
+            (movement_date, grade_id, size_id, movement_type, weight_ct,
+             price_per_ct, ref_type, ref_id, created_by)
+        select s.invoice_date, s.grade_id, s.size_id, 'SALE', s.sale_out,
+               s.price_per_ct, 'sales_line', s.line_id, auth.uid()
+          from split s
+         where s.sale_out > 0
+        union all
+        select s.invoice_date, s.grade_id, s.size_id, 'REJECTION', s.rej_out,
+               s.price_per_ct, 'sales_line', s.line_id, auth.uid()
+          from split s
+         where s.rej_out > 0
+        returning weight_ct
+    ),
+    -- The WEIGHT off the movements themselves, as 0050 summed it: they are what actually left.
+    took as (
+        select coalesce(sum(weight_ct), 0) as ct_out from wrote
+    ),
+    -- The COUNT off the lines, and only those that wrote a SALE -- which is what 0050's
+    -- `get diagnostics` after its first insert counted, and what "Stock taken out: N line(s)"
+    -- has always meant. Counting the movement rows instead double-counts every line that
+    -- rejected as well as sold.
+    --
+    -- A line capped to nothing is not counted, and should not be: it took nothing out. A line
+    -- that sold nothing was already excluded under 0050 for the same reason.
+    counted as (
+        select count(*) filter (where s.sale_out > 0) as lines_out from split s
+    ),
+    fell_short as (
+        -- Rounded at 0.00005 so that a carat lost to numeric rounding is not reported as a
+        -- shortage; the sheet is kept to four places everywhere else.
+        select coalesce(round(sum(c.gross_ct - c.allow_ct), 4), 0) as short_ct,
+               count(distinct (c.grade_id, c.size_id))             as short_buckets
+          from capped c
+         where c.gross_ct - c.allow_ct > 0.00005
+    )
+    select counted.lines_out, round(took.ct_out, 4),
+           fell_short.short_ct, fell_short.short_buckets
+      into v_stock_lines, v_stock_ct, v_short_ct, v_short_bkts
+      from took, counted, fell_short;
+
+    return jsonb_build_object('ok', true, 'deleted', v_deleted,
+                              'invoices', v_invoices, 'lines', v_lines,
+                              'receipts', v_receipts,
+                              'stock_lines', v_stock_lines,
+                              'stock_ct', v_stock_ct,
+                              'short_ct', v_short_ct,
+                              'short_buckets', v_short_bkts);
+end;
+$$;
+
+comment on function public.replace_imported_sales is
+    '0051. Replaces the imported MIG- sales history in one transaction and takes stock out for every imported line - SALE for what was sold, REJECTION for what was rejected - up to what the grade x size bucket actually holds, never below zero. Reports stock_lines and stock_ct for what left, and short_ct and short_buckets for what the shelf could not cover. Supersedes 0050, which deducted every line in full and allowed the position to go negative. A re-import removes the movements the previous import wrote before writing its own, so importing the same sheet twice deducts once.';
+
+commit;
+
+
+-- ###########################################################################
+-- SECTION 17 of 17 : 0052_reconciliation_counts_imported_sales.sql
+-- ###########################################################################
+
+-- ---------------------------------------------------------------------------
+-- 0052. The reconciliation counts imported sales, because they now move stock.
+--
+-- THE FAULT
+--
+-- v_reconciliation compares two sides of the same question, per grade x size:
+--
+--     moved_out_ct        every SALE movement
+--     sold_on_invoices_ct the selection on POSTED lines -- but NOT on MIG- ones
+--
+-- That asymmetry was correct when 0026 wrote it. An imported invoice moved no
+-- stock at all: the sheet was read as an opening balance already net of its own
+-- history, so a MIG- line had no movement to answer for and counting it would
+-- have reported a difference against nothing.
+--
+-- 0049 changed that and nothing here followed. Imported sales write SALE
+-- movements now, exactly as a sale typed into the app does. Those movements land
+-- on the LEFT, their lines are still excluded from the RIGHT, and the view
+-- reports a difference equal to the whole imported history -- 314 ct on the
+-- desk's current sheet, and 28,529 ct on the full one. It cannot be cleared by
+-- any amount of correct trading, which is the worst kind of red figure: one that
+-- teaches the office to ignore the report.
+--
+-- THE FIX
+--
+-- One line removed. Both sides now count an imported sale, so it cancels out of
+-- the difference the way an app-entered sale always has.
+--
+-- WHAT THE DIFFERENCE MEANS AFTERWARDS, and it is not always zero. 0051 caps an
+-- imported line at what its bucket holds, so a line the shelf could not cover
+-- writes a SALE SMALLER than its selection_ct. The remainder shows up here as a
+-- NEGATIVE diff_ct -- the invoice says more was sold than the ledger took out,
+-- which is exactly true and exactly what the office needs to see.
+--
+-- IT IS PART OF short_ct, NOT ALL OF IT, and the difference matters to anyone
+-- reconciling the two. This view compares SALE movements against selection_ct;
+-- rejections appear on NEITHER side. The import dialog's short_ct counts the
+-- whole parcel, sold and rejected alike. So diff_ct is the SALE half:
+--
+--     short_ct  =  (selection short, which is -diff_ct)  +  (rejection short)
+--
+-- Measured on the desk's sheet: 334.1235 short in total, of which 203.2735 was
+-- selection and shows here, and 130.8500 was rejection and does not. Reading a
+-- mismatch between the two figures as a fault would be reading it wrongly.
+--
+-- So: a clean import reconciles to zero. A short one reports its shortfall, in
+-- the right buckets, permanently, until somebody puts the stock in or corrects
+-- the sale. That is the report doing its job rather than carrying a constant.
+--
+-- NOTHING ELSE CHANGES. Cancelled invoices are still excluded from both sides
+-- (0041). The columns, their names and their order are 0041's, untouched --
+-- "create or replace view" may only append, and this appends nothing.
+--
+-- A VIEW ONLY. No data is touched, no movement is written or removed, and every
+-- balance on every screen is exactly what it was a moment before this ran.
+-- ---------------------------------------------------------------------------
+
+begin;
+
+create or replace view public.v_reconciliation as
+select
+    g.code                                  as grade_code,
+    s.code                                  as size_code,
+    coalesce(mv.sale_ct, 0)                 as moved_out_ct,
+    coalesce(sl.sold_ct, 0)                 as sold_on_invoices_ct,
+    round(coalesce(mv.sale_ct, 0) - coalesce(sl.sold_ct, 0), 4) as diff_ct,
+    abs(coalesce(mv.sale_ct, 0) - coalesce(sl.sold_ct, 0)) < 0.0001 as reconciles
+from public.grade g
+cross join public.size_bucket s
+left join lateral (
+    select sum(m.weight_ct) as sale_ct
+    from public.stock_movement m
+    -- LEFT joined, and coalesced below: a SALE movement that points at no line is not something
+    -- this view should hide. It has no invoice to excuse it, so it stays in the difference where
+    -- somebody will see it.
+    left join public.sales_line    l on l.line_id    = m.ref_id and m.ref_type = 'sales_line'
+    left join public.sales_invoice i on i.invoice_id = l.invoice_id
+    where m.grade_id = g.grade_id and m.size_id = s.size_id
+      and m.movement_type = 'SALE'
+      -- 0041. The cancelled invoice's lines already left sold_ct below; its movements leave here.
+      and coalesce(i.status, 'POSTED') <> 'CANCELLED'
+) mv on true
+left join lateral (
+    select sum(l.selection_ct) as sold_ct
+    from public.sales_line l
+    join public.sales_invoice i using (invoice_id)
+    where l.grade_id = g.grade_id and l.size_id = s.size_id
+      and i.status = 'POSTED'
+      -- 0052. 0026 excluded MIG- invoices here because an imported sale moved no stock. Since 0049
+      -- it does, and its SALE movement is counted above -- so excluding the line it came from left
+      -- the whole imported history sitting in the difference with nothing to answer it.
+) sl on true;
+
+comment on view public.v_reconciliation is
+    'CALC-8. Carats leaving stock as SALE movements against carats sold on invoices, per grade x size. Imported MIG- invoices are counted on BOTH sides (0052): they move stock since 0049, so excluding their lines left their movements unanswered. Where 0051 capped an imported line at what its bucket held, diff_ct is negative by the SELECTION the shelf could not cover - part of the import dialog''s short_ct, not all of it, because that figure counts rejections too and this view counts them on neither side. Cancelled invoices are excluded from BOTH sides (0041): cancel_invoice leaves the SALE movement in place and reverses it with an ADJUST, so counting the movement while the line had already dropped out reported a difference that could never be cleared.';
+
+commit;
+
+
 -- ===========================================================================
 -- Did it land? Every row must read 'ok'. verify_new_project.sql cannot check
 -- these -- it pins the schema as it stood before them and passes either way.
@@ -2196,6 +3270,12 @@ union all select 'edit an imported invoice (0042)',
 union all select 'reconciliation nets cancellations (0041)',
        case when coalesce(pg_get_viewdef('public.v_reconciliation'::regclass) ilike '%CANCELLED%', false)
             then 'ok' else 'MISSING' end
+-- 0052 REMOVES 0026's MIG- exclusion from that same view, so this one reads the other way round:
+-- the exclusion still being there means Section 17 did not run and the reconciliation will report
+-- the whole imported history as an unclearable difference.
+union all select 'reconciliation counts imported sales (0052)',
+       case when coalesce(pg_get_viewdef('public.v_reconciliation'::regclass) like '%MIG-%%', false)
+            then 'MISSING' else 'ok' end
 union all select 'Unknown Grade exists (0039)',
        case when exists (select 1 from public.grade where code = 'Unknown Grade')
             then 'ok' else 'MISSING' end
@@ -2206,6 +3286,17 @@ union all select 'add a sieve size from the app (0036)',
 union all select 'line_count on v_invoice (0046)',
        case when exists (select 1 from information_schema.columns where table_schema = 'public'
                            and table_name = 'v_invoice' and column_name = 'line_count')
+            then 'ok' else 'MISSING' end
+-- 0048 rewrites a function rather than adding one, so its existence proves nothing -- the comment
+-- it carries is the only evidence this section, and not an older one, is what is installed.
+-- 0049 supersedes 0048, so the comment must read 0049 -- a database still saying 0048 has the
+-- date-conditional version installed and will not deduct the older sales.
+-- 0050 supersedes 0049, so the comment must read 0050 -- a database still saying 0049 deducts
+-- correctly but reports no carat total, and the import dialog shows a blank weight.
+-- 0051 supersedes 0050, so the comment must read 0051 -- a database still saying 0050 deducts every
+-- line in full and lets the stock position go negative.
+union all select 'import never drives stock negative (0051)',
+       case when coalesce(obj_description('public.replace_imported_sales'::regproc) like '0051.%', false)
             then 'ok' else 'MISSING' end;
 
 -- Step 2 reported 27 grades. This is why it now reads 28.

@@ -166,17 +166,69 @@ insert into vr_out select 13, 'IMPORT  · the bucket still reconciles',
        case when pg_temp.vr_recon() then 'ok' else 'DOES NOT RECONCILE' end;
 
 
--- ── 5 · and the whole database, not just this bucket ──────────────────────
-insert into vr_out select 14, 'ALL     · no bucket anywhere is negative',
+-- ── 5 · MIGRATED · an imported sale is counted on BOTH sides  (0052) ───────
+-- Written straight to the tables rather than through replace_imported_sales, which DELETES every
+-- MIG- invoice as its first act -- not something a test may do to a database somebody is using.
+-- The rows are exactly what 0051 writes: a POSTED MIG- invoice, one line, one SALE movement
+-- against it for what the line sold.
+--
+-- This is the check that separates 0052 from 0041. Under 0041 the movement was counted in
+-- moved_out_ct while the line was excluded from sold_on_invoices_ct, so the bucket reported a
+-- 20 ct difference that no trading could clear. Under 0052 both sides see it and it cancels.
+do $$
+declare v record; v_inv bigint; v_line bigint;
+begin
+    select * into v from vr;
+    insert into public.sales_invoice
+        (invoice_no, invoice_date, buyer_id, currency_id, status, doc_type, terms_days)
+    values ('MIG-VERIFY-RECON', current_date,
+            (select buyer_id from public.buyer where active order by buyer_id limit 1),
+            (select currency_id from public.currency order by currency_id limit 1),
+            'POSTED', 'BILL', 0)
+    returning invoice_id into v_inv;
+
+    insert into public.sales_line
+        (invoice_id, grade_id, size_id, gross_weight_ct, selection_ct, price_per_ct, remark)
+    values (v_inv, v.grade_id, v.size_id, 20, 20, 1000, 'VERIFY-RECON')
+    returning line_id into v_line;
+
+    insert into public.stock_movement
+        (movement_date, grade_id, size_id, movement_type, weight_ct,
+         price_per_ct, ref_type, ref_id, reason)
+    values (current_date, v.grade_id, v.size_id, 'SALE', 20,
+            1000, 'sales_line', v_line, 'VERIFY-RECON MIG');
+end $$;
+
+insert into vr_out select 14, 'MIGRATED· the imported sale leaves stock: 240 - 20 = 220',
+       case when pg_temp.vr_bal() = 220 then 'ok' else 'WRONG: ' || pg_temp.vr_bal()::text end;
+insert into vr_out select 15, 'MIGRATED· and the bucket RECONCILES  (0052; fails under 0041)',
+       case when pg_temp.vr_recon() then 'ok'
+            else 'DOES NOT RECONCILE - is 0052 applied? 0041 excluded MIG- lines from the sold side' end;
+
+-- Gone before the whole-database checks below, so a leftover test invoice cannot make them read
+-- worse than the database really is.
+delete from public.stock_movement
+ where ref_type = 'sales_line'
+   and ref_id in (select line_id from public.sales_line l
+                    join public.sales_invoice i using (invoice_id)
+                   where i.invoice_no = 'MIG-VERIFY-RECON');
+delete from public.sales_line
+ where invoice_id in (select invoice_id from public.sales_invoice
+                       where invoice_no = 'MIG-VERIFY-RECON');
+delete from public.sales_invoice where invoice_no = 'MIG-VERIFY-RECON';
+
+
+-- ── 6 · and the whole database, not just this bucket ──────────────────────
+insert into vr_out select 16, 'ALL     · no bucket anywhere is negative',
        case when (select count(*) from public.v_stock_position where balance_ct < 0) = 0
             then 'ok' else 'NEGATIVE BUCKETS PRESENT' end;
-insert into vr_out select 15, 'ALL     · every bucket in the database reconciles',
+insert into vr_out select 17, 'ALL     · every bucket in the database reconciles',
        case when (select count(*) from public.v_reconciliation where not reconciles) = 0
             then 'ok'
             else (select string_agg(grade_code || ' x ' || size_code
                                     || ' (' || trim_scale(diff_ct) || ' ct)', ', ')
                     from public.v_reconciliation where not reconciles) end;
-insert into vr_out select 16, 'ALL     · no SALE movement points at a line that is gone',
+insert into vr_out select 18, 'ALL     · no SALE movement points at a line that is gone',
        case when (select count(*) from public.stock_movement m
                    where m.movement_type in ('SALE', 'REJECTION')
                      and m.ref_type = 'sales_line'
@@ -188,7 +240,7 @@ insert into vr_out select 16, 'ALL     · no SALE movement points at a line that
                      and not exists (select 1 from public.sales_line l where l.line_id = m.ref_id)) end;
 
 
--- ── 6 · the answer, then remove everything this script created ─────────────
+-- ── 7 · the answer, then remove everything this script created ─────────────
 select check_ as check, status from vr_out order by n;
 
 delete from public.stock_movement

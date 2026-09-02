@@ -1106,10 +1106,11 @@ var t = new Thread(() =>
     WithBuyer(deskEntry);
     deskEntry.Recalculate();
     Refresh();
-    // ONE line is deliberately not enough: a sale needs two, on the desk's instruction. The
-    // invoice is otherwise faultless, so Validate() is clean and only ConfirmProblems() objects.
-    Check("ROWS - one filled row and a buyer is NOT enough to confirm",
-          deskEntry.ConfirmProblems().Any(x => x.Contains("at least 2 lines"))
+    // ONE LINE IS ENOUGH, on the desk's instruction. It was two for a while; a single-line invoice
+    // is ordinary in most trading, and refusing one refused real sales. Nothing else about the sale
+    // changed -- Validate() was already clean here, and now ConfirmProblems() is too.
+    Check("ROWS - one filled row and a buyer is enough to confirm",
+          deskEntry.ConfirmProblems().Count == 0
           && deskEntry.RealLines.Count == 1
           && deskEntry.Validate() is null,
           $"{deskEntry.RealLines.Count} line(s), {deskEntry.ConfirmProblems().FirstOrDefault() ?? "no problems"}");
@@ -1183,11 +1184,11 @@ var t = new Thread(() =>
     two.Lines.Add(l1);
     two.Recalculate();
 
-    Check("TWO - one complete line is not enough to confirm",
-          two.ConfirmProblems().Any(x => x.Contains("at least 2 lines")),
+    Check("TWO - one complete line confirms on its own",
+          two.ConfirmProblems().Count == 0,
           string.Join(" | ", two.ConfirmProblems()));
 
-    // The SAME invoice is a perfectly good memo. The minimum is on the sale, not on the invoice --
+    // The SAME invoice is a perfectly good memo, as it always was. The minimum is on the sale --
     // Problems() gates Print memo, the Update modal and correcting a posted invoice, and a rule
     // placed there would have stopped a one-line memo printing and made every single-line invoice
     // already on the books uneditable.
@@ -1238,64 +1239,6 @@ var t = new Thread(() =>
     Check("SEARCH - and a filter that would empty the list is not applied",
           behaviour.Contains("view.Filter = any ?"));
 
-    // ── PICKING THE FIRST ROW OF A NARROWED LIST ──────────────────────────
-    // A Selector bound to a CollectionView synchronises SelectedItem with the view's CURRENT item,
-    // and applying a filter moves currency to the first row that survives it. So typing "+" made
-    // the picker silently adopt "+6.5"; clicking that row was then a no-op -- already selected, no
-    // SelectionChanged, nothing to rewrite the box -- and the size stayed showing "+". Any other
-    // row worked, which is what made it look random. Driven on the Stock size filter, which is
-    // where it was reported.
-    foreach (var stockTab in Tabs(win).Items.OfType<TabItem>())
-        if (stockTab.Header as string == "Stock") { stockTab.IsSelected = true; break; }
-    Settle();
-
-    var sizeFilter = (ComboBox)win.FindName("StockSizeFilter")!;
-    sizeFilter.ItemsSource = new List<string> { "All sizes", "+6.5", "+11", "14+", "+18", "-6.5" };
-    sizeFilter.SelectedIndex = 0;
-    Settle();
-
-    // Cleared first, the way clicking into the box and typing over the selection does.
-    sizeFilter.Text = "";
-    Settle();
-    string typedSize = TypeInto(sizeFilter, "+");
-    Settle();
-    Check("PICKLIST - typing narrows the sizes to the ones that match",
-          typedSize == "+" && sizeFilter.ItemsSource!.Cast<object>().Count() == 4,
-          $"[{typedSize}] {string.Join(" | ", sizeFilter.ItemsSource!.Cast<object>())}");
-    // The narrowing must not have chosen a row on the person's behalf. It used to take the first
-    // one -- "+6.5" -- the instant the filter was applied, which is what made clicking that row do
-    // nothing. (SelectedItem being null here is the search-miss rule doing its job: the box holds
-    // text that matches no item, and LastPick puts the real choice back on the way out.)
-    Check("PICKLIST - and narrowing alone does not pick a row for you",
-          sizeFilter.SelectedItem as string != "+6.5",
-          $"{sizeFilter.SelectedItem?.ToString() ?? "<none chosen>"}");
-
-    // Pick the FIRST row of what is showing -- the case that failed.
-    sizeFilter.SelectedItem = sizeFilter.ItemsSource!.Cast<object>().First();
-    sizeFilter.IsDropDownOpen = false;
-    Settle();
-    Check("PICKLIST - choosing the first row of the narrowed list shows it in the box",
-          EditPart(sizeFilter)?.Text == "+6.5" && sizeFilter.Text == "+6.5",
-          $"box=[{EditPart(sizeFilter)?.Text}] text=[{sizeFilter.Text}] sel=[{sizeFilter.SelectedItem}]");
-    // SelectedIndex is what the Stock page reads to decide whether a size filter is set at all --
-    // index 0 means "All sizes" there, so a pick that left it at 0 also silently dropped the filter.
-    Check("PICKLIST - and it is not still sitting on index 0, which the page reads as no filter",
-          sizeFilter.SelectedIndex > 0, $"index {sizeFilter.SelectedIndex}");
-
-    // Any other row keeps working, as it always did.
-    sizeFilter.Text = "+";
-    Settle();
-    sizeFilter.SelectedItem = "+11";
-    sizeFilter.IsDropDownOpen = false;
-    Settle();
-    Check("PICKLIST - and any other row still shows too",
-          sizeFilter.Text == "+11", $"[{sizeFilter.Text}]");
-
-    sizeFilter.SelectedItem = "All sizes";
-    Settle();
-    foreach (var back in Tabs(win).Items.OfType<TabItem>())
-        if (back.Header as string == "Sales entry") { back.IsSelected = true; break; }
-    Settle();
     // Attaching must be SILENT. Replacing ItemsSource raises SelectionChanged, and these pickers
     // hang real work off it -- the dashboard's grade filter reloads from the server. Wrapping at
     // attach time fired a network call for every picker the moment the window opened; a probe that
@@ -1802,6 +1745,37 @@ var t = new Thread(() =>
     var draftProp = typeof(MainWindow).GetProperty("DealDraft")!;
 
     Tabs(win).Items.OfType<TabItem>().First(t => (t.Header as string) == "Sales entry").IsSelected = true;
+
+    // ── LET THE WINDOW'S OWN BACKGROUND LOADS FINISH FIRST ────────────────
+    // Opening the window kicks off fire-and-forget loads -- parties, the catalogue, the memo list.
+    // With no database behind them they do not fail instantly: they CLEAR the collection they are
+    // about to refill, wait out a network timeout, and land seconds later leaving it empty. That
+    // continuation was arriving in the middle of the picker checks below, so the searches had
+    // nothing to narrow and the suite failed in a different place on every run.
+    //
+    // HERE, not after win.Show(): draining at startup also lets the entry RESTORE finish, and the
+    // checks above this point are written against a pristine one-line entry.
+    //
+    // A TIMER-DRIVEN FRAME, not Thread.Sleep. Sleeping blocks the dispatcher this window renders
+    // on, so the wait passes with no layout happening at all and the grid comes out of it measuring
+    // zero. Pushing a frame keeps the message loop running -- work lands, layout runs -- and the
+    // timer ends it after five seconds whatever happened.
+    var drained = new System.Windows.Threading.DispatcherFrame();
+    var drainTimer = new System.Windows.Threading.DispatcherTimer
+    { Interval = TimeSpan.FromSeconds(5) };
+    drainTimer.Tick += (_, _) => { drainTimer.Stop(); drained.Continue = false; };
+    drainTimer.Start();
+    System.Windows.Threading.Dispatcher.PushFrame(drained);
+
+    // AND PUT THE CATALOGUE BACK. The load that just finished is the catalogue's too: it clears
+    // Grades and AllSizes before refilling them, and with no database the refill leaves them empty.
+    // The entry grid's Visibility is bound to Catalogue.Grades.Count -- an empty catalogue collapses
+    // the whole table in favour of the "No grades loaded" panel -- so without this the drawer
+    // checks below measure a grid that is 0px wide because it is not on screen at all.
+    if (!Catalogue.Grades.Contains(noii)) Catalogue.Grades.Add(noii);
+    if (!Catalogue.AllSizes.Contains(s65)) Catalogue.AllSizes.Add(s65);
+    Settle();
+
     var drawerEntry = entryOf(win);
     drawerEntry.Buyers.Clear(); drawerEntry.Buyers.Add(abc); drawerEntry.Buyers.Add(quest);
     drawerEntry.Lines.Clear();
@@ -2108,6 +2082,19 @@ var t = new Thread(() =>
           && !pickerSrc2.Contains("cb.GetValue(OwnedViewProperty) is ICollectionView view"),
           "one accessor, guarded on the view still being what the control shows");
 
+    // RESTATED AT POINT OF USE, not once at the top. The window's own party load is
+    // fire-and-forget: it CLEARS these two collections, tries to refill them from a database that
+    // is not there, and leaves them empty -- and its continuation lands whenever the dispatcher
+    // reaches it, which is somewhere in the middle of the checks below. Setting them at the start
+    // of the section is not enough; the load can arrive after that and before the search. Each
+    // block states what it needs immediately before it needs it.
+    void Parties()
+    {
+        drawerEntry.Buyers.Clear();
+        drawerEntry.Buyers.Add(abc);
+        drawerEntry.Buyers.Add(quest);
+    }
+
     // ── SEARCHING A PICKER THAT ALREADY HOLDS A SELECTION ─────────────────
     // The one that was broken. Wrapping re-applies the selection and Refresh() re-resolves it, and
     // an editable ComboBox answers both by rewriting its own text box to the selected item's name
@@ -2115,6 +2102,11 @@ var t = new Thread(() =>
     // the filter never saw a search term. Buyer, with nothing selected yet, worked perfectly,
     // which is exactly why it read as "the broker search is broken".
     var searchRow = Parcel(1000m);
+    // BOTH LISTS, refilled here rather than relied on from the drawer setup 300 lines up. The
+    // window's own LoadPartiesAsync clears and refills the entry's parties, and with no database
+    // behind it the refill fails and leaves them EMPTY -- so whether these checks have anything to
+    // search depends on when that continuation happens to land. Stating the lists at the point
+    // they are used makes the section independent of that race.
     drawerEntry.Brokers.Clear();
     drawerEntry.Brokers.Add(raj);
     drawerEntry.Brokers.Add(new PartyRef(77, "JITESH SHAH"));
@@ -2188,6 +2180,7 @@ var t = new Thread(() =>
 
     buyerBox.Text = "";
     Settle();
+    Parties();
     string keyedBuyer = TypeInto(buyerBox, "qu");
     Settle();
     Check("SEARCH - and the same in Buyer, first character included",
@@ -2285,7 +2278,99 @@ var t = new Thread(() =>
     buyerBox.SelectedItem = searchRow.DealBuyer;
     Settle();
 
+    // ── THE HINT MUST NOT SIT ON TOP OF THE TYPING ────────────────────────
+    // These are EDITABLE combos: the typed text is drawn in the same place as the placeholder, and
+    // a search miss leaves SelectedItem null on purpose. Keyed off the line's buyer, "Select buyer"
+    // stayed up while "abc" was being typed and the two smeared into one unreadable word.
+    static TextBlock? Hint(ComboBox cb, string text)
+    {
+        if (cb.Parent is not System.Windows.Controls.Grid host) return null;
+        foreach (var child in host.Children)
+            if (child is TextBlock t && t.Text == text) return t;
+        return null;
+    }
+
+    var buyerHint = Hint(buyerBox, "Select buyer");
+    var brokerHint = Hint(brokerBox, "Select broker");
+    Check("HINT - both pickers carry a placeholder to test",
+          buyerHint is not null && brokerHint is not null);
+
+    buyerBox.SelectedItem = null;
+    buyerBox.Text = "";
+    Settle();
+    Check("HINT - an empty picker shows its hint",
+          buyerHint!.Visibility == Visibility.Visible, buyerHint.Visibility.ToString());
+
+    TypeInto(buyerBox, "qu");
+    Settle();
+    Check("HINT - and the first character typed takes it away",
+          buyerHint.Visibility == Visibility.Collapsed && buyerBox.Text == "qu",
+          $"[{buyerBox.Text}] hint {buyerHint.Visibility}");
+    // The point of the bug: nothing is SELECTED yet at this moment, which is exactly why keying
+    // off the selection left the hint up.
+    Check("HINT - even though nothing is selected yet, which is what used to keep it up",
+          buyerBox.SelectedItem is null, buyerBox.SelectedItem?.ToString() ?? "<none>");
+
+    buyerBox.SelectedItem = buyerBox.ItemsSource!.Cast<object>().First();
+    Settle();
+    Check("HINT - a chosen buyer keeps it away",
+          buyerHint.Visibility == Visibility.Collapsed, buyerHint.Visibility.ToString());
+
+    buyerBox.SelectedItem = null;
+    buyerBox.Text = "";
+    Settle();
+    Check("HINT - and emptying the box brings it back",
+          buyerHint.Visibility == Visibility.Visible, buyerHint.Visibility.ToString());
+
+    // The broker's hint is wired the same way, or the two fields behave differently.
+    brokerBox.SelectedItem = null;
+    brokerBox.Text = "";
+    Settle();
+    TypeInto(brokerBox, "ji");
+    Settle();
+    Check("HINT - and the broker behaves identically",
+          brokerHint!.Visibility == Visibility.Collapsed && brokerBox.Text == "ji",
+          $"[{brokerBox.Text}] hint {brokerHint.Visibility}");
+    brokerBox.Text = "";
+    brokerBox.SelectedItem = searchRow.DealBroker;
+    Settle();
+
+    // ── CHOOSING A ROW DOES NOT LEAVE THE BOX HIGHLIGHTED ─────────────────
+    // The third way into the blue block, after "filled from code" and "arrived by focus": choosing
+    // a row makes WPF write the name and select all of it, so a picked buyer sat highlighted while
+    // the Size and Grade cells beside it showed plain text.
+    Parties();
+    buyerBox.SelectedItem = null;
+    buyerBox.Text = "";
+    Settle();
+    buyerBox.IsDropDownOpen = true;
+    Settle();
+    buyerBox.SelectedItem = buyerBox.ItemsSource!.Cast<object>().First();
+    buyerBox.IsDropDownOpen = false;
+    Settle();
+
+    Check("PICKED - the chosen name is in the box",
+          EditPart(buyerBox)?.Text == buyerBox.SelectedItem?.ToString(),
+          $"[{EditPart(buyerBox)?.Text}]");
+    Check("PICKED - and it is not left highlighted",
+          EditPart(buyerBox)?.SelectionLength == 0,
+          $"[{EditPart(buyerBox)?.SelectedText}] {EditPart(buyerBox)?.SelectionLength} selected");
+
+    // The select-all was doing a job: it made the NEXT keystroke replace the value rather than
+    // append to it. That moved to the untouched flag, so removing the highlight must not cost it.
+    string afterPick = TypeInto(buyerBox, "qu");
+    Settle();
+    Check("PICKED - and typing after a pick still replaces rather than appending",
+          afterPick == "qu" && buyerBox.Text == "qu", $"[{afterPick}]");
+
+    Parties();
+    buyerBox.Text = "";
+    buyerBox.SelectedItem = searchRow.DealBuyer;
+    Settle();
+
     // A MISS SHOWS EVERYTHING, rather than an empty drop-down under a typo.
+    if (drawerEntry.Brokers.Count == 0)
+    { drawerEntry.Brokers.Add(raj); drawerEntry.Brokers.Add(new PartyRef(77, "JITESH SHAH")); }
     brokerBox.Text = "zzz";
     Settle();
     Check("SEARCH - a search that matches nothing shows the whole list, not an empty one",
@@ -2298,6 +2383,7 @@ var t = new Thread(() =>
     Check("SEARCH - clearing it puts the whole list back",
           brokerBox.ItemsSource!.Cast<object>().Count() == 2);
 
+    Parties();
     // The BUYER, which always worked, still does -- the guard must not have cost it anything.
     buyerBox.Text = "qu";
     Settle();
@@ -2313,6 +2399,224 @@ var t = new Thread(() =>
     drawerEntry.Lines.Remove(searchRow);
     drawerEntry.Recalculate();
 
+    // MOVED HERE, AWAY FROM THE PICKER CHECKS. Switching tabs runs LoadTabData, and both
+    // "Sales entry" and "Master data" kick off a fire-and-forget async load that CLEARS the entry's
+    // buyers and brokers before refilling them from the database. With no database behind it the
+    // refill fails, the lists stay empty, and the continuation lands whenever the dispatcher
+    // reaches it -- which, with this block sitting above the picker section, was somewhere in the
+    // middle of it. The searches then had nothing to narrow and failed in a different place on
+    // every run. Every tab switch in this suite now happens after the pickers are done with.
+    // ── PICKING THE FIRST ROW OF A NARROWED LIST ──────────────────────────
+    // A Selector bound to a CollectionView synchronises SelectedItem with the view's CURRENT item,
+    // and applying a filter moves currency to the first row that survives it. So typing "+" made
+    // the picker silently adopt "+6.5"; clicking that row was then a no-op -- already selected, no
+    // SelectionChanged, nothing to rewrite the box -- and the size stayed showing "+". Any other
+    // row worked, which is what made it look random. Driven on the Stock size filter, which is
+    // where it was reported.
+    foreach (var stockTab in Tabs(win).Items.OfType<TabItem>())
+        if (stockTab.Header as string == "Stock") { stockTab.IsSelected = true; break; }
+    Settle();
+
+    var sizeFilter = (ComboBox)win.FindName("StockSizeFilter")!;
+    sizeFilter.ItemsSource = new List<string> { "All sizes", "+6.5", "+11", "14+", "+18", "-6.5" };
+    sizeFilter.SelectedIndex = 0;
+    Settle();
+
+    // Cleared first, the way clicking into the box and typing over the selection does.
+    sizeFilter.Text = "";
+    Settle();
+    string typedSize = TypeInto(sizeFilter, "+");
+    Settle();
+    Check("PICKLIST - typing narrows the sizes to the ones that match",
+          typedSize == "+" && sizeFilter.ItemsSource!.Cast<object>().Count() == 4,
+          $"[{typedSize}] {string.Join(" | ", sizeFilter.ItemsSource!.Cast<object>())}");
+    // The narrowing must not have chosen a row on the person's behalf. It used to take the first
+    // one -- "+6.5" -- the instant the filter was applied, which is what made clicking that row do
+    // nothing. (SelectedItem being null here is the search-miss rule doing its job: the box holds
+    // text that matches no item, and LastPick puts the real choice back on the way out.)
+    Check("PICKLIST - and narrowing alone does not pick a row for you",
+          sizeFilter.SelectedItem as string != "+6.5",
+          $"{sizeFilter.SelectedItem?.ToString() ?? "<none chosen>"}");
+
+    // Pick the FIRST row of what is showing -- the case that failed.
+    sizeFilter.SelectedItem = sizeFilter.ItemsSource!.Cast<object>().First();
+    sizeFilter.IsDropDownOpen = false;
+    Settle();
+    Check("PICKLIST - choosing the first row of the narrowed list shows it in the box",
+          EditPart(sizeFilter)?.Text == "+6.5" && sizeFilter.Text == "+6.5",
+          $"box=[{EditPart(sizeFilter)?.Text}] text=[{sizeFilter.Text}] sel=[{sizeFilter.SelectedItem}]");
+    // SelectedIndex is what the Stock page reads to decide whether a size filter is set at all --
+    // index 0 means "All sizes" there, so a pick that left it at 0 also silently dropped the filter.
+    Check("PICKLIST - and it is not still sitting on index 0, which the page reads as no filter",
+          sizeFilter.SelectedIndex > 0, $"index {sizeFilter.SelectedIndex}");
+
+    // Any other row keeps working, as it always did.
+    sizeFilter.Text = "+";
+    Settle();
+    sizeFilter.SelectedItem = "+11";
+    sizeFilter.IsDropDownOpen = false;
+    Settle();
+    Check("PICKLIST - and any other row still shows too",
+          sizeFilter.Text == "+11", $"[{sizeFilter.Text}]");
+
+    sizeFilter.SelectedItem = "All sizes";
+    Settle();
+    foreach (var back in Tabs(win).Items.OfType<TabItem>())
+        if (back.Header as string == "Sales entry") { back.IsSelected = true; break; }
+    Settle();
+    // ── A FILTER SET TO ONE VALUE FILTERS TO THAT VALUE ───────────────────
+    // Every one of these lists is { "All …" } + the values, and "no opinion" used to be read as
+    // SelectedIndex <= 0. Then the pickers learned to search: PickerSearch narrows the control's
+    // own VIEW, and a view renumbers — type "+6.5" into the size filter and the one row that
+    // survives IS index 0, so choosing it was read as "All sizes" and the table went on showing
+    // every size. The box said +6.5 and the grid disagreed with it.
+    string behaviourSettings = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop", "UiHelpers.cs"));
+
+    var choiceOf = typeof(MainWindow).GetMethod("FilterChoice",
+        BindingFlags.Static | BindingFlags.NonPublic)!;
+    string Choice(ComboBox c) => (string)choiceOf.Invoke(null, [c])!;
+
+    foreach (var stockTab2 in Tabs(win).Items.OfType<TabItem>())
+        if (stockTab2.Header as string == "Stock") { stockTab2.IsSelected = true; break; }
+    Settle();
+
+    var sizeFilter2 = (ComboBox)win.FindName("StockSizeFilter")!;
+    sizeFilter2.ItemsSource = new List<string> { "All sizes", "+6.5", "+11", "-6.5" };
+    sizeFilter2.SelectedItem = "All sizes";
+    Settle();
+    Check("FILTERVAL - the sentinel row means no opinion",
+          Choice(sizeFilter2).Length == 0, $"[{Choice(sizeFilter2)}]");
+
+    sizeFilter2.SelectedItem = "+6.5";
+    Settle();
+    Check("FILTERVAL - and a real size means that size",
+          Choice(sizeFilter2) == "+6.5", $"[{Choice(sizeFilter2)}]");
+    Check("FILTERVAL - whatever index the row happens to sit at",
+          Choice(sizeFilter2) == "+6.5" || sizeFilter2.SelectedIndex > 0,
+          $"index {sizeFilter2.SelectedIndex}");
+
+    // THE CASE THAT BROKE IT: the list is narrowed to one row, so the chosen size IS index 0.
+    // Reset to the sentinel first, or the search term matches what is already chosen and
+    // PickerSearch correctly declines to narrow — the box showing its own selection is not a search.
+    sizeFilter2.SelectedItem = "All sizes";
+    sizeFilter2.Text = "";
+    Settle();
+    TypeInto(sizeFilter2, "+6.5");
+    Settle();
+    sizeFilter2.SelectedItem = sizeFilter2.ItemsSource!.Cast<object>().First();
+    Settle();
+    Check("FILTERVAL - a size chosen out of a NARROWED list still reads as that size",
+          Choice(sizeFilter2) == "+6.5",
+          $"[{Choice(sizeFilter2)}] at index {sizeFilter2.SelectedIndex}");
+
+    // Nothing selected at all is no opinion, not a crash.
+    sizeFilter2.SelectedItem = null;
+    Settle();
+    Check("FILTERVAL - and nothing chosen is no opinion", Choice(sizeFilter2).Length == 0);
+    sizeFilter2.SelectedItem = "All sizes";
+    Settle();
+
+    // EVERY PAGE, not just this one. The index sentinel was on six of them.
+    Check("FILTERVAL - no filter anywhere still reads the index instead of the value",
+          !invSrc.Contains("SelectedIndex <= 0") && !invSrc.Contains("SelectedIndex > 0"),
+          "one helper, every page");
+
+    // ── A SORTABLE COLUMN SAYS SO ─────────────────────────────────────────
+    // The custom header template replaced WPF's own SortDirectionIndicator and never put anything
+    // back, so clicking a header reordered the table with nothing on screen to say it had — and
+    // nothing beforehand to say it could.
+    static string Sorted(DataGrid g)
+    {
+        var presenter = VisualTree.FindChild<DataGridColumnHeadersPresenter>(g);
+        for (int i = 0; i < g.Columns.Count; i++)
+            if (presenter?.ItemContainerGenerator.ContainerFromIndex(i) is DataGridColumnHeader h
+                && h.SortDirection is { } dir)
+                return $"{g.Columns[i].Header} {dir}";
+        return "";
+    }
+
+    static List<string> Sortable(DataGrid g)
+    {
+        var presenter = VisualTree.FindChild<DataGridColumnHeadersPresenter>(g);
+        var offered = new List<string>();
+        for (int i = 0; i < g.Columns.Count; i++)
+            if (presenter?.ItemContainerGenerator.ContainerFromIndex(i) is DataGridColumnHeader h
+                && FindNamed(h, "sortMark") is { Visibility: Visibility.Visible })
+                offered.Add(g.Columns[i].Header as string ?? "?");
+        return offered;
+    }
+
+    static System.Windows.Shapes.Path? FindNamed(DependencyObject node, string name)
+    {
+        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(node); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(node, i);
+            if (child is System.Windows.Shapes.Path p && p.Name == name) return p;
+            if (FindNamed(child, name) is { } deeper) return deeper;
+        }
+        return null;
+    }
+
+    foreach (var usersTab in Tabs(win).Items.OfType<TabItem>())
+        if (usersTab.Header as string == "Users") { usersTab.IsSelected = true; break; }
+    Settle();
+
+    var userGrid = (DataGrid)win.FindName("UserGrid")!;
+    userGrid.UpdateLayout(); Settle();
+    Check("SORT - every column the grid will sort by offers the mark",
+          Sortable(userGrid).Count > 0, string.Join(", ", Sortable(userGrid)));
+    Check("SORT - and nothing is showing a direction until something is sorted",
+          Sorted(userGrid) == "", $"[{Sorted(userGrid)}]");
+
+    var roleColumn = userGrid.Columns.First(c => (c.Header as string) == "ROLE");
+    var roleMark = FindNamed(
+        (DataGridColumnHeader)VisualTree.FindChild<DataGridColumnHeadersPresenter>(userGrid)!
+            .ItemContainerGenerator.ContainerFromIndex(userGrid.Columns.IndexOf(roleColumn))!,
+        "sortMark")!;
+    double restingOpacity = roleMark.Opacity;
+
+    roleColumn.SortDirection = System.ComponentModel.ListSortDirection.Ascending;
+    userGrid.UpdateLayout(); Settle();
+    Check("SORT - sorting a column shows the direction on that column",
+          Sorted(userGrid) == "ROLE Ascending", $"[{Sorted(userGrid)}]");
+    Check("SORT - and lifts the mark out of its resting state",
+          roleMark.Opacity > restingOpacity
+          && (roleMark.Fill as System.Windows.Media.SolidColorBrush)?.Color == ((System.Windows.Media.SolidColorBrush)win.FindResource("AccentBrush")).Color,
+          $"opacity {restingOpacity:N2} -> {roleMark.Opacity:N2}, {(roleMark.Fill as System.Windows.Media.SolidColorBrush)?.Color}");
+
+    roleColumn.SortDirection = System.ComponentModel.ListSortDirection.Descending;
+    userGrid.UpdateLayout(); Settle();
+    Check("SORT - the other way round too",
+          Sorted(userGrid) == "ROLE Descending", $"[{Sorted(userGrid)}]");
+
+    roleColumn.SortDirection = null;
+    userGrid.UpdateLayout(); Settle();
+    Check("SORT - and clearing it puts the mark back to resting",
+          Sorted(userGrid) == "" && Math.Abs(roleMark.Opacity - restingOpacity) < 0.01,
+          $"opacity {roleMark.Opacity:N2}");
+
+    // A GRID THAT MUST NOT BE RE-ORDERED OFFERS NOTHING. An invoice's lines are in the order they
+    // were typed, and that is the order that prints and posts — so no header on it may suggest
+    // otherwise.
+    foreach (var entryTab in Tabs(win).Items.OfType<TabItem>())
+        if (entryTab.Header as string == "Sales entry") { entryTab.IsSelected = true; break; }
+    Settle();
+    var entryTable = (DataGrid)win.FindName("Grid")!;
+    entryTable.UpdateLayout(); Settle();
+    Check("SORT - the sales entry grid offers no sort mark at all",
+          Sortable(entryTable).Count == 0, string.Join(", ", Sortable(entryTable)));
+
+    // ── the Settings page has no "Other" card ─────────────────────────────
+    // stock_sheet_rates and stock_sheet_sizes land there: written by the stock importer, read by
+    // the Stock report, and neither is a policy anybody sets by hand.
+    Check("SETTINGS - the Other card is dropped before the cards are built",
+          invSrc.Contains("Where(x => x.Category != SettingItem.Other)"),
+          "dropped from the list, so the chip and the cards agree");
+    Check("SETTINGS - and the category is named, not spelled out at each use",
+          behaviourSettings.Contains("public const string Other = \"Other\";"),
+          "one rename cannot bring the card back silently");
+
     // ── the grades grid shows WHOLE ROWS ──────────────────────────────────
     // The card gives the grid whatever it has left over, and that is not a multiple of the 42px
     // row -- so WPF filled the leftover strip with the next row and cut it where the strip ended.
@@ -2327,6 +2631,13 @@ var t = new Thread(() =>
     double rowH = gradesTable.RowHeight;
     var headerPart = VisualTree.FindChild<System.Windows.Controls.Primitives.DataGridColumnHeadersPresenter>(gradesTable);
     double headH = headerPart?.ActualHeight ?? 0;
+
+    string styleSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "DiamondDesktop", "Styles", "AppOverrides.xaml"));
+    Check("ROWS - the alias box is laid out on whole device pixels, so both its edges draw",
+          styleSrc.Contains("SnapsToDevicePixels=\"True\" UseLayoutRounding=\"True\""),
+          "a 42px row is 52.5 device pixels at 125% — a half-pixel edge draws at half strength");
 
     Check("ROWS - the grades grid has a fixed row height and a measured header",
           rowH > 0 && headH > 0, $"row {rowH}, header {headH}");

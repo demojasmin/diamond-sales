@@ -324,5 +324,50 @@ Check("STOCKMODE · and names what removing the old data actually costs",
       ask.Contains("Removing the old data deletes") && ask.Contains("Currently imported"),
       "the carats at stake, and which imports they are");
 
+// ── OFFLINE · WHAT EACH IMPORTER DOES WITHOUT A CONNECTION ─────────────────
+// Three buttons, three answers, and the differences are deliberate. Asserted off the source for the
+// same reason as the block above: the path needs a file dialog, a network state and a database.
+//
+//   sales from Excel   refuses -- it needs the database to create buyers and brokers and hand back
+//                      their ids, so the payload cannot even be built offline
+//   stock from Excel   queues a replace
+//   stock from PDF     queues a replace, since this change. It used to refuse outright.
+string sales = importer[importer.IndexOf("private async void ImportExcel_Click", StringComparison.Ordinal)..excelAt];
+
+Check("OFFLINE · the sales importer still refuses, and says why",
+      sales.Contains("if (!Db.IsOnline)") && sales.Contains("Sales import needs a connection"),
+      "buyer and broker ids cannot be invented client-side");
+
+Check("OFFLINE · the printed sheet no longer refuses outright",
+      !pdf.Contains("A stock sheet can only be imported while connected"),
+      "it parks the count instead of losing it");
+
+Check("OFFLINE · and parks it through the same queue the workbook uses",
+      pdf.Contains("QueueStockImportAsync(plan, picker.FileName, asAt"),
+      "one outbox, one guard, two importers");
+
+// The WHOLE reason it used to refuse. Only a replace can be checked against a fingerprint before it
+// replays; a queued APPEND would add a second copy of the same carats on reconnect. So the queue is
+// reached BEFORE the replace-or-add dialog, never after it -- asking and then queueing a replace
+// either way would make an ignored answer look honoured.
+Check("OFFLINE · the replace-or-add question is skipped, not asked and ignored",
+      pdf.IndexOf("QueueStockImportAsync(", StringComparison.Ordinal)
+      < pdf.IndexOf("AskReplaceOrAdd(", StringComparison.Ordinal),
+      "queued before the choice, so only a replace is ever parked");
+
+// Reading the sheet offline needs the catalogue held in memory since sign-in. Without the fallback
+// the read returns null and the button appears to do nothing at all.
+Check("OFFLINE · it reads against the catalogue already in memory",
+      pdf.Contains("grades = [.. Catalogue.Grades];")
+      && pdf.Contains("The catalogue has not loaded yet"),
+      "and says so plainly when there is none");
+
+// Creating a grade or a sieve size is a WRITE. Offering to make one that cannot be made would end
+// in a transport error over a dialog that had already said yes.
+Check("OFFLINE · it does not offer to create grades or sizes it cannot write",
+      pdf.Contains("if (Db.IsOnline\n            && plan.Problems.Count == 1")
+      && pdf.Contains("if (Db.IsOnline && plan.UnknownSizes.Count > 0"),
+      "the offer needs a connection, so it is only made on one");
+
 Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} check(s) failed.");
 Environment.Exit(fail == 0 ? 0 : 1);

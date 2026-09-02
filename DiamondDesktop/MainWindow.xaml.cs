@@ -2021,7 +2021,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         if (InvoiceGrid is null) return;
 
-        string buyer = InvoiceBuyer.SelectedIndex <= 0 ? "" : InvoiceBuyer.SelectedItem as string ?? "";
+        string buyer = FilterChoice(InvoiceBuyer);
         string term = InvoiceSearch?.Text.Trim() ?? "";
 
         // A calendar, the same control Sales entry picks a date with. Nothing chosen means every
@@ -2718,8 +2718,8 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         if (ReceivablesGrid is null) return;
 
-        string bucket = ReceivablesBucket.SelectedIndex <= 0 ? "" : ReceivablesBucket.SelectedItem as string ?? "";
-        string buyer = ReceivablesBuyer.SelectedIndex <= 0 ? "" : ReceivablesBuyer.SelectedItem as string ?? "";
+        string bucket = FilterChoice(ReceivablesBucket);
+        string buyer = FilterChoice(ReceivablesBuyer);
         string term = ReceivablesSearch?.Text.Trim() ?? "";
 
         var shown = _receivables
@@ -3291,6 +3291,29 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         ApplyStockFilter();
     }
 
+    /// <summary>
+    /// What a filter combo is actually asking for, or "" for "no opinion".
+    ///
+    /// IT READS THE LABEL, NOT THE INDEX, and that is the whole of this. Every one of these lists
+    /// is built as { "All …" } + the values, so index 0 meant "no opinion" — until a picker learned
+    /// to search. PickerSearch narrows the control's own view, and the view renumbers: type "+6.5"
+    /// into the size filter and the one row that survives IS index 0, so choosing it was read as
+    /// "All sizes" and the grid went on showing every size on the page. The box said +6.5 and the
+    /// table disagreed with it.
+    ///
+    /// The timing made it worse than a search quirk. SelectionChanged fires while the filter is
+    /// still applied, so even a pick that ends up at index 1 was index 0 at the instant this ran,
+    /// and nothing runs it again afterwards.
+    ///
+    /// A label cannot renumber. The sentinel is the one string the list was built with, and no
+    /// grade, size, buyer, age band, entity or role is named "All …".
+    /// </summary>
+    private static string FilterChoice(ComboBox? box) =>
+        box?.SelectedItem as string is { } label
+        && !label.StartsWith("All ", StringComparison.Ordinal)
+            ? label
+            : "";
+
     private void ApplyStockFilter()
     {
         // IsChecked="True" in the markup raises Checked while InitializeComponent is still parsing,
@@ -3299,9 +3322,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // boxes are parsed after the checkbox too, so they are guarded with it.
         if (StockGrid is null || StockGradeFilter is null || StockSizeFilter is null) return;
 
-        string gradeLabel = StockGradeFilter.SelectedIndex <= 0 ? "" : StockGradeFilter.SelectedItem as string ?? "";
+        string gradeLabel = FilterChoice(StockGradeFilter);
         string grade = StockGradeCode(gradeLabel);
-        string sizeLabel = StockSizeFilter.SelectedIndex <= 0 ? "" : StockSizeFilter.SelectedItem as string ?? "";
+        string sizeLabel = FilterChoice(StockSizeFilter);
         string size = sizeLabel.Length == 0 ? ""
             : _stockSizeCodes.TryGetValue(sizeLabel, out var sc) ? sc : sizeLabel;
         string term = StockSearch?.Text.Trim() ?? "";
@@ -3344,8 +3367,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 ? Visibility.Collapsed : Visibility.Visible;
 
         StockGrid.ItemsSource = show;
-        ShowStockKpis(show);
-        ShowStockBreakdown(grade, size, term, show);
+        // MATCHED as well as SHOW, for the reserved carats alone. A bucket emptied to exactly zero
+        // while a sales entry still holds carats in it is dropped by "hide empty" -- and its
+        // reservation went with it, so the tile read 0.0000 where the header said 1.0000, and
+        // "out since" ran a carat high because the same sum feeds the arithmetic beneath it.
+        // The balances are unaffected either way: a hidden bucket is hidden for holding nothing.
+        // Same fault the rejection card was already fixed for, one line further down.
+        ShowStockKpis(show, matched);
+        ShowStockBreakdown(grade, size, term, show, matched);
 
         StockCount.Text = show.Count == 0
             ? NoFilterMatch
@@ -3371,8 +3400,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// Filtered by grade and size against the buckets currently on screen, so picking a grade
     /// narrows both figures together and the card never describes a set the list is not showing.
     /// </summary>
+    /// <param name="matched">
+    /// The rows before "hide empty" dropped any, for the reserved figure alone — see
+    /// <see cref="ShowStockKpis"/>. It feeds the arithmetic in the caption, so a hold lost here
+    /// makes "out since" overstate what actually left the ledger.
+    /// </param>
     private void ShowStockBreakdown(string grade, string size, string term,
-                                    List<VStockPosition> show)
+                                    List<VStockPosition> show, List<VStockPosition> matched)
     {
         if (StockBreakdownTotal is null) return;
         bool filtered = grade.Length != 0 || size.Length != 0 || term.Length != 0;
@@ -3415,7 +3449,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         //
         // The hold is named separately instead, which also closes the arithmetic on screen:
         // at import, less what moved, less what is spoken for, is the total above.
-        decimal reserved = show.Sum(r => r.ReservedCt);
+        decimal reserved = matched.Sum(r => r.ReservedCt);
         decimal moved = held + reserved - atImport;
 
         StockBreakdownTotalNote.Text = atImport == 0m
@@ -3449,7 +3483,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     }
 
     /// The tiles report what is on screen, so they never describe a set the list is not showing.
-    private void ShowStockKpis(List<VStockPosition> show)
+    /// <param name="matched">
+    /// The same rows before "hide empty" dropped any. Reserved carats are read off this, never off
+    /// <paramref name="show"/>: a bucket at exactly zero balance can still be holding carats for a
+    /// sales entry, and hiding the bucket must not hide the hold.
+    /// </param>
+    private void ShowStockKpis(List<VStockPosition> show, List<VStockPosition> matched)
     {
         // The tiles report what is on screen. That is right — but silently, the caption read
         // "across 3 buckets" whether that was the company position or one grade's slice of it,
@@ -3465,11 +3504,11 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // The other half of the same sentence, and the reason the tile beside it can fall without
         // anything having been sold. Nothing is recomputed here: reserved_ct is the figure
         // v_stock_position already subtracts to reach the available balance (0044).
-        decimal reserved = show.Sum(r => r.ReservedCt);
+        decimal reserved = matched.Sum(r => r.ReservedCt);
         StockKpiReserved.Text = reserved.ToString("N4");
         StockKpiReservedNote.Text = (reserved == 0m
             ? "Nothing held by a sales entry"
-            : $"Held by sales entries across {Plural(show.Count(r => r.ReservedCt > 0), "bucket")}")
+            : $"Held by sales entries across {Plural(matched.Count(r => r.ReservedCt > 0), "bucket")}")
             + (filtered ? " · filtered" : "");
 
         StockKpiValue.Text = Money.Short(show.Sum(r => r.StockValue));
@@ -5573,7 +5612,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         // Scoped in the database when an entity is chosen. Filtering the newest 500 in memory meant
         // one bulk import — a thousand receipt deletes — hid every other table completely.
-        string? scope = AuditEntity?.SelectedIndex > 0 ? AuditEntity.SelectedItem as string : null;
+        string? scope = FilterChoice(AuditEntity) is { Length: > 0 } picked ? picked : null;
 
         var rows = await Read(() => Repo.AuditAsync(scope));
         if (rows is null) return;
@@ -5649,7 +5688,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (AuditGrid is null) return;
 
         string action = (AuditAction.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "";
-        string entity = AuditEntity.SelectedIndex <= 0 ? "" : AuditEntity.SelectedItem as string ?? "";
+        string entity = FilterChoice(AuditEntity);
         string term = AuditSearch?.Text.Trim().ToLowerInvariant() ?? "";
 
         var shown = _audit
@@ -5793,7 +5832,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         if (UserGrid is null) return;
 
-        string role = UserRole.SelectedIndex <= 0 ? "" : UserRole.SelectedItem as string ?? "";
+        string role = FilterChoice(UserRole);
         string status = (UserStatus.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "";
         string term = UserSearch?.Text.Trim() ?? "";
 
@@ -6895,8 +6934,20 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // so a new money_precision or low-stock threshold applies without a restart.
         Policy.Apply(config);
 
+        // NO "OTHER" CARD, on request. stock_sheet_rates and stock_sheet_sizes are the two that
+        // land there: they are written by the stock importer and read by the Stock report, and
+        // neither is a policy anybody sets by hand — a semicolon-separated rate table in a text box
+        // is a way to break the report, not a setting.
+        //
+        // DROPPED HERE, not just hidden in the card list, so the count in the chip, the cards and
+        // the dirty count all describe the same set. The rows themselves are untouched in
+        // app_config: the importer goes on writing them and the report goes on reading them.
+        //
+        // Worth knowing: this is also where a MIS-KEYED setting used to surface. A key the app does
+        // not document no longer appears anywhere on this page.
         _settings = config.OrderBy(c => c.Key)
                           .Select(c => SettingItem.From(c.Key, c.Value))
+                          .Where(x => x.Category != SettingItem.Other)
                           .ToList();
 
         SettingChip.Text = $"{_settings.Count:N0} setting{(_settings.Count == 1 ? "" : "s")}";
@@ -7202,6 +7253,16 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 ("Lines imported", $"{result.Lines:N0}"),
                 ("Receipts imported", $"{result.Receipts:N0}"),
                 ("Previous invoices replaced", $"{result.DeletedInvoices:N0}"),
+                // 0049. Every imported sale takes its carats out, as one typed into the app does.
+                // Reported plainly, because a sales import changing the stock position is the last
+                // thing that should come as a surprise.
+                ("Stock taken out", result.StockLines == 0
+                    ? "nothing — no line on this sheet moved any weight"
+                    : $"{result.StockLines:N0} line(s)"),
+                // 0050. The WEIGHT beside the count. A line count says how much of the sheet moved
+                // stock; it does not say how much stock moved, and on an import of this size that
+                // is the figure worth reading before the Stock page is opened.
+                ("Carats taken out", $"{result.StockCt:N4} ct"),
             ],
             listTitle: notes.Count == 0 ? null : "Worth knowing",
             bullets: notes,
@@ -7518,15 +7579,18 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         };
         if (picker.ShowDialog(this) != true) return;
 
-        // Unlike the workbook path there is no offline queue here. A queued replace can be checked
-        // against a fingerprint before it replays (0018); a queued APPEND cannot — replaying one
-        // after somebody else has imported would add a second copy of the same carats, and there is
-        // no way to tell that apart from a genuine second lot. Refusing beats guessing.
-        if (!Db.IsOnline)
-        {
-            Say("A stock sheet can only be imported while connected");
-            return;
-        }
+        // OFFLINE, THIS QUEUES A REPLACE — and only a replace.
+        //
+        // It used to refuse outright. The reason was never the PDF: a queued replace can be checked
+        // against a fingerprint before it replays (0018), and a queued APPEND cannot — replaying one
+        // after somebody else has imported would add a second copy of the same carats, with no way
+        // to tell that apart from a genuine second lot. So the append is what cannot wait, not the
+        // sheet, and refusing the whole button over it stopped a count being taken on a laptop with
+        // no signal.
+        //
+        // The replace-or-add question is therefore SKIPPED while offline rather than asked and
+        // ignored. Asking it and then quietly queueing a replace either way would be worse than not
+        // asking: the answer would look honoured and would not be.
 
         // The catalogue this sheet was read against. Held outside the reader because the import
         // needs the same one to turn codes into ids — a sheet read against a catalogue that has
@@ -7540,10 +7604,31 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         {
             using (Busy(ImportStockPdf, "Reading…", ImportStockPdf))
             {
-                grades = await Read(Repo.GradesAsync);
-                sizes = await Read(Repo.SizesAsync);
+                // Offline, the catalogue already in memory: it was loaded at sign-in, and grades and
+                // sizes do not change while a connection is down. Same fallback the workbook path
+                // uses, for the same reason — without it the read fails and the button appears to do
+                // nothing at all.
+                if (Db.IsOnline)
+                {
+                    grades = await Read(Repo.GradesAsync);
+                    sizes = await Read(Repo.SizesAsync);
+                }
+                else
+                {
+                    grades = [.. Catalogue.Grades];
+                    sizes = [.. Catalogue.ActiveSizes];
+                }
+
                 if (grades is null || sizes is null) return null;
                 sizes = ImportableSizes(sizes);
+
+                // Never signed in online this session, so there is no cached catalogue to read the
+                // sheet against. Saying so beats reporting that every grade on it is unknown.
+                if (grades.Count == 0 || sizes.Count == 0)
+                {
+                    Say("The catalogue has not loaded yet — connect once before importing offline");
+                    return null;
+                }
 
                 var gradeLabels = PdfGradeLabelMap(grades);
                 var sizeLabels = PdfSizeLabelMap(sizes.Select(s => s.Code));
@@ -7562,7 +7647,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         //
         // The refusal itself stays exactly as strict: nothing is created until the names are on
         // screen and somebody has agreed to them.
-        if (plan.Problems.Count == 1 && plan.UnplacedRows > 0
+        //
+        // Only while connected: adding a grade is a WRITE, and offering to make one that cannot be
+        // made would end in a transport error over a dialog that had already said yes. Offline the
+        // sheet simply fails validation below and names what it could not place, which is the truth.
+        if (Db.IsOnline
+            && plan.Problems.Count == 1 && plan.UnplacedRows > 0
             && await AddMissingGradesAsync(plan, System.IO.Path.GetFileName(picker.FileName),
                                           ImportStockPdf))
         {
@@ -7580,7 +7670,8 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // Saying no deliberately falls through rather than returning: the plan is already invalid
         // (UnknownSizes is only ever populated by a FAILED checksum), so the branch below names the
         // heading and both totals. A bare "cancelled" would throw that explanation away.
-        if (plan.UnknownSizes.Count > 0
+        // Connected only, as the grades above: creating a sieve size is a write.
+        if (Db.IsOnline && plan.UnknownSizes.Count > 0
             && await AddMissingSizesAsync(plan.UnknownSizes,
                                           System.IO.Path.GetFileName(picker.FileName), ImportStockPdf))
         {
@@ -7615,6 +7706,22 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             "Continue");
         if (answer is null) { Say("Stock import cancelled"); return; }
         if (ParseStockDate(answer[0]) is not { } asAt) { Say("Stock import cancelled"); return; }
+
+        // Offline: the sheet is read, reconciled to its own printed totals, shown back and dated, so
+        // everything except the write has already happened. Parked as a REPLACE — the only shape the
+        // outbox can guard — rather than refused, so a count taken away from a connection is not a
+        // count re-keyed later from a sheet nobody can find.
+        //
+        // Deliberately BEFORE the batch read below: that read asks the server what is already
+        // imported, which offline it cannot answer, and the replace-or-add dialog it feeds cannot be
+        // honoured from a queue anyway.
+        if (!Db.IsOnline)
+        {
+            await QueueStockImportAsync(plan, picker.FileName, asAt,
+                grades!.ToDictionary(g => g.Code, g => g.GradeId, StringComparer.Ordinal),
+                sizes!.ToDictionary(s => s.Code, s => s.SizeId, StringComparer.Ordinal));
+            return;
+        }
 
         // Null means the list could not be read, which before 0027 is applied is what happens: the
         // view does not exist. Stopping here rather than carrying on is the whole point — the next
@@ -8181,6 +8288,15 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (plan.SplitSrCount > 0)
             notes.Add($"{plan.SplitSrCount} Sr. number(s) covered rows with different dates or "
                       + "buyers and became separate invoices.");
+
+        // 0051. The import empties a bucket but never overdraws it. Where the shelf could not cover
+        // the sheet the difference was left behind, and that is a thing to act on rather than a
+        // number to find later: the invoices say more went out than the stock ledger does.
+        if (result.ShortCt > 0)
+            notes.Add($"{result.ShortCt:N4} ct could not be taken out of stock across "
+                      + $"{result.ShortBuckets:N0} grade/size bucket(s) — there was not that much "
+                      + "there. Stock was emptied rather than driven negative, so those sales are "
+                      + "invoiced in full but only partly deducted.");
 
         // Capping a receipt is a change to what the file said, so it is reported rather than done
         // quietly. The residue is the workbook rounding Rec. Amt to whole rupees against an amount

@@ -494,6 +494,22 @@ public static class PickerSearch
 
         string shown = Text(cb, chosen);
         if (!string.Equals(cb.Text, shown, StringComparison.Ordinal)) cb.Text = shown;
+
+        // AND NOT HIGHLIGHTED. Choosing a row makes WPF write the name and select all of it, so a
+        // picked buyer sat in a blue block while the Size and Grade cells beside it -- which are
+        // not ComboBoxes of this kind -- showed plain text. Same complaint as the two already
+        // fixed (filled from code, arrived by focus); this is the third way in.
+        //
+        // The select-all was the thing making the NEXT keystroke replace the value rather than
+        // append to it, so that job moves to the same flag arriving uses: after a pick the box
+        // counts as untouched again, and the first character typed starts a fresh search.
+        // Without this line, typing after a pick would give "DHARMESH PATWAx" and match nothing.
+        //
+        // At Input priority, because the ComboBox's own SelectAll lands after this returns -- the
+        // same ordering the SelectionChanged handler above has to allow for.
+        cb.SetValue(UntouchedProperty, true);
+        cb.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input,
+            new Action(() => Deselect(cb)));
     }
 
     /// <summary>

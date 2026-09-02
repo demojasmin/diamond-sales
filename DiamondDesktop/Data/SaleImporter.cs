@@ -8,15 +8,29 @@ public sealed record ImportProgress(string Message, int Done = 0, int Total = 0)
 
 public sealed record ImportResult(
     int DeletedInvoices, int Invoices, int Lines, int Receipts,
-    int BuyersCreated, int BrokersCreated);
+    int BuyersCreated, int BrokersCreated, int StockLines = 0, decimal StockCt = 0m,
+    decimal ShortCt = 0m, int ShortBuckets = 0);
 
 /// <summary>
 /// Executes a validated <see cref="ImportPlan"/> against Supabase, per docs/08 §4-5.
 ///
-/// Imported invoices are written straight to POSTED with a MIG- number and deliberately produce no
-/// stock movements: the migrated opening balance is already net of these sales, so posting them
-/// through post_invoice() would deduct the same carats twice. That is also why the import never
-/// needs DELETE on stock_movement, which the ledger does not grant to anyone.
+/// Imported invoices are written straight to POSTED with a MIG- number and DO move stock: every
+/// line writes a SALE for what was sold and a REJECTION for what was rejected, the same pair
+/// post_invoice writes for a sale typed into the app (0049).
+///
+/// 0048 tried to be cleverer -- it deducted only the sales dated after the last stock count, on the
+/// reading that an earlier sale's carats were already off the shelf when it was counted. The desk
+/// decided against it: an imported sale is a sale.
+///
+/// What it takes is capped at what the grade x size bucket holds (0051): an import may empty a
+/// bucket but may not overdraw it. A line the shelf cannot cover deducts what is there and no more,
+/// and the difference comes back as ShortCt / ShortBuckets for the dialog to warn about, rather than
+/// as a negative position nobody asked for.
+///
+/// All of it happens inside replace_imported_sales, in the same transaction as the invoices, so a
+/// sheet and the position it implies can never be half-applied. Re-importing deducts once: the
+/// function removes the movements the previous import wrote before writing its own. The DELETE that
+/// needs is the function's own -- it is security definer, so the ledger still grants it to nobody.
 ///
 /// The plan is validated in full before this runs, so the only failures left are network ones.
 /// </summary>
@@ -106,7 +120,8 @@ public static class SaleImporter
                 $"Sent {plan.Invoices.Count} invoice(s) but the database wrote {outcome.Invoices}.");
 
         return new ImportResult(outcome.Deleted, outcome.Invoices, outcome.Lines, outcome.Receipts,
-                                buyersCreated, brokersCreated);
+                                buyersCreated, brokersCreated, outcome.StockLines, outcome.StockCt,
+                                outcome.ShortCt, outcome.ShortBuckets);
     }
 
     private static T Commonest<T>(IEnumerable<T> values) where T : notnull =>

@@ -1201,13 +1201,19 @@ public sealed class InvoiceEntry : Notifier
     public string? Validate() => Problems().FirstOrDefault();
 
     /// <summary>
-    /// How many lines a SALE must carry. On the desk's instruction: one line is not enough to
-    /// confirm, and Confirm sale stays off until a second is on the invoice.
+    /// How many lines a SALE must carry.
     ///
-    /// Worth knowing before this is relied on: a single-line invoice is ordinary in most trading,
-    /// and this refuses one outright. It is one number to change if that turns out to be wrong.
+    /// ONE, on the desk's instruction. It was two for a while -- "one line is not enough to
+    /// confirm" -- and that turned out to be wrong for the reason the note here always warned it
+    /// might be: a single-line invoice is ordinary in most trading, and refusing one refused real
+    /// sales.
+    ///
+    /// At 1 the rule can no longer fire: ConfirmProblems only raises it when the entry has MORE
+    /// than nothing and FEWER than this, and no count is both. It is kept as a number rather than
+    /// deleted because it is the one place the answer lives, and the last two changes to it were
+    /// both a change of mind.
     /// </summary>
-    public const int MinLinesToConfirm = 2;
+    public const int MinLinesToConfirm = 1;
 
     /// <summary>
     /// Everything Problems() refuses, PLUS the minimum line count.

@@ -67,8 +67,55 @@
                             BorderBrush="{DynamicResource BorderBrush}"
                             BorderThickness="0,0,0,1"
                             Padding="{TemplateBinding Padding}">
-                        <ContentPresenter VerticalAlignment="Center"
-                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ContentPresenter Grid.Column="0" VerticalAlignment="Center"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+                            <!-- THE SORT MARK, on every column the grid will actually sort by.
+                                 The custom header template replaced WPF's own SortDirectionIndicator
+                                 and never put anything back, so clicking a header reordered the
+                                 table with nothing on screen to say it had — and nothing beforehand
+                                 to say it could. Two triangles at rest, one of them alone and in
+                                 the accent colour once the column is the one being sorted.
+                                 CanUserSort, not the grid's setting: a template column with no
+                                 SortMemberPath cannot be sorted, and offering the mark there would
+                                 promise something the click does not deliver. -->
+                            <Path x:Name="sortMark" Grid.Column="1" Stretch="None"
+                                  Width="7" Height="11" Margin="6,0,0,0"
+                                  VerticalAlignment="Center" SnapsToDevicePixels="True">
+                                <Path.Style>
+                                    <Style TargetType="Path">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Setter Property="Fill" Value="{DynamicResource TextMutedBrush}"/>
+                                        <Setter Property="Opacity" Value="0.55"/>
+                                        <Setter Property="Data" Value="M 3.5,0 L 0,4 L 7,4 Z M 3.5,11 L 0,7 L 7,7 Z"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Value="True"
+                                                         Binding="{Binding Column.CanUserSort,
+                                                                           RelativeSource={RelativeSource AncestorType=DataGridColumnHeader}}">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                            <DataTrigger Value="Ascending"
+                                                         Binding="{Binding SortDirection,
+                                                                           RelativeSource={RelativeSource AncestorType=DataGridColumnHeader}}">
+                                                <Setter Property="Data" Value="M 3.5,0 L 0,5 L 7,5 Z"/>
+                                                <Setter Property="Fill" Value="{DynamicResource AccentBrush}"/>
+                                                <Setter Property="Opacity" Value="1"/>
+                                            </DataTrigger>
+                                            <DataTrigger Value="Descending"
+                                                         Binding="{Binding SortDirection,
+                                                                           RelativeSource={RelativeSource AncestorType=DataGridColumnHeader}}">
+                                                <Setter Property="Data" Value="M 3.5,11 L 0,6 L 7,6 Z"/>
+                                                <Setter Property="Fill" Value="{DynamicResource AccentBrush}"/>
+                                                <Setter Property="Opacity" Value="1"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Path.Style>
+                            </Path>
+                        </Grid>
                     </Border>
                 </ControlTemplate>
             </Setter.Value>
@@ -147,12 +194,22 @@
                          something else. Height is fixed for the same reason — left to the row it
                          stretched, and a field that is a different height on every row does not
                          read as a field. -->
+                    <!-- UseLayoutRounding, and it is the bottom border that needs it.
+                         SnapsToDevicePixels only snaps the RENDER; the element itself can still be
+                         laid out on a fractional device pixel, and at 125% or 150% scaling it is:
+                         a 42px row is 52.5 device pixels, so every second row starts on a half
+                         pixel and this box's 1px bottom edge lands across two of them. Split
+                         between two rows of pixels a hairline is drawn at half strength against a
+                         filled background, which is to say not drawn at all — the box looked open
+                         at the bottom while its top, sitting on a whole pixel, was crisp.
+                         Rounding the layout puts the whole box on device pixels, so both edges are
+                         one solid line at any scaling. -->
                     <Border x:Name="box" Height="32" Margin="6,4"
                             VerticalAlignment="Center"
                             CornerRadius="{StaticResource RadiusControl}"
                             Background="{DynamicResource Surface2Brush}"
                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                            SnapsToDevicePixels="True">
+                            SnapsToDevicePixels="True" UseLayoutRounding="True">
                         <ContentPresenter VerticalAlignment="Center"
                                           Margin="{TemplateBinding Padding}"/>
                     </Border>

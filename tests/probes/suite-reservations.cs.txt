@@ -330,17 +330,20 @@ var t = new Thread(() =>
           $"{choosy.SizeChoices.Count} size(s), none null");
 
     // Buyer and Broker had NO hint at all -- an unset combo draws a chevron and nothing else, so
-    // the one required field on the header was the only one that never said what it wanted.
-    // Both live in the Deal Details drawer now, bound to the LINE's deal rather than to a header
-    // that no longer exists -- so the placeholder keys off DealBuyer / DealBroker. The hint itself
-    // is unchanged, and it still matters for the same reason: an unset combo draws a chevron and
-    // nothing else, and Buyer is the one field a line cannot be sold without.
+    // the one required field on the header was the only one that never said what it wanted. Both
+    // live in the Deal Details drawer now, and the hint still matters for the same reason: Buyer is
+    // the one field a line cannot be sold without.
+    //
+    // KEYED ON THE BOX'S TEXT, not on DealBuyer / DealBroker. These are editable combos, the typed
+    // text is drawn where the hint is, and a search miss leaves SelectedItem null on purpose — so
+    // keying off the deal left "Select buyer" sitting on top of "abc" as it was typed. Whether it
+    // actually goes away is driven in suite-lines-and-memos; this is the wiring.
     Check("PICKER - Buyer says what it wants when nothing is chosen",
           entryXamlHas("Text=\"Select buyer\"")
-          && entryXamlHas("Visibility=\"{Binding DealBuyer, Converter={StaticResource Empty}}\""));
+          && entryXamlHas("ElementName=BuyerPicker"));
     Check("PICKER - and so does Broker",
           entryXamlHas("Text=\"Select broker\"")
-          && entryXamlHas("Visibility=\"{Binding DealBroker, Converter={StaticResource Empty}}\""));
+          && entryXamlHas("ElementName=BrokerPicker"));
 
     win.Close();
     Console.WriteLine();
