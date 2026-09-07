@@ -1,5 +1,5 @@
 -- ---------------------------------------------------------------------------
--- Which of 0040 to 0052 is on THIS database?
+-- Which of 0040 to 0053 is on THIS database?
 --
 -- READ ONLY. Selects from the catalogue and nothing else: no table is written, no function is
 -- called, no row changes. Safe to run against the client's live database.
@@ -71,6 +71,19 @@ with checks as (
     union all
     select '0052  reconciliation counts imported sales', 10,
            coalesce(pg_get_viewdef('public.v_reconciliation'::regclass) not like '%MIG-%%', false)
+
+    -- 0053 does two things and adds one object, so the object is only half the answer: it also
+    -- REWRITES add_grade and reserve_line, and an older definition of either would stand. Both
+    -- halves are read.
+    union all
+    select '0053  one grade per spelling (grade_key, add_grade)', 11,
+           to_regproc('public.grade_key') is not null
+           and coalesce(pg_get_functiondef('public.add_grade'::regproc) like '%grade_key%', false)
+
+    union all
+    select '0053  a sales entry cannot oversell a bucket', 12,
+           coalesce(pg_get_functiondef('public.reserve_line'::regproc)
+                    like '%Insufficient stock for%', false)
 )
 select migration,
        case when present then 'yes' else 'NO - apply it' end as applied

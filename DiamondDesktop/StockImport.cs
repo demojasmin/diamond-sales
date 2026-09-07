@@ -168,8 +168,11 @@ public static class StockFileImport
             // The catalogue decides instead: a number it knows is a grade, one it does not is
             // footer. Anything non-numeric is taken as a grade either way, so an unknown one is
             // reported rather than absorbed into its predecessor.
+            // Asked the same way the lookup below asks it: two rules would let a row be read as
+            // footer here and resolve as a grade there, silently handing its carats to the block
+            // above.
             if (a.Length > 0 && !a.Equals("TOTAL", StringComparison.OrdinalIgnoreCase)
-                             && (!IsNumeric(a) || gradeMap.ContainsKey(Key(a))))
+                             && (!IsNumeric(a) || SaleFileImport.ResolveGrade(gradeMap, Key(a), out _)))
                 gradeLabel = a;
 
             string sizeLabel = row[SizeColumn].Trim();
@@ -195,7 +198,9 @@ public static class StockFileImport
 
             if (Math.Abs(weight) < Sentinel) continue;      // the sheet's own placeholder
 
-            if (!gradeMap.TryGetValue(Key(gradeLabel), out string? gradeCode))
+            // Through the same rule public.grade_key uses (0053), so a sheet writing "Dx1" lands on
+            // NO DX rather than being offered as a grade to create beside it.
+            if (!SaleFileImport.ResolveGrade(gradeMap, Key(gradeLabel), out string gradeCode))
             {
                 plan.Exceptions.Add(new ImportProblem(
                     $"Row {row.Number}: grade \"{gradeLabel}\" is not in the catalogue and has no "
@@ -264,6 +269,26 @@ public static class StockFileImport
     private static string Key(string s) =>
         string.Join(" ", s.Trim().ToUpperInvariant().Split((char[]?)null,
                                                            StringSplitOptions.RemoveEmptyEntries));
+
+    /// <summary>
+    /// A grade name reduced to what makes it that grade: case, spacing and punctuation are how a
+    /// name is written, not what it names. "NO DX", "no-dx" and "NoDx" all key the same.
+    ///
+    /// This mirrors public.grade_key (0053) exactly, and it has to for the same reason SizeKey
+    /// mirrors sieve_key: that function is what decides whether add_grade returns an existing row
+    /// or creates one, so a C# rule that disagreed would either offer to add a grade the database
+    /// then refuses, or agree to add one the database happily twins — and a twinned grade splits
+    /// the stock position across two rows that are the same goods.
+    ///
+    /// Null when nothing alphanumeric is left. "#" is a real mark and a legitimate alias, and it
+    /// keys to nothing at all — so it must not key to "", or every punctuation-only mark would
+    /// collide with every other.
+    /// </summary>
+    public static string? GradeKey(string? raw)
+    {
+        string key = new([.. (raw ?? "").Where(char.IsAsciiLetterOrDigit)]);
+        return key.Length == 0 ? null : key.ToUpperInvariant();
+    }
 
     /// <summary>
     /// Normalises a sieve size to one bucket. The stock sheet writes sizes bare ("6.5", "11") while

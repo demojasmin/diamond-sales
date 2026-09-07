@@ -315,17 +315,41 @@ var t = new Thread(() =>
           && filterDate.Width == ((DatePicker)win.FindName("InvoiceDateFilter")!).Width,
           $"{filterDate.Width}px");
 
-    // PickerSearch was set on both party filters and could not work: it refuses to wrap a bound
-    // ItemsSource, and these are bound. What it DID do was make the box editable, so a name typed
-    // into it was accepted, matched nothing, and was silently replaced when focus left.
+    // SEARCHABLE, and the two halves that make that real rather than half-working.
+    //
+    // These used to be plain pick-lists, and this block used to assert that. PickerSearch had been
+    // set on them over a {Binding Buyers} and could not work -- it refuses to wrap a bound
+    // ItemsSource -- so all it did was make the box editable: a typed name was accepted, matched
+    // nothing, and was silently replaced when focus left. The desk asked for search on every party
+    // picker, so the binding went instead of the search.
     var fBuyer = (ComboBox)win.FindName("LineFilterBuyer")!;
     var fBroker = (ComboBox)win.FindName("LineFilterBroker")!;
-    Check("FILTER - the party filters are plain pick-lists, not half-working search boxes",
-          !fBuyer.IsEditable && !fBroker.IsEditable,
+
+    Check("FILTER - the party filters can be typed into",
+          fBuyer.IsEditable && fBroker.IsEditable,
           $"buyer editable={fBuyer.IsEditable}, broker editable={fBroker.IsEditable}");
-    Check("FILTER - and they still hold their bindings",
+
+    // THE HALF THAT MAKES IT WORK. A bound ItemsSource is what PickerSearch refuses, so editable
+    // WITHOUT this is exactly the broken state described above -- which is why they are one check
+    // apart and both have to hold.
+    Check("FILTER - and their lists are assigned, not bound, so the search can wrap them",
           System.Windows.Data.BindingOperations.GetBindingExpressionBase(
-              fBuyer, ItemsControl.ItemsSourceProperty) is not null
+              fBuyer, ItemsControl.ItemsSourceProperty) is null
+          && System.Windows.Data.BindingOperations.GetBindingExpressionBase(
+              fBroker, ItemsControl.ItemsSourceProperty) is null,
+          "no binding to overwrite");
+
+    // Assigned means something has to assign them. DataContextChanged does, so a new entry cannot
+    // leave these two showing the previous one's parties.
+    Check("FILTER - and they are pointed at THIS entry's parties",
+          ReferenceEquals(fBuyer.ItemsSource, live.Buyers)
+          && ReferenceEquals(fBroker.ItemsSource, live.Brokers),
+          $"{(fBuyer.ItemsSource as System.Collections.ICollection)?.Count ?? -1} buyer(s)");
+
+    // The selection binding is untouched by any of this, and is what the filter actually reads.
+    Check("FILTER - the selected party still writes back to the entry",
+          System.Windows.Data.BindingOperations.GetBindingExpressionBase(
+              fBuyer, System.Windows.Controls.Primitives.Selector.SelectedItemProperty) is not null
           && System.Windows.Data.BindingOperations.GetBindingExpressionBase(
               fBroker, System.Windows.Controls.Primitives.Selector.SelectedItemProperty) is not null);
 
@@ -405,6 +429,21 @@ var t = new Thread(() =>
     live.Repage();
     Settle();
 
+    // EVERY BOX IS ANSWERED, and this is registered BEFORE the first press that can raise one.
+    // Both refusals below are MODAL now -- a refused press says so in a box as well as along the
+    // bottom edge -- so left unanswered the very first Invoke blocks on ShowDialog and the run
+    // never finishes. It used to sit further down, which was fine while only Confirm raised one.
+    int dialogs = 0;
+    string? dialogTitle = null;
+    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+        new RoutedEventHandler((o, _) =>
+        {
+            if (o is not Window w || ReferenceEquals(w, win)) return;
+            dialogs++;
+            dialogTitle = w.Title;
+            w.Close();
+        }));
+
     // ── printing is scoped, and refuses an empty selection ─────────────────
     var status = (TextBlock)win.FindName("Status")!;
     status.Text = "";
@@ -416,17 +455,9 @@ var t = new Thread(() =>
     Check("PRINT - and it wrote nothing", live.InvoiceId is null);
 
     // ── confirming is scoped, and refuses an empty selection ───────────────
-    // The refusal is MODAL, so every window that opens is answered -- left alone this hangs.
-    int dialogs = 0;
-    string? dialogTitle = null;
-    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
-        new RoutedEventHandler((o, _) =>
-        {
-            if (o is not Window w || ReferenceEquals(w, win)) return;
-            dialogs++;
-            dialogTitle = w.Title;
-            w.Close();
-        }));
+    // Counted from HERE. The handler above has already answered the print refusal; this check is
+    // about the confirm one, so the tally starts again rather than carrying that in.
+    dialogs = 0;
 
     // A HALF-TYPED ROW ON THE ENTRY, which is what made the misplaced message visible. The refusal
     // is about the TICKS, but the code that pins a refusal to the control at fault hunted for the
@@ -464,15 +495,26 @@ var t = new Thread(() =>
     Check("CONFIRM - and every row is still on the entry",
           live.RealLines.Count == 5, $"{live.RealLines.Count}");
 
-    // AND IT IS NOT PINNED TO A CELL. Nothing on the invoice is wrong -- the desk has not ticked
-    // anything -- but the refusal fell through to the branch that hunts for the first row with an
-    // Error and marks a cell of it, so "Tick the lines to confirm" was written over a Size
-    // dropdown on whichever row happened to be unfinished.
-    var cellMarked = typeof(MainWindow)
-        .GetField("_lineErrorCell", BindingFlags.Instance | BindingFlags.NonPublic)!
-        .GetValue(win);
-    Check("CONFIRM - and it is not written over a cell, which is nobody's fault here",
-          cellMarked is null, cellMarked?.GetType().Name ?? "<none marked>");
+    // AND NOTHING IS WRITTEN INTO THE GRID. This used to read a _lineErrorCell field, because the
+    // refusal fell through to a branch that hunted for the first row with an Error and adorned a
+    // cell of it -- "Tick the lines to confirm" written over a Size dropdown on whichever row
+    // happened to be unfinished. Line problems go in the dialog now and nothing is adorned onto a
+    // cell at all, so the check is the stronger one: no cell in the grid carries a message.
+    static IEnumerable<T> Every<T>(DependencyObject? d) where T : DependencyObject
+    {
+        if (d is null) yield break;
+        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(d); i++)
+        {
+            var c = System.Windows.Media.VisualTreeHelper.GetChild(d, i);
+            if (c is T hit) yield return hit;
+            foreach (var deep in Every<T>(c)) yield return deep;
+        }
+    }
+    var adorned = Every<DataGridCell>(win.FindName("Grid") as DependencyObject)
+        .Count(c => System.Windows.Documents.AdornerLayer.GetAdornerLayer(c)
+                        ?.GetAdorners(c)?.Length > 0);
+    Check("CONFIRM - and nothing is written over a cell, which is nobody's fault here",
+          adorned == 0, $"{adorned} adorned cell(s)");
     // Read off the model too, so the two cannot drift: the screen tells this refusal apart from a
     // field fault by the sentence it opens with.
     Check("CONFIRM - the refusal is recognisable as a selection problem, not a field one",

@@ -3,14 +3,26 @@
 --
 -- GOES:  invoices, sales lines, receipts, stock movements, intake parcels,
 --        rejection dispositions, stock reservations, the price list,
---        the audit trail, lockout counters
+--        the audit trail, lockout counters -- AND every buyer and broker
 --
--- STAYS: 27 grades, 9 sizes, 218 pairings, 2 currencies, 10 settings,
---        both logins and their profiles
+-- STAYS: the grades, sizes and pairings, the currencies, the settings, and
+--        both logins with their profiles
 --
 -- The client opens the app to an empty ledger with everything else working:
 -- they can raise the first invoice, import their first stock sheet, and sign in
--- as themselves. Nothing has to be set up again.
+-- as themselves. The catalogue does not have to be set up again.
+--
+-- BUYERS AND BROKERS GO TOO, on the desk's instruction (Sept 2026). They used to
+-- stay, and there was a case for it: they are the client's own trading partners,
+-- imported from their own sheet, and keeping them meant an empty ledger against a
+-- known customer list. The desk asked for a genuinely fresh start instead.
+--
+-- WHAT THAT COSTS, so it is not discovered later: the first sale to each customer
+-- has to name them again. Nothing is lost that the client cannot retype or that a
+-- sales import will not recreate -- the importer creates any buyer the sheet names
+-- and the database does not have (docs/08 s2.4). Safe to delete only because the
+-- invoices that pointed at them have already gone, a few lines above:
+-- sales_invoice is the ONLY table with a foreign key to either.
 --
 -- ONE TRANSACTION. It all happens or none of it does.
 -- ---------------------------------------------------------------------------
@@ -54,6 +66,13 @@ delete from public.login_attempt;
 -- reset has to be told about.
 delete from public.stock_reservation;
 
+-- ── the parties, once nothing points at them ───────────────────────────────
+-- After the invoices, necessarily: sales_invoice.buyer_id and .broker_id are the
+-- only foreign keys either table has, so these deletes are safe here and would
+-- fail anywhere above.
+delete from public.broker;
+delete from public.buyer;
+
 -- ── the audit trail LAST, and this order is not arbitrary ──────────────────
 -- Every delete above fires the audit trigger, which writes a DELETE row for
 -- each one. Clearing this first would leave roughly four thousand fresh rows
@@ -73,6 +92,8 @@ select setval(pg_get_serial_sequence('public.stock_movement', 'movement_id'), 1,
 select setval(pg_get_serial_sequence('public.rough_intake',   'intake_id'),   1, false);
 select setval(pg_get_serial_sequence('public.audit_log',      'audit_id'),    1, false);
 select setval(pg_get_serial_sequence('public.stock_reservation', 'reservation_id'), 1, false);
+select setval(pg_get_serial_sequence('public.buyer',          'buyer_id'),    1, false);
+select setval(pg_get_serial_sequence('public.broker',         'broker_id'),   1, false);
 
 commit;
 
@@ -89,7 +110,9 @@ union all select 'rejection dispositions', count(*) from public.rejection_dispos
 union all select 'price list', count(*) from public.price_list
 union all select 'stock reservations', count(*) from public.stock_reservation
 union all select 'audit rows', count(*) from public.audit_log
-union all select 'lockout rows', count(*) from public.login_attempt;
+union all select 'lockout rows', count(*) from public.login_attempt
+union all select 'buyers', count(*) from public.buyer
+union all select 'brokers', count(*) from public.broker;
 
 select 'grades' as kept, count(*) from public.grade
 union all select 'sizes', count(*) from public.size_bucket

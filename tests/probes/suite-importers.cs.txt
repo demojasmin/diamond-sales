@@ -364,9 +364,14 @@ Check("OFFLINE · it reads against the catalogue already in memory",
 
 // Creating a grade or a sieve size is a WRITE. Offering to make one that cannot be made would end
 // in a transport error over a dialog that had already said yes.
+// Matched with whitespace collapsed, NOT on the exact source text. The first version of this
+// check spelled out the newline and indentation between "Db.IsOnline" and the condition after it,
+// and broke the moment an unrelated edit rewrote the file's line endings -- a test failing on
+// formatting says nothing about the app.
+string flat = System.Text.RegularExpressions.Regex.Replace(pdf, @"\s+", " ");
 Check("OFFLINE · it does not offer to create grades or sizes it cannot write",
-      pdf.Contains("if (Db.IsOnline\n            && plan.Problems.Count == 1")
-      && pdf.Contains("if (Db.IsOnline && plan.UnknownSizes.Count > 0"),
+      flat.Contains("if (Db.IsOnline && plan.Problems.Count == 1")
+      && flat.Contains("if (Db.IsOnline && plan.UnknownSizes.Count > 0"),
       "the offer needs a connection, so it is only made on one");
 
 Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} check(s) failed.");

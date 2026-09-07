@@ -161,8 +161,16 @@ public static class PickerSearch
         // below and the highlight goes.
         cb.GotKeyboardFocus += (_, _) =>
         {
-            Deselect(cb);
             cb.SetValue(UntouchedProperty, true);
+
+            // AT INPUT PRIORITY, because WPF's own SelectAll lands AFTER this handler returns --
+            // the same ordering the SelectionChanged and pick handlers below already allow for.
+            // Called straight, this ran first and was immediately undone, so the highlight it
+            // exists to remove came back. It showed up on the Stock page, which opens with focus on
+            // its first control: the grade filter arrived with "All grades" painted in a blue block,
+            // on a screen nobody had typed into.
+            cb.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input,
+                new Action(() => Deselect(cb)));
         };
         cb.LostKeyboardFocus += (_, _) => cb.SetValue(UntouchedProperty, false);
 
@@ -377,8 +385,21 @@ public static class PickerSearch
         try { first = cb.ItemsSource.Cast<object>().FirstOrDefault(); }
         catch (Exception) { return; }
 
-        if (first is not null && first.GetType().GetProperty("ShortName") is not null)
-            TextSearch.SetTextPath(cb, "ShortName");
+        if (first is null) return;
+
+        // ShortName first, Name second. The catalogue types carry both -- "#" for display, "NO II"
+        // as the full name -- and the mark is what the desk reads, so it wins.
+        //
+        // The Name fallback is not decoration: WITHOUT A PATH an editable ComboBox writes
+        // item.ToString() into its box, and a plain model class has no ToString, so the dashboard's
+        // buyer filter read "Data.Buyer" where a name should have been. Every picker of items that
+        // have a Name and no ShortName had the same fault waiting; this is one place rather than a
+        // TextPath spelled out on each of them.
+        string? path = first.GetType().GetProperty("ShortName") is not null ? "ShortName"
+                     : first.GetType().GetProperty("Name") is not null      ? "Name"
+                     : null;
+
+        if (path is not null) TextSearch.SetTextPath(cb, path);
     }
 
     /// <summary>
@@ -534,4 +555,36 @@ public static class PickerSearch
 
         return item.GetType().GetProperty(path)?.GetValue(item)?.ToString() ?? item.ToString() ?? "";
     }
+}
+
+/// <summary>
+/// The grey words a drop-down shows while nothing is chosen: "Select buyer", "Grade", "Size".
+///
+/// ONE ATTACHED STRING, drawn by the shared ComboBox template in Inputs.xaml. The alternative was
+/// the shape the Deal Details drawer uses -- wrap the control in a Grid, lay a TextBlock over it,
+/// bind that to the box's Text through the Empty converter -- which is four lines of XAML per
+/// picker and there are more than twenty. Putting it in the template that every one of them already
+/// derives from makes it one line each: ui:FieldHint.Text="Grade".
+///
+/// KEYED ON THE BOX'S TEXT, not on its selection, and that is the whole subtlety. These are
+/// editable combos once PickerSearch is on them: a search that matches nothing leaves SelectedItem
+/// null ON PURPOSE while the typed characters stay in the box. Keyed on the selection, the hint
+/// would sit on top of what is being typed and the two would read as one smeared word. Text is the
+/// honest question -- is anything drawn in this box already? -- and the drawer learned it first.
+///
+/// A picker that sets nothing shows nothing: the TextBlock is there but empty, which draws no
+/// pixels. So this changes no drop-down that has not asked for it.
+/// </summary>
+public static class FieldHint
+{
+    /// NOT inheriting. It reads like a thing to inherit -- one hint for a panel of pickers -- and it
+    /// is the opposite: every drop-down wants its OWN word, and an inherited value would put the
+    /// first one's hint into every combo under the same panel, including the ones deliberately left
+    /// blank.
+    public static readonly DependencyProperty TextProperty =
+        DependencyProperty.RegisterAttached("Text", typeof(string), typeof(FieldHint),
+            new PropertyMetadata(""));
+
+    public static void SetText(DependencyObject d, string value) => d.SetValue(TextProperty, value);
+    public static string GetText(DependencyObject d) => (string)d.GetValue(TextProperty);
 }

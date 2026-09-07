@@ -1,5 +1,6 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:ui="clr-namespace:DiamondDesktop">
 
     <!-- ============================================================
          INPUTS · TextBox / Numeric / ComboBox / ToggleSwitch / CheckBox
@@ -150,6 +151,31 @@
                                          SelectionBrush="{DynamicResource AccentBrush}"
                                          IsReadOnly="{TemplateBinding IsReadOnly}"/>
 
+                                <!-- THE PLACEHOLDER, over both of the above and hit-test-invisible
+                                     so it never eats the click that opens the list.
+
+                                     Empty unless a picker asks for one (ui:FieldHint.Text), and an
+                                     empty TextBlock draws nothing — so every drop-down that has not
+                                     asked renders exactly as it did before this existed.
+
+                                     Styled here rather than through FieldPlaceholder: that key lives
+                                     in MainWindow's own resources, and a StaticResource in a merged
+                                     dictionary cannot see it. Same muted brush, stated locally.
+
+                                     Shown by the Text trigger below, never by the selection — see
+                                     FieldHint for why those are different questions. -->
+                                <TextBlock x:Name="hint" Grid.Column="0"
+                                           Margin="{TemplateBinding Padding}"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False"
+                                           TextTrimming="CharacterEllipsis"
+                                           FontFamily="{TemplateBinding FontFamily}"
+                                           FontSize="{TemplateBinding FontSize}"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           Text="{Binding (ui:FieldHint.Text),
+                                                          RelativeSource={RelativeSource TemplatedParent}}"
+                                           Visibility="Collapsed"/>
+
                                 <!-- The chevron is a toggle in its own right now. While the combo
                                      is NOT editable the border above is hit-test-invisible, so this
                                      never sees a click and the full-size ToggleButton underneath
@@ -197,6 +223,18 @@
                             <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
                             <Setter TargetName="bd" Property="IsHitTestVisible" Value="True"/>
                         </Trigger>
+
+                        <!-- NOTHING DRAWN IN THE BOX YET, so the hint may be. Both cases: a combo
+                             that has never been touched reports Text as "", and one whose selection
+                             has been cleared in code can report null. -->
+                        <DataTrigger Binding="{Binding Text, RelativeSource={RelativeSource Self}}" Value="">
+                            <Setter TargetName="hint" Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Text, RelativeSource={RelativeSource Self}}"
+                                     Value="{x:Null}">
+                            <Setter TargetName="hint" Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+
                         <Trigger Property="IsKeyboardFocusWithin" Value="True">
                             <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
                         </Trigger>

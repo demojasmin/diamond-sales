@@ -243,8 +243,43 @@ public static class SaleFileImport
             foreach (string alias in (aliases ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries
                                                                 | StringSplitOptions.TrimEntries))
                 map.TryAdd(alias, code.Trim());     // the code itself always wins a collision
+
+            // And the MARK the app prints for this code, which is what somebody who reads the screen
+            // types onto a sheet: "DX1" for NO DX, "GH VS" for GH, "#" for NO II. The importers
+            // resolve through the catalogue's aliases and never knew about that map, so a sheet
+            // printing a mark named a grade the app could not find — and answering the offer to add
+            // it created a second row for the same goods. Migration 0053 puts the same marks in
+            // grade.aliases; this is the belt to that brace, and it cannot drift because it IS the
+            // display map. TryAdd, so a real code or alias always beats a mark.
+            if (Data.GradeNames.Marks.TryGetValue(code.Trim(), out string? mark))
+                map.TryAdd(mark, code.Trim());
         }
+
+        // Under the grade key too, once every literal spelling is in: case, spacing and punctuation
+        // are how a name is written, not what it names. Added rather than substituted — exactly as
+        // SizeAliasMap adds the sieve key — so every literal spelling keeps resolving as it did.
+        foreach (var (spelling, code) in map.ToList())
+            if (StockFileImport.GradeKey(spelling) is { } key) map.TryAdd(key, code);
+
         return map;
+    }
+
+    /// <summary>
+    /// The catalogue code a printed grade means, or false if the catalogue has no such grade.
+    ///
+    /// Literal spelling first, then the grade key. Both sides of that key use the SAME rule the
+    /// database uses in public.grade_key, and they have to: it is what decides whether add_grade
+    /// returns an existing row or creates one, and a twinned grade splits the stock position
+    /// across two rows that are the same goods. The counterpart of <see cref="ResolveSize"/>.
+    /// </summary>
+    public static bool ResolveGrade(IReadOnlyDictionary<string, string> gradeMap, string printed,
+                                    out string code)
+    {
+        if (gradeMap.TryGetValue(printed, out string? direct)) { code = direct; return true; }
+        if (StockFileImport.GradeKey(printed) is { } key && gradeMap.TryGetValue(key, out string? byKey))
+        { code = byKey; return true; }
+        code = printed;
+        return false;
     }
 
     /// <summary>Convenience for callers with no aliases to offer: every code maps to itself.</summary>
@@ -378,7 +413,7 @@ public static class SaleFileImport
         string grade = row["H"].Trim();
         if (grade.Length == 0)
             problems.Add(new ImportProblem($"Row {row.Number}: the grade (column H) is empty."));
-        else if (!gradeMap.TryGetValue(grade, out string? resolvedGrade))
+        else if (!ResolveGrade(gradeMap, grade, out string resolvedGrade))
         {
             problems.Add(new ImportProblem(
                 $"Row {row.Number}: grade \"{grade}\" is not in the catalogue and has no alias."));

@@ -1,0 +1,120 @@
+// Is the reported 3-4 ct mismatch fixed, now that 0053 is on the client's database?
+//
+// The one call that is not a plain read is reserve_line against a bucket that holds nothing. It is
+// EXPECTED TO RAISE, and a raise inside plpgsql rolls the call back -- the refusal happens before
+// the insert, so nothing is written whether it refuses or not. That is the whole point: it is the
+// client's own scenario (NO II x 1/6, 3.43 ct, 0 available) fired at the live function.
+//
+// A random client_ref is used so it cannot collide with a real entry on screen.
+
+using System.IO;
+using DiamondDesktop.Data;
+using InvProbe;
+using Supabase.Postgrest;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"  {(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  · {d}")}");
+    if (!ok) fail++;
+}
+
+Db.Use(Db.Workspaces.First(w => w.Name == "Priya"));
+Environment.SetEnvironmentVariable("SOLITAIRE_SESSION",
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                 "SolitaireDesk", $"session-{Db.Active.Ref}.dat"));
+await ProbeEnv.SignInAsync();
+await ProbeEnv.LoadProfileAsync();
+
+var cfg = (await Db.Client.From<AppConfig>()
+              .Filter("key", Constants.Operator.Equals, "company_name").Get()).Models;
+Console.WriteLine($"company_name: {cfg.FirstOrDefault()?.Value}   ({Db.Active.Ref})");
+Console.WriteLine($"signed in as: {Db.Client.Auth.CurrentUser?.Email}\n");
+
+// ── 1 · 0053 is on this database ────────────────────────────────────────────
+try
+{
+    var r = await Db.Client.Rpc("grade_key", new Dictionary<string, object?> { ["p_code"] = "dX1" });
+    Check("0053 is applied", true, $"grade_key('dX1') = {r.Content?.Trim('"')}");
+}
+catch (Exception e) { Check("0053 is applied", false, e.Message[..Math.Min(120, e.Message.Length)]); }
+
+var noDx = (await Db.Client.From<Grade>()
+               .Filter("code", Constants.Operator.Equals, "NO DX").Get()).Models.FirstOrDefault();
+Check("DX1 is now an alias of NO DX",
+    (noDx?.Aliases ?? "").Split(';').Contains("DX1"), noDx?.Aliases);
+
+var allGrades = (await Db.Client.From<Grade>().Get()).Models;
+Check("no stray DX1 grade row exists",
+    !allGrades.Any(g => g.Code is "Dx1" or "DX1" or "dx1"),
+    string.Join(", ", allGrades.Where(g => g.Code.Contains("DX", StringComparison.OrdinalIgnoreCase))
+                               .Select(g => $"#{g.GradeId} {g.Code}")));
+
+// ── 2 · THE BUG ITSELF, fired at the live function ─────────────────────────
+var bucket = (await Db.Client.From<VStockPosition>().Get()).Models
+                .First(p => p.GradeCode == "NO II" && p.SizeCode == "1/6");
+Console.WriteLine($"\n  NO II x 1/6: ledger {bucket.LedgerCt:N4}, available {bucket.BalanceCt:N4}");
+
+string message = "";
+bool refused;
+try
+{
+    await Db.Client.Rpc("reserve_line", new Dictionary<string, object?>
+    {
+        ["p_client_ref"] = Guid.NewGuid().ToString(),
+        ["p_line_key"]   = "probe-0053",
+        ["p_grade_id"]   = bucket.GradeId,
+        ["p_size_id"]    = bucket.SizeId,
+        ["p_weight_ct"]  = 3.43m
+    });
+    refused = false;
+}
+catch (Exception e) { refused = true; message = e.Message; }
+
+Check("a 3.43 ct line on an empty bucket is REFUSED", refused,
+    refused ? null : "IT WAS ACCEPTED - the entry would oversell");
+Console.WriteLine($"     database said: {message}");
+Check("the refusal names the bucket and both figures",
+    message.Contains("Insufficient stock for NO II x 1/6", StringComparison.Ordinal)
+    && message.Contains("required 3.43 ct", StringComparison.Ordinal)
+    && message.Contains("available 0 ct", StringComparison.Ordinal));
+
+// And it wrote nothing.
+var after = (await Db.Client.From<VStockPosition>()
+                .Filter("grade_id", Constants.Operator.Equals, bucket.GradeId.ToString())
+                .Filter("size_id", Constants.Operator.Equals, bucket.SizeId.ToString()).Get()).Models[0];
+Check("and it held nothing back", after.ReservedCt == bucket.ReservedCt && after.BalanceCt == bucket.BalanceCt,
+    $"available {after.BalanceCt:N4}, reserved {after.ReservedCt:N4}");
+
+// ── 3 · MIG-17 as it stands now ────────────────────────────────────────────
+var lines = (await Db.Client.From<VSalesLine>()
+                .Filter("invoice_no", Constants.Operator.Equals, "MIG-17").Get()).Models;
+var moved = (await Db.Client.From<VStockMovement>()
+                .Filter("ref_type", Constants.Operator.Equals, "sales_line").Get()).Models;
+
+Console.WriteLine();
+foreach (var l in lines)
+{
+    decimal outCt = moved.Where(m => m.RefId == l.LineId).Sum(m => m.WeightCt);
+    Console.WriteLine($"  MIG-17 line {l.LineId}: {l.GradeCode} x {l.SizeCode}, invoiced {l.GrossWeightCt:N4} ct, "
+                    + $"ledger took {outCt:N4} ct, short {l.GrossWeightCt - outCt:N4} ct");
+}
+
+// ── 4 · the position, and the reconciliation ───────────────────────────────
+var recon = (await Db.Client.From<VReconciliation>().Get()).Models;
+var off = recon.Where(r => r.DiffCt != 0 || !r.Reconciles).ToList();
+Console.WriteLine($"\n  buckets out of balance: {off.Count}");
+foreach (var r in off.OrderByDescending(r => Math.Abs(r.DiffCt)))
+    Console.WriteLine($"     {r.GradeCode,-10} x {r.SizeCode,-6} moved {r.MovedOutCt,10:N4}  "
+                    + $"invoiced {r.SoldOnInvoicesCt,10:N4}  diff {r.DiffCt,9:N4}");
+Console.WriteLine($"  total unreconciled: {off.Sum(r => Math.Abs(r.DiffCt)):N4} ct");
+
+var pos = (await Db.Client.From<VStockPosition>().Get()).Models;
+Check("no bucket is negative on the ledger", !pos.Any(p => p.LedgerCt < 0),
+    string.Join(", ", pos.Where(p => p.LedgerCt < 0).Select(p => $"{p.GradeCode} x {p.SizeCode} {p.LedgerCt:N4}")));
+Check("no bucket is negative on availability", !pos.Any(p => p.BalanceCt < 0),
+    string.Join(", ", pos.Where(p => p.BalanceCt < 0).Select(p => $"{p.GradeCode} x {p.SizeCode} {p.BalanceCt:N4}")));
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

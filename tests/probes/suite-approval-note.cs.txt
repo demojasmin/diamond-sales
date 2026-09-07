@@ -411,6 +411,61 @@ var t = new Thread(() =>
           threePager.PageCount == 3 && three.Blocks.OfType<Section>().Count(b => b.BreakPageBefore) == 2,
           $"{threePager.PageCount} page(s)");
 
+    // ── ONE SHEET PER BUYER AND BROKER, whatever else differs ─────────────
+    //
+    // The grouping the PRINT uses, which is not the grouping the INVOICES use. DealKey carries
+    // date, buyer, broker, broker %, terms and doc type, because two lines differing in any of
+    // them cannot share an invoice -- and under it, one buyer bought through one broker on two
+    // different terms came out as two pieces of paper for one delivery. A note asks a smaller
+    // question: who is this parcel going to, through whom.
+    var buyer = new PartyRef(1, "KIRAN EXPORTS", 30);
+    var broker = new PartyRef(9, "JITESH SHAH", null, 1m);
+    var grade = new Grade { GradeId = 1, Code = "COL", DisplayName = "Colour" };
+    var size23 = new SizeBucket { SizeId = 1, Code = "+23" };
+    var size18 = new SizeBucket { SizeId = 2, Code = "+18" };
+
+    SaleLine Line(SizeBucket sz, int terms, string doc)
+    {
+        var l = new SaleLine { Grade = grade, Size = sz, GrossWeightCt = 1m, SelectionCt = 1m,
+                               PricePerCt = 1000m };
+        l.DealBuyer = buyer;
+        l.DealBroker = broker;
+        l.DealTermsDays = terms;
+        l.DealDocType = doc;
+        return l;
+    }
+
+    // Same buyer, same broker, DIFFERENT terms: two invoices, one sheet.
+    var sameParty = new List<SaleLine> { Line(size23, 30, "BILL"), Line(size18, 60, "BILL") };
+
+    Check("SHEET - two invoices to one buyer through one broker print as ONE note",
+          InvoiceEntry.GroupForApproval(sameParty).Count == 1,
+          $"{InvoiceEntry.GroupForApproval(sameParty).Count} note(s) from " +
+          $"{InvoiceEntry.GroupDeals(sameParty).Count} deal(s)");
+
+    Check("SHEET - and both parcels are on it",
+          InvoiceEntry.GroupForApproval(sameParty)[0].Count == 2,
+          $"{InvoiceEntry.GroupForApproval(sameParty)[0].Count} row(s)");
+
+    // THE INVOICES ARE UNTOUCHED. Merging the sheet must not merge the documents: these two still
+    // owe different money on different days, and one invoice cannot hold two sets of terms.
+    Check("SHEET - but they are still two separate invoices",
+          InvoiceEntry.GroupDeals(sameParty).Count == 2,
+          "GroupDeals is not what changed");
+
+    // A DIFFERENT BROKER is a different sheet, even for the same buyer -- the broker is on the
+    // note's face ("Through ...") and two brokers cannot share one.
+    var otherBroker = Line(size23, 30, "BILL");
+    otherBroker.DealBroker = new PartyRef(7, "R K BROKER", null, 1m);
+    Check("SHEET - a second broker for the same buyer is a second note",
+          InvoiceEntry.GroupForApproval(new List<SaleLine> { sameParty[0], otherBroker }).Count == 2);
+
+    // And no broker at all is its own group rather than joining whoever has one.
+    var noBroker = Line(size18, 30, "BILL");
+    noBroker.DealBroker = null;
+    Check("SHEET - and a line with no broker does not join one that has",
+          InvoiceEntry.GroupForApproval(new List<SaleLine> { sameParty[0], noBroker }).Count == 2);
+
     Console.WriteLine();
     Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
     Application.Current?.Shutdown();

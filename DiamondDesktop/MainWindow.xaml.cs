@@ -35,6 +35,15 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     // what happened to the empty-filter line before it was pulled up here.
     private const string Loading = "Loading…";
     private const string AllBuyers = "All buyers";
+
+    /// <summary>
+    /// The "no buyer filter" row at the top of the dashboard's buyer list.
+    ///
+    /// A Buyer, not a string, so the list can go on being drawn through NameTemplate. BuyerId 0 is
+    /// what marks it: every filter that reads this control tests for an id ABOVE zero, so choosing
+    /// this row narrows nothing — the same state as choosing nothing at all.
+    /// </summary>
+    private static readonly Buyer AllBuyersRow = new() { BuyerId = 0, Name = AllBuyers };
     private const string NoFilterMatch = "Nothing matches these filters";
     private const string DayMonthYear = "dd MMM yyyy";
     private const string PickGradeSize = "Pick a grade and size";
@@ -151,6 +160,24 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     public MainWindow()
     {
         InitializeComponent();
+
+        // THE LINE FILTERS' LISTS, RE-POINTED WHENEVER THE ENTRY CHANGES.
+        //
+        // Subscribed BEFORE the first DataContext assignment below, so the entry the window opens on
+        // is pointed at too and there is no separate startup call to keep in step.
+        //
+        // Assigned rather than bound, for the reason the Deal Details pickers are: PickerSearch
+        // replaces ItemsSource with its own filtered view on first use, and a local value kills a
+        // binding permanently -- leaving the control holding a view over an InvoiceEntry that Clear
+        // and Load have since replaced. One hook rather than a call beside each of the four places
+        // that assign _invoice, so a fifth cannot be added without it.
+        DataContextChanged += (_, _) =>
+        {
+            if (DataContext is not InvoiceEntry entry) return;
+            PointAt(LineFilterBuyer, entry.Buyers);
+            PointAt(LineFilterBroker, entry.Brokers);
+        };
+
         DataContext = _invoice;
 
         // The FIRST invoice needs watching too. _invoice is created at its field initialiser, so
@@ -292,7 +319,23 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             _invoice.Brokers.Clear();
             foreach (var b in brokers) _invoice.Brokers.Add(new PartyRef(b.BrokerId, b.Name, null, b.DefaultBrokerPct));
 
-            FilterBuyer.ItemsSource = buyers;                  // the dashboard's buyer filter
+            // The dashboard's buyer filter, with a way back OUT of it at the top of the list.
+            //
+            // It used to be the buyers alone, and the only way to stop filtering by one was the
+            // Clear button beside the range -- which also resets the dates, the grade and the
+            // search. Choosing a buyer was therefore a one-way door unless you were willing to lose
+            // everything else set with it.
+            //
+            // A REAL Buyer row rather than a string, because the list is drawn through NameTemplate
+            // ({Binding Name}) and a string has no Name to bind to -- it would render as a blank
+            // line. BuyerId 0 is the sentinel; no buyer_id sequence starts there.
+            FilterBuyer.ItemsSource = new[] { AllBuyersRow }.Concat(buyers).ToList();
+
+            // AND SELECTED, so the box always names the state it is in rather than sitting
+            // empty behind a hint. "All buyers" is a real choice here, not the absence of one:
+            // a blank filter and a filter set to everything look identical and mean the same
+            // thing, so the honest thing is to show the words.
+            FilterBuyer.SelectedItem = AllBuyersRow;
 
             Pill(true, $"{Db.Active.Name} · {Catalogue.Grades.Count} grades · {buyers.Count} buyers");
 
@@ -909,7 +952,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         // _held is empty, so every line is sent. See the summary: this is the repair pass, and the
         // unique key is what makes it cost nothing when there was nothing to repair.
-        foreach (var line in _invoice.Lines) await HoldLineAsync(line);
+        _restoringHolds = true;
+        try { foreach (var line in _invoice.Lines) await HoldLineAsync(line); }
+        finally { _restoringHolds = false; }
 
         // No box: this fires while the window is still opening, and a modal over a half-drawn
         // screen is not a confirmation of anything the desk just did.
@@ -940,6 +985,11 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// round trip between keystrokes would make the grid unusable. A refusal reaches the status
     /// bar; it does not interrupt.
     /// </summary>
+    /// True while a reopened entry's lines are being re-held in bulk. A refusal then belongs in the
+    /// bar, not in a box: nobody pressed anything, the window is still opening, and one modal per
+    /// line would have to be dismissed before the screen could even be read.
+    private bool _restoringHolds;
+
     private async Task HoldLineAsync(SaleLine line)
     {
         if (line.Grade is not { } grade || line.Size is not { } size)
@@ -1114,7 +1164,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         {
             // A refusal, never a silent no-op: the button is only on screen once something is
             // ticked, but Ctrl+P and a stale click can both still reach it.
-            Say(_invoice.RealLines.Count == 0
+            Refuse(_invoice.RealLines.Count == 0
                     ? "Nothing to print — add a line first"
                     : "Tick the lines to print — nothing is selected");
             return;
@@ -1128,7 +1178,11 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // meant two print dialogs and two separate documents. They are one document now, a page per
         // buyer in the order the deals appear on screen — the lines are still divided per deal
         // before they get near the printer, so no buyer's page can carry another's parcels.
-        var deals = InvoiceEntry.GroupDeals(chosen);
+        // GroupForApproval, not GroupDeals: a note is one page per BUYER AND BROKER, where an
+        // invoice is one document per full deal. Two lines to the same buyer through the same
+        // broker on different terms are two invoices and ONE sheet -- the goods travel together.
+        // See GroupForApproval for what a merged sheet does with terms that disagree.
+        var deals = InvoiceEntry.GroupForApproval(chosen);
         var notes = new List<(VInvoice, List<VSalesLine>)>();
 
         foreach (var deal in deals)
@@ -1279,7 +1333,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // Built by the entry itself, so the payload can be tested without a database. Same lines,
         // same order, same rule about what counts as one.
         var drafts = _invoice.ToDrafts(Catalogue.BaseCurrencyId);
-        if (drafts.Count == 0) { Say("Nothing to save"); return false; }
+        if (drafts.Count == 0) { Refuse("Nothing to save — add a line first"); return false; }
 
         // A RE-SAVE REPLACES, it does not add. The ids of whatever this entry saved last time are
         // carried over in order, so pressing save twice corrects those drafts instead of booking a
@@ -1333,7 +1387,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // with an Error and pins the message to a cell of it, so "Tick the lines to confirm" was
         // written over a Size dropdown on whichever row happened to be unfinished: a sentence about
         // the wrong thing, in the wrong place, blaming a row that is not the problem.
-        if (error.StartsWith(InvoiceEntry.NothingTicked)) { Say(error); return; }
+        // popup: false. Every caller of this raises its own dialog listing EVERY problem; a box
+        // from here would be a second modal about the first of them.
+        if (error.StartsWith(InvoiceEntry.NothingTicked)) { Say(error, popup: false); return; }
 
         if (error.StartsWith("Buyer")) { Field(BuyerPicker, error); return; }
         if (error.StartsWith("Terms")) { Field(TermsBox, error); return; }
@@ -1472,7 +1528,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 bullets: [Friendly.Message(result.Failure ?? "The update was refused.")],
                 note: "Nothing was written. The whole update is one transaction, so the stock "
                     + "it would have returned was returned only inside it.");
-            Say(result.Failure ?? "Update refused");
+            Say(result.Failure ?? "Update refused", popup: false);   // the box above already said it
             return false;
         }
 
@@ -1639,7 +1695,11 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         // The bar keeps the one-line version. It is the thing still on screen after the box is
         // dismissed, and what it says is about the PRESS rather than about any one field.
-        Say($"{title} — nothing has been saved and no stock has moved");
+        //
+        // popup: false, and it has to be. Say raises a box for a refusal now, and the dialog above
+        // has just said this -- without it the desk dismisses one modal into another saying the
+        // same thing.
+        Say($"{title} — nothing has been saved and no stock has moved", popup: false);
         return false;
     }
 
@@ -1787,7 +1847,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         { Say("No INR row in the currency table — an invoice cannot be priced without it"); return; }
 
         var drafts = _invoice.ToDrafts(Catalogue.BaseCurrencyId, chosen);
-        if (drafts.Count == 0) { Say("Nothing to confirm"); return; }
+        if (drafts.Count == 0) { Refuse("Nothing to confirm — tick the lines to sell"); return; }
 
         // ── THE HOLDS GO BACK FIRST ────────────────────────────────────────────
         //
@@ -3040,7 +3100,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 bullets: [Friendly.Message(result.Failure ?? "The update was refused.")],
                 note: "Nothing was written. The whole update is one transaction, so the stock it "
                     + "would have returned was returned only inside it.");
-            Say(result.Failure ?? "Update refused");
+            Say(result.Failure ?? "Update refused", popup: false);   // the box above already said it
             return;
         }
 
@@ -3120,7 +3180,8 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 bullets: unresolved,
                 note: "Restore them on Master data, then open the memo again. Nothing was opened "
                     + "and the memo is untouched.");
-            Say($"Memo not opened — {unresolved.Count} line(s) reference a missing grade or size");
+            Say($"Memo not opened — {unresolved.Count} line(s) reference a missing grade or size",
+                popup: false);                                       // the box above already said it
             return;
         }
 
@@ -4158,20 +4219,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// The cost is up to one row's worth of space above the hint text. That is the honest trade:
     /// a table that stops where a row stops, rather than one that appears to contain half a box.
     /// </summary>
-    private void GradeArea_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        double row = GradeGrid.RowHeight;
-        if (double.IsNaN(row) || row <= 0) return;      // rows sized to content: nothing to snap to
-
-        // The chrome above the rows: the column header, and the grid's own top and bottom border.
-        double chrome = GradeGrid.ColumnHeaderHeight + GradeGrid.BorderThickness.Top
-                                                     + GradeGrid.BorderThickness.Bottom;
-
-        // At least one row, however cramped the card gets -- a table showing none of its rows is
-        // worse than one showing a single row and scrolling.
-        int rows = Math.Max(1, (int)Math.Floor((e.NewSize.Height - chrome) / row));
-        GradeGrid.MaxHeight = chrome + rows * row;
-    }
+    /// <summary>
+    /// The AREA changed. Snaps from here as well as from the grid, because a MaxHeight the grid is
+    /// already sitting at means growing the card raises no SizeChanged on the grid at all -- it stays
+    /// capped at the old height with a band of empty card beneath it.
+    /// </summary>
+    private void GradeArea_SizeChanged(object sender, SizeChangedEventArgs e) =>
+        SnapGradeRows(e.NewSize.Height);
 
     /// <summary>
     /// Trims the grades grid to a WHOLE number of rows.
@@ -4188,20 +4242,47 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// Nothing about the grid's contents or behaviour changes: the rows that no longer start are
     /// the rows that were never readable, and the scrollbar reaches them exactly as before.
     /// </summary>
-    private void GradeGrid_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        if (GradeGrid is null || GradeGrid.RowHeight is <= 0 or double.NaN) return;
+    private void GradeGrid_SizeChanged(object sender, SizeChangedEventArgs e) =>
+        SnapGradeRows(e.NewSize.Height);
 
-        // The header's real height, measured rather than assumed: it is styled, and a guess that
-        // drifts from the style would trim a row too many or too few.
+    /// <summary>
+    /// Trims the grades grid to a WHOLE number of rows, given the height available to it.
+    ///
+    /// ONE IMPLEMENTATION, TWO CALLERS, and it used to be two implementations. The other one
+    /// computed its chrome from GradeGrid.ColumnHeaderHeight -- which is NaN unless somebody sets
+    /// it, and nobody does. NaN spread through the arithmetic and came out as MaxHeight = NaN,
+    /// which means NO LIMIT: the snapping was not merely wrong, it was off. Whichever of the two
+    /// handlers ran last decided the outcome, so the last row was cut or not depending on the order
+    /// of a layout pass. That is the missing bottom border under ALIASES.
+    ///
+    /// The header is MEASURED rather than assumed here, for the same reason: it is styled, and a
+    /// guess that drifts from the style trims a row too many or too few.
+    /// </summary>
+    private void SnapGradeRows(double available)
+    {
+        if (GradeGrid is null) return;
+
+        // RowHeight is 42 here, set on the grid, and this method has always worked: measured at a
+        // 861px window it writes MaxHeight 124 = a 40px header plus two whole 42px rows, which is
+        // right. Sizing the grid was never the missing piece -- the grid also PAINTS the row after
+        // the ones that fit, because nothing in the chain clips it. GradeGrid sets ClipToBounds for
+        // that half; see the comment on it.
+        //
+        // The fallback measures a realised row if RowHeight is ever left unset, so a style change
+        // that moved the 42 onto AppRow alone could not silently turn the trimming off.
+        double row = GradeGrid.RowHeight;
+        if (double.IsNaN(row) || row <= 0)
+            row = VisualTree.FindChild<DataGridRow>(GradeGrid)?.ActualHeight ?? 0;
+        if (row <= 0) return;                           // no realised row yet; runs again when there is
+
         var header = VisualTree.FindChild<System.Windows.Controls.Primitives.DataGridColumnHeadersPresenter>(GradeGrid);
         double head = header?.ActualHeight ?? 0;
         if (head <= 0) return;                          // not laid out yet; this runs again when it is
 
-        double room = e.NewSize.Height - head;
+        double room = available - head;
         if (room <= 0) return;
 
-        double whole = Math.Floor(room / GradeGrid.RowHeight) * GradeGrid.RowHeight;
+        double whole = Math.Floor(room / row) * row;
         if (whole <= 0) return;
 
         double want = whole + head;
@@ -4578,7 +4659,11 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         var rows = all.Where(i => i.Status == InvoiceStatus.POSTED
                                && i.InvoiceDate >= from && i.InvoiceDate <= to);
-        if (FilterBuyer.SelectedItem is Buyer buyer) rows = rows.Where(i => i.BuyerId == buyer.BuyerId);
+        // { BuyerId: > 0 }, not just "is Buyer": the list now carries an All-buyers row at the top and
+        // its id is 0. Matching that as a real buyer would filter to invoices belonging to buyer
+        // zero, of which there are none, and the dashboard would read empty.
+        if (FilterBuyer.SelectedItem is Buyer { BuyerId: > 0 } buyer)
+            rows = rows.Where(i => i.BuyerId == buyer.BuyerId);
         var list = rows.ToList();
 
         // Grade lives on the line, not the invoice, so a grade filter needs the lines. Read only
@@ -5160,7 +5245,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (_dataFrom is { } first && to < first)
             return $"No sales in {span}. Sales start on {first:dd MMM yyyy}.";
 
-        if (FilterBuyer.SelectedItem is Buyer buyer)
+        if (FilterBuyer.SelectedItem is Buyer { BuyerId: > 0 } buyer)
             return $"No sales for {buyer.Name} in {span}.";
 
         return $"No sales in {span}.";
@@ -5354,7 +5439,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         FromDate.SelectedDate = ToDate.SelectedDate = null;
         FromDate.BlackoutDates.Clear(); ToDate.BlackoutDates.Clear();
         _syncingRange = false;
-        FilterBuyer.SelectedItem = null;
+        FilterBuyer.SelectedItem = AllBuyersRow;   // the row that means "no buyer filter", not blank
         FilterGrade.SelectedItem = null;
         DrillSearch.Clear();
         LoadDashboard_Click(sender, e);
@@ -6025,24 +6110,17 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private static Dictionary<string, string> ReportGradeLabels => GradeNames.Marks;
 
 
-    /// <summary>
-    /// The row order of the printed sheet, which is NOT the catalogue's.
-    ///
-    /// The catalogue sorts by sort_order and opens NO 1, NO 1 BB, NO 2, NO 2 BB, NO II...; the
-    /// client's page runs 1BB, #, EX1, 2, DX1, 3-7, TOP co, color, OW, LC 1, LC 2, GH, LB 1, LB 2.
-    /// Somebody reading the screen against the paper has to find the same grade on the same line,
-    /// so the paper wins here.
-    ///
-    /// Grades the sheet does not print -- NO 1, NO 2 BB, LC 3, +14, EXTRA -- follow underneath in
-    /// catalogue order rather than being dropped. Hiding a grade that holds stock because one
-    /// report never listed it is how carats go missing from a stock sheet; "Hide grades with no
-    /// stock" is there for anyone who wants the shorter page.
-    /// </summary>
-    private static readonly string[] ReportGradeOrder =
-    [
-        "NO 1 BB", "NO II", "EX 1", "NO 2", "NO DX", "NO 3", "NO 4", "NO 5", "NO 6", "NO 7",
-        "TOP-COL", "COL", "OW", "LC 1", "LC 2", "GH", "LB 1", "LB 2",
-    ];
+    // The report's row order USED TO BE A LIST HERE, eighteen codes hardcoded in the order the
+    // client's paper prints them, because the catalogue's sort_order was not that order -- it opened
+    // NO 1, NO 1 BB, NO 2, NO 2 BB, NO II, and somebody reading the screen against the paper could
+    // not find the same grade on the same line.
+    //
+    // set_grade_order.sql made sort_order the office's own order, on both databases, so the
+    // catalogue IS the paper now and a second copy of it here could only drift from it -- as it
+    // had: the list never learned PREMIUM, 1 MB, FL or MIX, so those four sat at the bottom of the
+    // report while the Stock page had them at the top.
+    //
+    // Ordered by the catalogue instead. See DrawStockReport.
 
     /// Rejection movements, read once per Stock load and filtered on screen with the same
     /// predicate as the position rows, so the card and the list always describe the same set.
@@ -6642,11 +6720,18 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         var grades = Catalogue.Grades.Select(g => g.Code)
             .Concat(_reportRows.Where(r => r.LedgerCt != 0).Select(r => r.GradeCode))
             .Distinct(StringComparer.Ordinal)
-            .OrderBy(code =>
-            {
-                int i = Array.IndexOf(ReportGradeOrder, code);
-                return i >= 0 ? i : int.MaxValue;
-            })
+            // THE CATALOGUE'S OWN ORDER, which since set_grade_order.sql is the order the office
+            // reads its printed sheet in -- so this page and the Stock page and every picker put the
+            // grades in the same sequence, from one column in one table.
+            //
+            // A grade the catalogue does not know follows at the end, alphabetically. That is not a
+            // hypothetical: the Concat above deliberately keeps grades that hold stock but have been
+            // deactivated, and an inactive grade is not in Catalogue.Grades. A picker may hide one.
+            // A stock report may not -- carats do not stop existing because somebody switched a
+            // grade off.
+            .OrderBy(code => Catalogue.Grades.FirstOrDefault(g => g.Code == code)?.SortOrder
+                             ?? int.MaxValue)
+            .ThenBy(code => code, StringComparer.Ordinal)
             .ToList();
 
         // LedgerCt, not BalanceCt. This sheet is a ledger document: TOTAL - SALES = ON HAND, and
@@ -7042,7 +7127,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private async void SaveSetting_Click(object sender, RoutedEventArgs e)
     {
         var dirty = _settings.Where(x => x.IsDirty).ToList();
-        if (dirty.Count == 0) { Say("Nothing has changed"); return; }
+        if (dirty.Count == 0) { Refuse("Nothing has changed — edit a figure first"); return; }
 
         // Checked before anything is written. The box is plain text and every value used to go
         // through as typed, so "abc" could land in carat_precision — a setting every screen reads
@@ -7748,7 +7833,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                         + "about it needs redoing.",
                 ],
                 note: "Nothing was written. The stock position is exactly as it was.");
-            Say("Stock import cancelled — migration 0027 has not been applied");
+            Say("Stock import cancelled — migration 0027 has not been applied", popup: false);
             return;
         }
 
@@ -8595,7 +8680,21 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 break;
             case "Invoices": LoadInvoices_Click(this, e); break;
             case "Receivables": LoadReceivables_Click(this, e); break;
-            case "Stock": LoadStock_Click(this, e); break;
+            // THE SEARCH BOX, not whatever happens to be first in the tab order.
+            //
+            // Left alone, WPF gives the tab's focus to its first focusable control, which on this
+            // page is the GRADE filter -- and that combo is editable (PickerSearch), so the page
+            // opened with an accent ring and a caret sitting in it, on a screen nobody had touched.
+            // It reads as a field waiting to be filled in.
+            //
+            // Search is where a caret belongs on a page whose job is finding a bucket, and it is
+            // the same box Ctrl+F would take you to. At Input priority because the tab's own focus
+            // pass lands after this handler returns and would otherwise win.
+            case "Stock":
+                LoadStock_Click(this, e);
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input,
+                    new Action(() => StockSearch?.Focus()));
+                break;
             case "Stock report": _ = LoadStockReportAsync(); break;
             // Was missing, and nobody noticed while the page carried a Refresh of its own. It does
             // not any more, so this is the only way its counters are reloaded.
@@ -8674,41 +8773,24 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         Grid.CurrentCell = new DataGridCellInfo(bad, Grid.Columns[column]);
         Grid.Focus();
 
-        var row = Grid.ItemContainerGenerator.ContainerFromItem(bad) as DataGridRow;
-        var cells = VisualTree.FindChild<System.Windows.Controls.Primitives.DataGridCellsPresenter>(row);
-        if (cells?.ItemContainerGenerator.ContainerFromIndex(column) is DataGridCell cell)
-        {
-            FieldError.Show(cell, error);
-            _lineErrorCell = cell;
-        }
-        else
-            Say(error);
+        // THE CARET, NOT THE SENTENCE. The message itself goes in the dialog Complete raises, on
+        // the desk's instruction, and this takes the keyboard to the cell it is about so the box to
+        // fix is already under the caret when that dialog is dismissed.
+        //
+        // It used to write the sentence under the cell as well. There is nowhere for it to go: a
+        // cell's bottom edge is the next row's top, so the message landed across the row below --
+        // "Line 2: Grade is required" painted over the line-3 picker. Growing the row to make room
+        // opened a band of empty space ABOVE the field instead, because a grown row centres its
+        // cell. Two placements, two new faults; the dialog has room and needs no space made for it.
+        //
+        // Nothing is lost: the row still colours itself and carries the text on its tooltip, and
+        // the dialog names every problem rather than only the first.
     }
 
-    /// The cell a line message is pinned to, while it is up.
-    private DataGridCell? _lineErrorCell;
-
-    /// <summary>
-    /// Takes the line message down as soon as the grid moves on.
-    ///
-    /// Every other field clears its message the moment the user acts on it -- a TextBox on
-    /// TextChanged, a picker on SelectionChanged (see FieldError.Show). A DataGridCell is neither,
-    /// so a line message had nothing to clear it and stayed on screen. That alone would be untidy;
-    /// what made it a bug is that a DataGrid RECYCLES its cell containers, and the adorner belongs
-    /// to the container, not to the row. Fix the line and press Enter and the container the message
-    /// was written on is re-bound to the blank line that Enter just added -- so the new line came up
-    /// wearing the old line's "... is required", drawn over the cell being typed into.
-    ///
-    /// Moving the current cell is the grid's equivalent of typing in a box, and it covers the case
-    /// above exactly: AddLine sets CurrentCell to the new row, which clears the message before that
-    /// row is ever drawn.
-    /// </summary>
-    private void Grid_CurrentCellChanged(object? sender, EventArgs e)
-    {
-        if (_lineErrorCell is null) return;
-        FieldError.Clear(_lineErrorCell);
-        _lineErrorCell = null;
-    }
+    // Grid_CurrentCellChanged and _lineErrorCell lived here. Their whole job was taking a line
+    // message down off a cell before the DataGrid recycled that container onto another row --
+    // necessary while line problems were adorned onto cells, and nothing at all now they go in the
+    // dialog. A handler that can only ever return on its first line is worse than no handler.
 
     /// <summary>
     /// A validation message shown under the field it is about, with the caret sent there.
@@ -8803,9 +8885,54 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (ok) { _statusTimer.Interval = ConfirmationLinger; _statusTimer.Start(); }
         else if (!Friendly.Translates(message)) { _statusTimer.Interval = PromptLinger; _statusTimer.Start(); }
 
-        // AND IN A BOX, on request. See the popup parameter above for the two cases that opt out.
+        // AND IN A BOX, on request. See the popup parameter above for the cases that opt out.
         // Last, so the bar is already written when the modal goes up and is still there behind it.
+        //
+        // CONFIRMATIONS ONLY, deliberately. Making every refusal modal from here was tried and is
+        // the wrong place for it: Say is the sink for EVERY message in the app, most of its callers
+        // are the catch block of an async void handler, and it is called from background threads --
+        // so a modal here blocks a reload nobody started and can deadlock a probe outright, which
+        // is exactly what it did. A refused BUTTON PRESS is a different thing, and Refuse below is
+        // what says it in a box.
         if (ok && popup) ShowDone(friendly);
+    }
+
+    /// <summary>
+    /// A refused press: the bar AND a box, because the bar alone reads as a button that did
+    /// nothing.
+    ///
+    /// The status line sits at the very bottom of a 900px window, a long way from whatever was just
+    /// clicked -- "Nothing to print, add a line first" was answering a press nobody could see it
+    /// answering. This is for the refusals a person caused by pressing something, and only those:
+    /// Say stays the quiet sink for everything else, including the background failures that must
+    /// not interrupt.
+    /// </summary>
+    private void Refuse(string message)
+    {
+        Say(message, popup: false);
+        ShowRefused(message);
+    }
+
+    /// <summary>
+    /// A refused press, in a box. ShowDone's opposite number, and deliberately the same shape: the
+    /// first line is the headline, the rest are bullets under "Also".
+    /// </summary>
+    private void ShowRefused(string message)
+    {
+        var lines = message.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                           .Select(l => l.Trim())
+                           .Where(l => l.Length > 0)
+                           .ToList();
+        if (lines.Count == 0) return;
+
+        AppDialog.Refused(this,
+            title: "Not yet",
+            headline: lines[0],
+            subhead: null,
+            facts: [],
+            listTitle: lines.Count > 1 ? "Also" : null,
+            bullets: lines.Count > 1 ? lines.Skip(1) : null,
+            note: null);
     }
 
     /// <summary>

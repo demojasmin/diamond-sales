@@ -19,9 +19,17 @@
 -- in now. A grade the office did not mention is not a grade to hide at the
 -- bottom in a random spot.
 --
--- IT REFUSES ON A CODE IT CANNOT FIND rather than skipping it quietly. A typo
--- here would otherwise leave one grade sitting at its old number with no sign
--- anything went wrong.
+-- A CODE THE CATALOGUE DOES NOT HAVE IS NAMED AND SKIPPED, not silently passed
+-- over and not refused. It used to refuse, which was right while there was one
+-- catalogue: a typo would otherwise leave a grade at its old number with nothing
+-- to say so. There are two now, and they differ -- Priya carries PREMIUM and Demo
+-- does not -- so one list has to run against both, and refusing meant the desk
+-- could not order Demo at all.
+--
+-- The typo case is still caught, from the other end: if NOTHING in the list
+-- matches, that is a list pointed at the wrong catalogue and it refuses. And
+-- every skipped code is printed, so "PREMIUM is not on Demo" is something you
+-- read rather than something you deduce from the order looking wrong.
 -- ---------------------------------------------------------------------------
 
 begin;
@@ -71,19 +79,34 @@ insert into wanted (code, ord) values
     ('MIX',     22);   -- MIX
 
 
--- ── nothing may be listed that is not there ────────────────────────────────
+-- ── what this catalogue has, and what it does not ──────────────────────────
 do $$
-declare missing text;
+declare
+    missing text;
+    v_found integer;
 begin
+    select count(*) into v_found
+      from wanted w
+     where exists (select 1 from public.grade g where g.code = w.code);
+
+    -- Not one of 22 matched. That is not a catalogue missing a grade, it is a
+    -- list pointed at the wrong database -- or codes typed as marks, which is
+    -- the mistake this list invites. Refuse before writing anything.
+    if v_found = 0 then
+        raise exception
+            'None of the % listed codes is in this catalogue. Nothing changed -- this list is for a different database, or the codes have been written as marks ("#" for "NO II").',
+            (select count(*) from wanted);
+    end if;
+
     select string_agg(w.code, ', ' order by w.ord) into missing
       from wanted w
      where not exists (select 1 from public.grade g where g.code = w.code);
 
     if missing is not null then
-        raise exception
-            'These codes are not in the catalogue: %. Nothing changed -- check the spelling against the preview query.',
-            missing;
+        raise notice 'NOT IN THIS CATALOGUE, so skipped: %. The rest are ordered as listed.', missing;
     end if;
+
+    raise notice '% of % listed grades found and placed.', v_found, (select count(*) from wanted);
 end $$;
 
 

@@ -747,11 +747,18 @@ public static class PdfStockFile
     /// "LB 2" — so the spacing cannot be used to tell a one-word label from a two-word one, and
     /// both have to key the same. The spaced form is tried first so "LC 1" and "LC 2" stay distinct
     /// grades rather than collapsing towards each other.
+    ///
+    /// Then the grade key, which is public.grade_key's rule (0053) and catches what taking the
+    /// spaces out cannot: punctuation, and case. These sheets print the app's own marks — "DX1",
+    /// "GH VS", "TOP co" — and a mark that resolved to nothing was offered as a grade to CREATE,
+    /// which is how a position comes to be split across two rows that are the same goods.
     /// </summary>
     private static string? GradeCode(string label, IReadOnlyDictionary<string, string> map)
     {
         if (map.TryGetValue(label, out string? direct)) return direct;
-        return map.TryGetValue(label.Replace(" ", ""), out string? tight) ? tight : null;
+        if (map.TryGetValue(label.Replace(" ", ""), out string? tight)) return tight;
+        return StockFileImport.GradeKey(label) is { } key && map.TryGetValue(key, out string? byKey)
+            ? byKey : null;
     }
 
     /// <summary>

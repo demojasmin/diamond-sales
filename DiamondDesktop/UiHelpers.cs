@@ -1100,6 +1100,11 @@ public static class FieldError
     /// </summary>
     private static void Reserve(UIElement target, FieldErrorAdorner adorner)
     {
+        // NEVER A GRID CELL. There is no room under one -- the cell's bottom edge IS the next row's
+        // top -- and growing the row to make some was tried and produced a visible band of empty
+        // space above the field, because a grown row centres its cell in the new height. The desk
+        // asked for the gap gone and the message in the dialog instead, which is where line
+        // problems now go: see ShowLineError.
         if (target is not FrameworkElement field || target is DataGridCell) return;
         if (InFixedHeightRow(field)) return;
 
@@ -1131,7 +1136,6 @@ public static class FieldError
 
         if (target is FrameworkElement field && OriginalMargin.Remove(field, out var margin))
             field.Margin = margin;
-
     }
 
 
