@@ -203,7 +203,14 @@
                          filled background, which is to say not drawn at all — the box looked open
                          at the bottom while its top, sitting on a whole pixel, was crisp.
                          Rounding the layout puts the whole box on device pixels, so both edges are
-                         one solid line at any scaling. -->
+                         one solid line at any scaling.
+
+                         NOT SUFFICIENT ON ITS OWN, which is why GradeGrid now sets it too. Layout
+                         rounding places an element on whole device pixels WITHIN ITS PARENT — so a
+                         box rounded inside a row that itself begins on a half pixel is still half a
+                         pixel out, and the bottom edge still falls between two rows of pixels. The
+                         grid rounds the rows, this rounds the box in them, and the pair of them is
+                         what makes the border solid on every row rather than most of them. -->
                     <Border x:Name="box" Height="32" Margin="6,4"
                             VerticalAlignment="Center"
                             CornerRadius="{StaticResource RadiusControl}"

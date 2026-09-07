@@ -82,6 +82,10 @@
   <Style x:Key="GradePicker" TargetType="ComboBox" BasedOn="{StaticResource AppComboBox}">
     <Setter Property="Height" Value="34"/>
     <Setter Property="ui:PickerSearch.On" Value="True"/>
+    <!-- Set on the STYLE, so all eleven grade pickers say the same word without eleven edits. A
+         picker that wants a different one overrides it in place; the filters do, because "All
+         grades" is a real choice there and "Grade" would read as a missing one. -->
+    <Setter Property="ui:FieldHint.Text" Value="Grade"/>
     <Setter Property="ItemTemplate" Value="{StaticResource GradeNameTemplate}"/>
     <Setter Property="ItemContainerStyle" Value="{StaticResource GradeItemContainer}"/>
   </Style>
@@ -89,6 +93,7 @@
   <Style x:Key="SizePicker" TargetType="ComboBox" BasedOn="{StaticResource AppComboBox}">
     <Setter Property="Height" Value="34"/>
     <Setter Property="ui:PickerSearch.On" Value="True"/>
+    <Setter Property="ui:FieldHint.Text" Value="Size"/>
     <Setter Property="ItemTemplate" Value="{StaticResource SizeCodeTemplate}"/>
     <Setter Property="ItemContainerStyle" Value="{StaticResource SizeItemContainer}"/>
   </Style>

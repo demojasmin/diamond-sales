@@ -559,6 +559,75 @@ Check("SALES-001 NO 1 offers four sizes",
             DiamondDesktop.StockFileImport.SizeKey("'" + label) ?? "unparsed");
 }
 
+// ── A grade the file names and the catalogue already has under another spelling ─────────────
+//
+// The same argument as SIZEKEY above, one column to the left. public.grade_key (0053) is what
+// makes add_grade hand back the existing row rather than create a twin, and a twinned GRADE is
+// worse than a twinned sieve: the stock position splits across two rows that are the same goods
+// and every picker shows the name twice with no way to tell them apart.
+{
+    string? K(string s) => DiamondDesktop.StockFileImport.GradeKey(s);
+
+    Check("GRADEKEY · case is how a name is written, not what it names",
+        K("Dx") == K("DX") && K("dx") == K("DX") && K("dX1") == K("DX1"), $"{K("Dx")} {K("DX")}");
+
+    Check("GRADEKEY · so are spaces and punctuation",
+        K("no dx") == K("NO-DX") && K("NoDx") == K("NODX") && K("N O 1") == K("NO1"),
+        $"{K("no dx")} {K("NO-DX")}");
+
+    // Deliberately NOT clever. A trailing digit is the whole difference between two real grades,
+    // and these sheets name grades "2", "3" and "7" outright.
+    Check("GRADEKEY · a trailing digit still tells two grades apart",
+        K("NO 1") != K("NO 2") && K("LC 1") != K("LC 2") && K("1MB") != K("-2 MB"));
+
+    Check("GRADEKEY · a punctuation-only mark keys to nothing, not to \"\"",
+        K("#") is null && K("  ") is null && K("") is null);
+
+    // The catalogue side. Exactly the seed's codes and aliases, plus migration 0053's marks —
+    // and this is the set the client's own printed sheet writes.
+    var live = DiamondDesktop.SaleFileImport.AliasMap(
+        [("NO 1", "NO1;NO 1;1"), ("NO 1 BB", "1BB;1 BB;NO1BB;NO 1BB"), ("NO 2", "NO2;2;NO-2"),
+         ("NO 2 BB", "2BB;2 BB;NO2BB"), ("NO II", "II;NOII;NO2SPOT"),
+         ("NO DX", "DX;NODX;DELUXE;NO-DX;DX1"), ("EX 1", "EX1;EXTRA 1;E1;Ex1"),
+         ("NO 3", "NO3;3;NO-3"), ("NO 4", "NO4;4;NO-4"), ("NO 5", "NO5;5;NO-5"),
+         ("NO 6", "NO6;6;NO-6"), ("NO 7", "NO7;7;NO-7"),
+         ("TOP-COL", "TOPCOL;TOP COL;TC;T COLOR"), ("COL", "COLOUR;COLOR;C"),
+         ("GH", "GHOST;GH-VVS;GHVVS"), ("LC 1", "LC1;L C 1;LC-1"), ("LC 2", "LC2;L C 2;LC-2"),
+         ("+14", "14;PLUS14;P14"), ("1MB", "1 MB;NO1MB;NO 1 MB"), ("-2 MB", ",-2 MB;-2MB;,-2MB")]);
+
+    // THE REPORTED FAULT. Every one of these is NO DX. Any that resolved to nothing was offered
+    // as a grade to create, and saying yes is how the stock came to be split.
+    foreach (string spelling in new[] { "DX", "Dx", "dx", "DX1", "Dx1", "dx1", "dX1",
+                                        "NO DX", "no-dx", "NODX", "no dx" })
+    {
+        bool resolved = DiamondDesktop.SaleFileImport.ResolveGrade(live, spelling, out string got);
+        Check($"GRADEMAP · \"{spelling}\" is NO DX, not a new grade",
+            resolved && got == "NO DX", resolved ? got : "WOULD BE OFFERED AS NEW");
+    }
+
+    // The marks the app PRINTS. GradeNames.Marks is what the screen shows, so it is what somebody
+    // reading the screen types onto a sheet — and the importers never knew about that map.
+    foreach (var (code, mark) in DiamondDesktop.Data.GradeNames.Marks)
+    {
+        bool resolved = DiamondDesktop.SaleFileImport.ResolveGrade(live, mark, out string got);
+        Check($"MARK · the screen's \"{mark}\" resolves to {code}",
+            resolved && got == code, resolved ? got : "WOULD BE OFFERED AS NEW");
+    }
+
+    // And the half that keeps this honest: folding must not reach a grade that is genuinely absent,
+    // or the offer to add one would never appear and real carats would land on the wrong row.
+    foreach (string absent in new[] { "QQ", "NO 9", "ZZ1", "LC 3" })
+        Check($"GRADEMAP · \"{absent}\" is still refused",
+            !DiamondDesktop.SaleFileImport.ResolveGrade(live, absent, out _));
+
+    // No two catalogue grades may share a key. One that did would make add_grade's fallback pick
+    // between them, and the pickers would show the same name twice.
+    Check("GRADEMAP · no two grades in the catalogue share a key",
+        live.Values.Distinct().Select(K).Distinct().Count() == live.Values.Distinct().Count(),
+        string.Join(",", live.Values.Distinct().GroupBy(K).Where(g => g.Count() > 1)
+                             .Select(g => string.Join("/", g))));
+}
+
 // The offer itself: what gets shown, and — the costly half — what does NOT get shown twice.
 {
     var found = new List<DiamondDesktop.UnknownSize>();

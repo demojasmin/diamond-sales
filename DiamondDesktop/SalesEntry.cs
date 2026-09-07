@@ -1264,6 +1264,31 @@ public sealed class InvoiceEntry : Notifier
              .ToList();
 
     /// <summary>
+    /// The same lines gathered for the APPROVAL NOTE: one note per buyer AND broker, and nothing
+    /// else in the key.
+    ///
+    /// DELIBERATELY NOT DealKey, which is what GroupDeals uses. That key is every column
+    /// sales_invoice stores -- date, buyer, broker, broker %, terms, doc type -- because two lines
+    /// differing in any of them cannot share an invoice. A note is not an invoice. It is the sheet
+    /// the goods travel on, and the question it answers is "who is this parcel going to, through
+    /// whom", so two lines for KIRAN EXPORTS through JITESH SHAH belong on one sheet even when one
+    /// is 30-day and the other 60-day.
+    ///
+    /// Under DealKey they were two sheets, and the desk was handed two pieces of paper for one
+    /// delivery to one buyer. This is the fix for that, and it changes ONLY the printed note --
+    /// GroupDeals is untouched, so the invoices written on Confirm still split exactly as before.
+    ///
+    /// WHAT THAT COSTS, stated rather than discovered: a merged note prints ONE set of header
+    /// terms, taken from its first line. Where the merged deals disagree on terms, broker % or doc
+    /// type, the sheet shows the first line's. The rows and their money are every line's own and
+    /// are not affected.
+    /// </summary>
+    public static IReadOnlyList<IReadOnlyList<SaleLine>> GroupForApproval(IEnumerable<SaleLine> lines) =>
+        lines.GroupBy(l => (Buyer: l.DealBuyer?.Id, Broker: l.DealBroker?.Id))
+             .Select(g => (IReadOnlyList<SaleLine>)g.ToList())
+             .ToList();
+
+    /// <summary>
     /// THE TICKED LINES: what Remove, Print memo and Confirm sale all act on.
     ///
     /// A tick used to be selection for Remove alone, and the other two acted on the whole entry.

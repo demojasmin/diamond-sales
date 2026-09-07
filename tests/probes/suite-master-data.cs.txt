@@ -1,0 +1,166 @@
+// The grades grid on Master data: does every ALIASES box get its whole border?
+//
+// WHY THIS SUITE EXISTS. The bug it guards took four attempts to find, because every one of the
+// first three was reasoned from source instead of measured. The ALIASES cells are bordered boxes,
+// and one of them was rendering with no bottom edge -- which reads as a broken input, not as a row
+// that is half on screen.
+//
+// The cause was two halves, and fixing either alone changed nothing:
+//
+//   SnapGradeRows   sizes the grid to a WHOLE number of rows, so the bottom edge lands between rows
+//                   rather than through one. It was already doing this correctly.
+//   ClipToBounds    stops the row AFTER those being painted at all. A virtualising DataGrid realises
+//                   one row more than fits, and nothing in this chain clipped it -- not the grid,
+//                   not the area, not the ScrollContentPresenter. That extra row was drawn past the
+//                   grid into the card and cut by whatever edge it met.
+//
+// So the check is geometric and covers both: every box is either fully inside the grid or fully
+// outside it. A box STRADDLING the bottom edge is the bug, and is the only thing that fails here.
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{
+    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}");
+    if (!ok) fail++;
+}
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml", "Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    Catalogue.Grades.Clear(); Catalogue.AllSizes.Clear();
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1400, Height = 868 };
+    win.Show();
+
+    var tab = (TabControl)win.FindName("Tabs")!;
+    foreach (var item in tab.Items.OfType<TabItem>())
+        if (item.Header as string == "Master data") { item.IsSelected = true; break; }
+
+    // Timer-driven, not Thread.Sleep: sleeping blocks the dispatcher, and the layout this measures
+    // happens ON it. Several passes, because MaxHeight is written from a SizeChanged handler and
+    // each write raises another pass.
+    void Drain(int n = 10)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            var f = new System.Windows.Threading.DispatcherFrame();
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+                System.Windows.Threading.DispatcherPriority.ContextIdle, new Action(() => f.Continue = false));
+            System.Windows.Threading.Dispatcher.PushFrame(f);
+        }
+    }
+    Drain();
+
+    static List<T> All<T>(DependencyObject? r, List<T>? a = null) where T : DependencyObject
+    {
+        a ??= [];
+        if (r is null) return a;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(r); i++)
+        { var c = VisualTreeHelper.GetChild(r, i); if (c is T h) a.Add(h); All(c, a); }
+        return a;
+    }
+
+    var grid = (DataGrid)win.FindName("GradeGrid")!;
+
+    Check("CLIP - the grades grid clips to its own bounds",
+          grid.ClipToBounds,
+          "without it the row after the last one that fits is painted into the card");
+
+    // MORE ROWS THAN CAN FIT, deliberately: the fault only exists when the grid has to stop
+    // somewhere. Twelve against a viewport of three.
+    //
+    // RE-SEEDED INSIDE THE LOOP BELOW, not once here. The page reloads itself on a timer and the
+    // reload clears these collections when its read fails, which offscreen it always does -- so a
+    // single seed left the grid empty by the fourth height and the check had nothing to measure.
+    List<Grade> Twelve() => Enumerable.Range(1, 12).Select(i => new Grade
+        { GradeId = i, Code = $"G{i}", DisplayName = $"Grade {i}",
+          Aliases = $"A{i};B{i}", SortOrder = i, Active = true }).ToList();
+
+    // WARM-UP, thrown away. The page's own load clears the grid after the tab is shown, so the
+    // first seed of a run is the one that races it -- and a height measured against no rows says
+    // nothing. Seeding once here means every measured height below starts from a laid-out grid.
+    grid.ItemsSource = Twelve();
+    Drain();
+    Drain();
+
+    int measured = 0;
+
+    // Several heights, because the leftover strip under the last whole row is what changes with the
+    // window and it is the strip that used to hold half a row.
+    foreach (double h in new[] { 826.0, 861.0, 868.0, 900.0, 947.0 })
+    {
+        win.Height = h;
+        grid.ItemsSource = Twelve();
+        // TWICE. The first round realises the rows; MaxHeight is only written once there is a row
+        // to measure, and writing it starts another layout pass of its own.
+        Drain();
+        Drain();
+
+        var rows = All<DataGridRow>(grid);
+        double bottom = grid.ActualHeight;
+        var straddling = new List<string>();
+        int inside = 0;
+
+        foreach (var r in rows)
+        {
+            var cells = All<DataGridCell>(r);
+            if (cells.Count <= 3) continue;                       // ALIASES is the fourth column
+            var box = All<Border>(cells[3]).FirstOrDefault(b => Math.Abs(b.ActualHeight - 32) < 0.6);
+            if (box is null) continue;
+
+            double top = box.TransformToAncestor(grid).Transform(new Point(0, 0)).Y;
+            double foot = top + box.ActualHeight;
+
+            if (foot <= bottom + 0.01) inside++;
+            else if (top < bottom - 0.01)                          // starts inside, ends outside
+                straddling.Add($"row {rows.IndexOf(r)} {top:F0}..{foot:F0} vs grid {bottom:F0}");
+        }
+
+        Check($"BORDER - at {h:F0}px every ALIASES box is wholly in or wholly out",
+              straddling.Count == 0,
+              straddling.Count == 0 ? $"{inside} whole box(es), none cut" : string.Join("; ", straddling));
+
+        // ONLY WHEN ROWS WERE REALISED. The page reloads itself and the reload empties the grid
+        // when its read fails, which offscreen it always does -- so a height can land on a grid
+        // holding nothing through no fault of the layout. An empty grid IS header-height and that
+        // is correct; asserting on it measures the race, not the app. That at least one height saw
+        // real rows is checked once, after the sweep, where it means something.
+        if (rows.Count > 0)
+        {
+            measured++;
+            Check($"ROWS - and the grid is a whole number of rows tall at {h:F0}px",
+                  Math.Abs((grid.ActualHeight - 40) % 42) < 0.51,
+                  $"grid {grid.ActualHeight:F0} = header 40 + {(grid.ActualHeight - 40) / 42:F2} rows");
+        }
+    }
+
+    Check("SWEEP - the grid held real rows for at least one of the five heights",
+          measured > 0, $"{measured} of 5 heights measured rows");
+
+    win.Close();
+    app.Shutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "All checks passed." : $"{fail} FAILED");
+Environment.Exit(fail);

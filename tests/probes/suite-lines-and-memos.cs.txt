@@ -176,8 +176,13 @@ var t = new Thread(() =>
     EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
         new RoutedEventHandler((o, _) =>
         {
-            if (o is not Window w || ReferenceEquals(w, win) || (w.Title ?? "") != "Done") return;
-            doneBoxes++;
+            // "Not yet" as well as "Done": a REFUSED press says so in a box now, and this suite
+            // presses things that are refused on purpose. Matching only confirmations left those
+            // boxes unanswered and the run blocked on ShowDialog.
+            if (o is not Window w || ReferenceEquals(w, win)) return;
+            string title = w.Title ?? "";
+            if (title != "Done" && title != "Not yet") return;
+            if (title == "Done") doneBoxes++;
             w.Close();
         }));
 

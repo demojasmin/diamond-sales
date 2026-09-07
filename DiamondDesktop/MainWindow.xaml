@@ -472,28 +472,36 @@
                               AutomationProperties.HelpText="Shows the lines dealt on this date. Clear to show every date."/>
                 </StackPanel>
 
-                <!-- PLAIN COMBO BOXES, exactly as the Invoices page's buyer filter is.
-                     PickerSearch.On was set on both of these and did nothing: it refuses to wrap a
-                     control whose ItemsSource is data-bound, and these are bound to Buyers and
-                     Brokers. What it DID do was make the box editable, so a name typed into it —
-                     "raju" — was accepted, matched nothing, and was silently replaced by whatever
-                     was selected before the moment focus left. -->
+                <!-- SEARCHABLE, and their lists are ASSIGNED FROM CODE for it.
+                     PickerSearch.On was once set on both of these over a {Binding Buyers} and did
+                     nothing useful: it refuses to wrap a bound ItemsSource, because assigning one
+                     writes a local value, which kills the binding for good and strands the view over
+                     an entry that ResetEntry has since replaced. What it DID do was make it editable, so
+                     "raju" was accepted, matched nothing, and was silently put back to whatever was
+                     selected before, the moment focus left.
+                     The fix is the one the Deal Details pickers already use: no binding, and
+                     PointAt() from DataContextChanged so a new entry re-points them. Same reason,
+                     same shape, one helper. -->
                 <StackPanel Grid.Column="1" Margin="0,0,8,0">
                   <TextBlock Text="BUYER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
                   <ComboBox x:Name="LineFilterBuyer" Width="160" Height="34"
-                            ItemsSource="{Binding Buyers}" DisplayMemberPath="Name"
+                            DisplayMemberPath="Name" ui:FieldHint.Text="Select buyer"
                             SelectedItem="{Binding FilterBuyer, UpdateSourceTrigger=PropertyChanged}"
+                            ui:PickerSearch.On="True"
                             PreviewMouseWheel="NoWheelChange"
-                            AutomationProperties.Name="Filter lines by buyer"/>
+                            AutomationProperties.Name="Filter lines by buyer"
+                            AutomationProperties.HelpText="Type to search"/>
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Margin="0,0,8,0">
                   <TextBlock Text="BROKER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
                   <ComboBox x:Name="LineFilterBroker" Width="150" Height="34"
-                            ItemsSource="{Binding Brokers}" DisplayMemberPath="Name"
+                            DisplayMemberPath="Name" ui:FieldHint.Text="Select broker"
                             SelectedItem="{Binding FilterBroker, UpdateSourceTrigger=PropertyChanged}"
+                            ui:PickerSearch.On="True"
                             PreviewMouseWheel="NoWheelChange"
-                            AutomationProperties.Name="Filter lines by broker"/>
+                            AutomationProperties.Name="Filter lines by broker"
+                            AutomationProperties.HelpText="Type to search"/>
                 </StackPanel>
 
                 <StackPanel Grid.Column="3">
@@ -878,7 +886,7 @@
                     Visibility="{Binding Source={x:Static local:Catalogue.Grades}, Path=Count, Converter={StaticResource Empty}, ConverterParameter=Invert}"
                     CanUserAddRows="False" CanUserDeleteRows="False" SelectionUnit="Cell"
                     CanUserSortColumns="False"
-                    PreviewKeyDown="Grid_KeyDown" CurrentCellChanged="Grid_CurrentCellChanged"
+                    PreviewKeyDown="Grid_KeyDown"
                     ColumnHeaderHeight="40"
                     HeadersVisibility="Column" GridLinesVisibility="None"
                     ScrollViewer.HorizontalScrollBarVisibility="Auto"
@@ -1543,8 +1551,13 @@
               <StackPanel Grid.Column="1" Margin="0,0,8,0">
                 <TextBlock Text="BUYER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
                 <!-- Built from the invoices that came back, so it can only offer buyers present. -->
+                <!-- Already filled from code (ApplyInvoiceFilter rebuilds it), so PickerSearch can
+                     wrap it: the items are strings here, "All buyers" first, and searching them
+                     needs no path at all. -->
                 <ComboBox x:Name="InvoiceBuyer" Height="34" SelectionChanged="InvoiceFilter_Changed"
-                          AutomationProperties.Name="Filter by buyer"/>
+                          ui:PickerSearch.On="True"
+                          AutomationProperties.Name="Filter by buyer"
+                          AutomationProperties.HelpText="Type to search"/>
               </StackPanel>
 
               <StackPanel Grid.Column="2" Margin="0,0,8,0">
@@ -1898,7 +1911,9 @@
               <StackPanel Grid.Column="1" Margin="0,0,8,0">
                 <TextBlock Text="BUYER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
                 <ComboBox x:Name="ReceivablesBuyer" Height="34" SelectionChanged="ReceivablesFilter_Changed"
-                          AutomationProperties.Name="Filter by buyer"/>
+                          ui:PickerSearch.On="True"
+                          AutomationProperties.Name="Filter by buyer"
+                          AutomationProperties.HelpText="Type to search"/>
               </StackPanel>
 
               <StackPanel Grid.Column="2" Margin="0,0,8,0">
@@ -2171,14 +2186,14 @@
 
               <StackPanel Grid.Column="0" Margin="0,0,8,0">
                 <TextBlock Text="GRADE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                <ComboBox x:Name="StockGradeFilter" ui:PickerSearch.On="True" Width="150" Height="34"
+                <ComboBox x:Name="StockGradeFilter" ui:PickerSearch.On="True" ui:FieldHint.Text="All grades" Width="150" Height="34"
                           SelectionChanged="StockFilter_Changed"
                           AutomationProperties.Name="Filter by grade"/>
               </StackPanel>
 
               <StackPanel Grid.Column="1" Margin="0,0,8,0">
                 <TextBlock Text="SIZE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                <ComboBox x:Name="StockSizeFilter" ui:PickerSearch.On="True" Width="120" Height="34"
+                <ComboBox x:Name="StockSizeFilter" ui:PickerSearch.On="True" ui:FieldHint.Text="All sizes" Width="120" Height="34"
                           SelectionChanged="StockFilter_Changed"
                           AutomationProperties.Name="Filter by size"/>
               </StackPanel>
@@ -2986,7 +3001,7 @@
                   <StackPanel>
                     <TextBlock Text="Grade-to-grade conversion" Style="{StaticResource DashHeading}"/>
                     <TextBlock Style="{StaticResource DashSubheading}" Margin="0,0,0,12"
-                               Text="&quot;Avelu&quot; · moves carats from one bucket to another. Total carats held do not change · INV-004"/>
+                               Text="Re-grades a parcel: moves carats out of one grade × size bucket and into another. Nothing is bought or sold and the total carats held do not change · INV-004"/>
                     <WrapPanel>
                       <StackPanel Style="{StaticResource OpField}">
                         <TextBlock Text="FROM GRADE" Style="{StaticResource OpLabel}"/>
@@ -3410,7 +3425,18 @@
                        bordered box, so a cut row reads as an input field with no bottom border
                        rather than as a row that is merely half on screen.
                        SnapRows below trims the grid to a whole number of rows. See the handler. -->
+                  <!-- ClipToBounds, and it is the other half of SnapGradeRows.
+                       A virtualising DataGrid realises one row MORE than fits its viewport, and
+                       nothing in this chain clips: not the grid, not the area, not even the
+                       ScrollContentPresenter. Measured at 861px tall the grid ends at y=370 and
+                       the extra row's ALIASES box is laid out at y=375..407 — outside the grid,
+                       painted into the card, and cut by whatever edge it happens to meet. When
+                       that edge falls between the box's top and bottom you get a field with no
+                       bottom border, which is the bug.
+                       SnapGradeRows makes the grid a whole number of rows tall; this stops the
+                       row after them being drawn at all. Neither works without the other. -->
                   <DataGrid x:Name="GradeGrid" BorderThickness="0" VerticalAlignment="Top"
+                            ClipToBounds="True" UseLayoutRounding="True"
                             SizeChanged="GradeGrid_SizeChanged"
                             IsReadOnly="False" CellEditEnding="GradeAlias_Committed"
                             AutomationProperties.Name="Grades">
@@ -3746,8 +3772,12 @@
                 <ColumnDefinition Width="Auto"/>
                 <!-- The search column takes the larger share: its placeholder names four fields
                      and the two dropdowns beside it only have to show a buyer or a grade. -->
-                <ColumnDefinition Width="*" MinWidth="104"/>
-                <ColumnDefinition Width="0.85*" MinWidth="92"/>
+                <!-- 150, not 104: buyer names are the widest thing this bar shows and "ABC EXPORTS"
+                     was being cut to "C EXPORTS". -->
+                <ColumnDefinition Width="*" MinWidth="150"/>
+                <!-- 122, not 92: the hint reads "All grades" and at 92 it was cut to "All gra...". The
+                     widest thing this column ever draws is its own placeholder. -->
+                <ColumnDefinition Width="0.85*" MinWidth="122"/>
                 <ColumnDefinition Width="3.2*" MinWidth="150"/>
                 <ColumnDefinition Width="Auto"/>
               </Grid.ColumnDefinitions>
@@ -3784,15 +3814,20 @@
               </StackPanel>
               <StackPanel Grid.Column="3" Margin="0,0,8,0">
                 <TextBlock Text="BUYER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                <!-- No FieldHint: this one always has "All buyers" SELECTED, so there is never an empty
+                     box for a hint to fill. A placeholder as well would be a second way of saying
+                     the same thing, in grey, that could disagree with the first. -->
                 <ComboBox x:Name="FilterBuyer" Height="34"
                           ItemTemplate="{StaticResource NameTemplate}"
                           ItemContainerStyle="{StaticResource PartyItemContainer}"
                           SelectionChanged="DashFilter_Changed"
-                          AutomationProperties.Name="Filter by buyer"/>
+                          ui:PickerSearch.On="True"
+                          AutomationProperties.Name="Filter by buyer"
+                          AutomationProperties.HelpText="Type to search"/>
               </StackPanel>
               <StackPanel Grid.Column="4" Margin="0,0,8,0">
                 <TextBlock Text="GRADE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                <ComboBox x:Name="FilterGrade" Style="{StaticResource GradePicker}" SelectionChanged="DashFilter_Changed"
+                <ComboBox x:Name="FilterGrade" Style="{StaticResource GradePicker}" ui:FieldHint.Text="All grades" SelectionChanged="DashFilter_Changed"
                           AutomationProperties.Name="Filter by grade"/>
               </StackPanel>
               <StackPanel Grid.Column="5" Margin="0,0,8,0">
