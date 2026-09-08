@@ -1,0 +1,126 @@
+﻿// Two faults in the same box, and the fix for one must not bring back the other.
+//
+//   1. The value was scrolled so its END showed: "ATIONS PVT LTD" for DIAMOND CREATIONS PVT LTD.
+//      Deselect parks the caret at the end, and a FOCUSED TextBox too narrow for its value scrolls
+//      to keep the caret in view. The offset then survives focus leaving.
+//
+//   2. The box was too narrow in the first place: "RAJDEEP GEMS (RA". Every picker had a width
+//      picked by hand, and names are not ours to guess.
+//
+// So: the whole value has to FIT (nothing clipped at either end), and a search that narrows the
+// list must not make the control twitch.
+
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using DiamondDesktop;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    // Real names off Priya Sales, longest last.
+    var buyers = new[] { new Party("B U GEMS"), new Party("ABC EXPORTS"),
+                         new Party("RAJDEEP GEMS (RAJKUMAR)"), new Party("DIAMOND CREATIONS PVT LTD") };
+
+    // Sales entry's buyer filter as it now stands: a floor, a ceiling, no fixed width.
+    var cb = new ComboBox { MinWidth = 160, MaxWidth = 300, Height = 34 };
+    PickerSearch.SetOn(cb, true);
+
+    var win = new Window { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = 20, Top = 20, ShowInTaskbar = false, Width = 500, Height = 120 };
+    // Auto column, which is what the filter bars now use.
+    var host = new StackPanel { HorizontalAlignment = HorizontalAlignment.Left };
+    host.Children.Add(cb);
+    win.Content = host;
+    win.Show();
+    win.Activate();
+
+    void Settle()
+    {
+        var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f);
+    }
+    Settle();
+
+    double before = cb.MinWidth;
+    cb.ItemsSource = buyers;          // assigned from code, as every one of these pickers is
+    Settle();
+
+    var box = (TextBox)cb.Template.FindName("PART_EditableTextBox", cb)!;
+    Console.WriteLine($"   MinWidth {before:N0} -> {cb.MinWidth:N0} px, actual {cb.ActualWidth:N0} px");
+
+    Check("the picker widened itself for the longest name", cb.MinWidth > before,
+          $"{before:N0} -> {cb.MinWidth:N0}");
+    Check("and stayed inside its ceiling", cb.MinWidth <= cb.MaxWidth,
+          $"{cb.MinWidth:N0} <= {cb.MaxWidth:N0}");
+
+    // Focus, open, choose, close -- what the desk does.
+    cb.Focus(); Keyboard.Focus(box); Settle();
+    cb.IsDropDownOpen = true; Settle();
+    cb.SelectedItem = buyers[3];
+    cb.IsDropDownOpen = false; Settle();
+
+    Console.WriteLine($"   text \"{box.Text}\"");
+    Console.WriteLine($"   needs {box.ExtentWidth:N0} px, has {box.ViewportWidth:N0} px, "
+                    + $"scrolled {box.HorizontalOffset:N1} px");
+
+    Check("the whole name is in the box", box.Text == "DIAMOND CREATIONS PVT LTD", box.Text);
+    Check("NOTHING is cut off - the value fits the box",
+          box.ExtentWidth <= box.ViewportWidth + 0.5,
+          $"needs {box.ExtentWidth:N0} px but only {box.ViewportWidth:N0} px shown");
+    Check("and it is not scrolled off the left either", box.HorizontalOffset == 0,
+          $"{box.HorizontalOffset:N1} px");
+    Check("the caret is still at the end, so typing appends",
+          box.SelectionStart == box.Text.Length, $"{box.SelectionStart}");
+
+    // AND A PICKER THAT DID NOT ASK MUST NOT MOVE. PickerSearch.On is set on the GradePicker
+    // STYLE, so it is on every grade picker in the app -- including ones in a star-width column
+    // inside a narrow card, where growing clips the label instead of widening the card. The
+    // Bucket ledger's read "G..." Only a picker with a MaxWidth may size itself.
+    var plain = new ComboBox { Height = 34 };
+    PickerSearch.SetOn(plain, true);
+    host.Children.Add(plain);
+    Settle();
+    double plainMin = plain.MinWidth;
+    plain.ItemsSource = buyers;
+    Settle();
+    Check("a picker with no MaxWidth is left exactly as it was",
+          plain.MinWidth == plainMin, $"MinWidth {plainMin:N0} -> {plain.MinWidth:N0}");
+
+    // A SEARCH MUST NOT RESIZE THE CONTROL. Narrowing to the shortest name would shrink a box
+    // sized to what is visible, and the bar would twitch on every keystroke.
+    double width = cb.ActualWidth;
+    cb.Text = "B U";
+    Settle();
+    Console.WriteLine($"   after typing \"B U\": {cb.ActualWidth:N0} px (was {width:N0})");
+    Check("searching does not shrink the picker", Math.Abs(cb.ActualWidth - width) < 0.5,
+          $"{width:N0} -> {cb.ActualWidth:N0}");
+
+    win.Close();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;
+
+public sealed class Party(string name) { public string Name { get; } = name; }

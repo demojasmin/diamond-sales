@@ -195,6 +195,44 @@ public static class Repo
             .Order(MovementIdColumn, Ordering.Descending));
 
     /// <summary>
+    /// The lines of every imported (MIG-) invoice, so the movements belonging to them can be told
+    /// apart from those of invoices typed in the app.
+    ///
+    /// stock_movement records a sales_line movement by line_id and nothing else, so there is no way
+    /// to know from a movement alone whether the invoice behind it is one the import owns. Only
+    /// these lines are, and only their movements are deleted and rewritten by a re-import.
+    ///
+    /// Filtered server side on the MIG- prefix, which is the same test replace_imported_sales
+    /// itself uses to decide what it may replace.
+    /// </summary>
+    public static async Task<List<VSalesLine>> ImportedSaleLinesAsync() =>
+        await AllPagesAsync(() => Db.Client.From<VSalesLine>()
+            .Filter("invoice_no", Operator.Like, ImportedPrefix + "%")
+            .Order("line_id", Ordering.Ascending));
+
+    /// <summary>
+    /// The movements the PREVIOUS sales import wrote, so a re-import can be judged against the
+    /// shelf it will actually meet.
+    ///
+    /// replace_imported_sales deletes these before it caps anything (0049-0051): the carats come
+    /// back to their buckets and are then taken out again by the new sheet. So the room a
+    /// re-import really has is the current balance PLUS whatever the last import is still holding
+    /// out of that bucket.
+    ///
+    /// Without this a second import of a sheet already imported would be judged against a position
+    /// its own earlier run had already emptied, and every busy bucket would be reported as short by
+    /// roughly what it had just sold. A warning that cries wolf on every re-import is worse than no
+    /// warning, because it teaches the desk to click past it.
+    ///
+    /// Both tags, matching what the function deletes: 'sales_line' for the SALE and REJECTION pair,
+    /// and 'import_edit' for the ADJUST left by correcting an imported invoice (0042).
+    /// </summary>
+    public static async Task<List<VStockMovement>> ImportedSalesMovementsAsync() =>
+        await AllPagesAsync(() => Db.Client.From<VStockMovement>()
+            .Filter("ref_type", Operator.In, new List<object> { "sales_line", "import_edit" })
+            .Order(MovementIdColumn, Ordering.Descending));
+
+    /// <summary>
     /// Every REJECTION movement, filtered in the DATABASE rather than after the fact.
     ///
     /// There is no stored rejection total and no view that offers one -- v_stock_position carries

@@ -1,0 +1,103 @@
+﻿// The three changes: aliases save with no dialog, dashboard labels wrap, audit headers fit.
+using System.IO;
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    static IEnumerable<T> All<T>(DependencyObject? d) where T : DependencyObject
+    {
+        if (d is null) yield break;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+        { var c = VisualTreeHelper.GetChild(d, i); if (c is T h) yield return h;
+          foreach (var x in All<T>(c)) yield return x; }
+    }
+
+    // ── 1 · no dialog is raised by an alias edit ────────────────────────────
+    // Counted the way the tick-scope suite counts them: any Window but the main one loading.
+    int dialogs = 0;
+    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+        new RoutedEventHandler((o, _) => { if (o is Window w && w.Title != "Solitaire Desk — Diamond Sales & Inventory")
+                                           { dialogs++; w.Close(); } }));
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1280, Height = 800 };
+    win.Show();
+    void Settle() { var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f); }
+    for (int i = 0; i < 8; i++) Settle();
+
+    // The source itself is the honest check for "no confirm on clearing": the handler must no
+    // longer reach for AppDialog at all.
+    string src = File.ReadAllText(@"D:\diamond inventory\DiamondDesktop\MainWindow.xaml.cs");
+    int at = src.IndexOf("private async void GradeAliasBox_LostFocus", StringComparison.Ordinal);
+    int end = src.IndexOf("// ── MDM-003", at, StringComparison.Ordinal);
+    string body = src[at..end];
+
+    Check("the alias handler raises no confirmation dialog",
+          !body.Contains("AppDialog.", StringComparison.Ordinal));
+    Check("and its success message is not a popup",
+          body.Contains("popup: false", StringComparison.Ordinal));
+    Check("it still saves through the same repo call",
+          body.Contains("Repo.SetGradeAliasesAsync", StringComparison.Ordinal));
+    Check("and still puts the grid back when the database refuses",
+          body.Contains("LoadMasterAsync", StringComparison.Ordinal));
+
+    // ── 2 · dashboard labels wrap ───────────────────────────────────────────
+    var lbl = (Style)app.Resources["ChartRowLabel"];
+    var setters = lbl.Setters.OfType<Setter>().ToList();
+    Check("the dashboard row label wraps",
+          setters.Any(s => s.Property == TextBlock.TextWrappingProperty
+                           && (TextWrapping)s.Value == TextWrapping.Wrap));
+    Check("and no longer trims to an ellipsis",
+          !setters.Any(s => s.Property == TextBlock.TextTrimmingProperty
+                            && (TextTrimming)s.Value == TextTrimming.CharacterEllipsis));
+
+    // ── 3 · audit headers ───────────────────────────────────────────────────
+    var tabs = (TabControl)win.FindName("Tabs")!;
+    tabs.SelectedIndex = tabs.Items.Cast<TabItem>()
+        .Select((x, i) => (x, i)).First(p => (p.x.Header as string) == "Audit").i;
+    for (int i = 0; i < 6; i++) Settle();
+
+    var grid = (DataGrid)win.FindName("AuditGrid")!;
+    bool allFit = true;
+    foreach (var h in All<DataGridColumnHeader>(grid).Where(x => x.Content is string s && s.Length > 0))
+    {
+        h.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        if (Math.Ceiling(h.DesiredSize.Width) + 2 > (h.Column?.ActualWidth ?? 0)) allFit = false;
+    }
+    Check("every Audit header fits its column", allFit);
+
+    Check("nothing popped up during any of this", dialogs == 0, $"{dialogs} dialog(s)");
+
+    win.Close();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start(); t.Join();
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

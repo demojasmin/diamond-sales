@@ -1258,3 +1258,30 @@ public sealed class DateOnlyConverter : System.Windows.Data.IValueConverter
     public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture) =>
         value is DateTime t ? DateOnly.FromDateTime(t) : System.Windows.Data.Binding.DoNothing;
 }
+
+/// <summary>
+/// A column header, drawn in capitals.
+///
+/// The Stock and Invoices tables write their headers as "GRADE" and "AVAILABLE CT" while the Sales
+/// entry grid writes "Grade" and "Weight ct". Measured, the two are otherwise identical -- 11.5pt
+/// SemiBold Segoe UI Variable Text in the same muted grey -- so the only thing making them look
+/// like two different tables is the capitalisation.
+///
+/// DONE IN THE TEMPLATE, NOT IN THE HEADERS, and that distinction is the whole point. The Header
+/// string is not just a label: ColumnHeaderFor matches on it to put the caret on the cell a
+/// validation message is about, and the entry grid and its Update modal are compared header by
+/// header to prove they still mirror each other. Rewriting the strings would be a change to logic
+/// wearing a change to appearance. This changes what is DRAWN and nothing else, so every one of
+/// those comparisons goes on seeing exactly the text it saw before.
+///
+/// Applied only to headers whose content is a string: the tick column's header is a CheckBox, and
+/// an implicit DataTemplate keyed on string leaves it alone.
+/// </summary>
+public sealed class UpperCaseConverter : System.Windows.Data.IValueConverter
+{
+    public object? Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture) =>
+        value?.ToString()?.ToUpper(culture ?? System.Globalization.CultureInfo.CurrentCulture);
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture) =>
+        System.Windows.Data.Binding.DoNothing;
+}

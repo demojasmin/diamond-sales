@@ -1,0 +1,81 @@
+﻿// Are the Stock and Sales-entry column headers actually drawn differently, and in what?
+// Reads the REALISED headers off both grids rather than reasoning about which style wins.
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    Catalogue.Grades.Clear(); Catalogue.AllSizes.Clear();
+    Catalogue.Grades.Add(new Grade { GradeId = 1, Code = "1BB" });
+    Catalogue.AllSizes.Add(new SizeBucket { SizeId = 1, Code = "-6.5" });
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1420, Height = 900 };
+    win.Show();
+
+    void Settle()
+    {
+        var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f);
+    }
+    static IEnumerable<T> All<T>(DependencyObject? d) where T : DependencyObject
+    {
+        if (d is null) yield break;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+        {
+            var c = VisualTreeHelper.GetChild(d, i);
+            if (c is T hit) yield return hit;
+            foreach (var deep in All<T>(c)) yield return deep;
+        }
+    }
+
+    var tabs = (TabControl)win.FindName("Tabs")!;
+    void Report(string tab, string gridName)
+    {
+        tabs.SelectedIndex = tabs.Items.Cast<TabItem>()
+            .Select((x, i) => (x, i)).First(p => (p.x.Header as string) == tab).i;
+        Settle(); Settle();
+
+        var grid = (DataGrid)win.FindName(gridName)!;
+        var hdrs = All<DataGridColumnHeader>(grid)
+                   .Where(h => h.Content is string s && s.Length > 0).Take(4).ToList();
+
+        Console.WriteLine($"\n{tab} / {gridName}  ({hdrs.Count} header(s) realised)");
+        foreach (var h in hdrs)
+        {
+            string drawn = All<TextBlock>(h).FirstOrDefault()?.Text ?? "<none>";
+            Console.WriteLine($"   stored \"{h.Content}\"".PadRight(26)
+                + $"drawn \"{drawn}\"".PadRight(20)
+                + $" size {h.FontSize} weight {h.FontWeight}");
+        }
+    }
+
+    Report("Stock", "StockGrid");
+    Report("Sales entry", "Grid");
+    Report("Invoices", "InvoiceGrid");
+    Report("Master data", "GradeGrid");
+    Report("Audit", "AuditGrid");
+
+    win.Close();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();

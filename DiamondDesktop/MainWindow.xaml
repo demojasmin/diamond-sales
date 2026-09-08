@@ -484,7 +484,7 @@
                      same shape, one helper. -->
                 <StackPanel Grid.Column="1" Margin="0,0,8,0">
                   <TextBlock Text="BUYER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                  <ComboBox x:Name="LineFilterBuyer" Width="160" Height="34"
+                  <ComboBox x:Name="LineFilterBuyer" MinWidth="160" MaxWidth="300" Height="34"
                             DisplayMemberPath="Name" ui:FieldHint.Text="Select buyer"
                             SelectedItem="{Binding FilterBuyer, UpdateSourceTrigger=PropertyChanged}"
                             ui:PickerSearch.On="True"
@@ -495,7 +495,7 @@
 
                 <StackPanel Grid.Column="2" Margin="0,0,8,0">
                   <TextBlock Text="BROKER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                  <ComboBox x:Name="LineFilterBroker" Width="150" Height="34"
+                  <ComboBox x:Name="LineFilterBroker" MinWidth="150" MaxWidth="300" Height="34"
                             DisplayMemberPath="Name" ui:FieldHint.Text="Select broker"
                             SelectedItem="{Binding FilterBroker, UpdateSourceTrigger=PropertyChanged}"
                             ui:PickerSearch.On="True"
@@ -655,7 +655,7 @@
                 <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
                   <Button x:Name="AddLineButton" Click="AddLine_Click"
                           Style="{StaticResource DashButton}" Margin="0,0,8,0"
-                          ToolTip="Add another line to this invoice  (Enter)"
+                          ToolTip="Add another line  (Enter)"
                           AutomationProperties.Name="Add line">
                     <StackPanel Orientation="Horizontal">
                       <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconAdd}"/>
@@ -667,7 +667,7 @@
                   <Button x:Name="DeleteLines" Click="DeleteLines_Click" Visibility="Collapsed"
                           Style="{StaticResource DashButton}" Margin="0,0,8,0"
                           Foreground="{DynamicResource DangerBrush}"
-                          ToolTip="Take the ticked lines off this invoice. Nothing is saved and no stock moves."
+                          ToolTip="Take the ticked lines off this entry  (nothing is saved)"
                           AutomationProperties.Name="Remove the ticked lines">
                     <StackPanel Orientation="Horizontal">
                       <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconRemove}"/>
@@ -679,7 +679,7 @@
                        three, so "Confirm sale · 2 lines" on a four-row entry sells two. -->
                   <Button x:Name="SaveDraft" Click="PrintMemo_Click" Visibility="Collapsed"
                           Style="{StaticResource DashButton}" Margin="0,0,8,0"
-                          ToolTip="Print the memo for the TICKED lines  (Ctrl+P). Nothing is saved and no stock moves.&#10;&#10;One memo per deal. Unticked rows are not on it."
+                          ToolTip="Print a memo for the ticked lines  (Ctrl+P)"
                           AutomationProperties.Name="Print memo">
                     <StackPanel Orientation="Horizontal">
                       <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconMemo}"/>
@@ -699,7 +699,7 @@
                           AutomationProperties.Name="Move to stock"/>
                   <Button x:Name="Post" Click="Post_Click" Visibility="Collapsed"
                           Style="{StaticResource DashGoldButton}" Margin="0,0,0,0"
-                          ToolTip="Confirm the TICKED lines: post their invoice and take their carats out of stock, in one step.&#10;&#10;Unticked rows stay on this entry and keep their hold on stock."
+                          ToolTip="Post the ticked lines and take their carats out of stock"
                           AutomationProperties.Name="Confirm sale">
                     <StackPanel Orientation="Horizontal">
                       <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconConfirm}"/>
@@ -1519,8 +1519,8 @@
             <Grid>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="*" MinWidth="130"/>
-                <ColumnDefinition Width="1.4*" MinWidth="170"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*" MinWidth="170"/>
                 <ColumnDefinition Width="Auto"/>
               </Grid.ColumnDefinitions>
 
@@ -1554,7 +1554,7 @@
                 <!-- Already filled from code (ApplyInvoiceFilter rebuilds it), so PickerSearch can
                      wrap it: the items are strings here, "All buyers" first, and searching them
                      needs no path at all. -->
-                <ComboBox x:Name="InvoiceBuyer" Height="34" SelectionChanged="InvoiceFilter_Changed"
+                <ComboBox x:Name="InvoiceBuyer" MinWidth="130" MaxWidth="300" Height="34" SelectionChanged="InvoiceFilter_Changed"
                           ui:PickerSearch.On="True"
                           AutomationProperties.Name="Filter by buyer"
                           AutomationProperties.HelpText="Type to search"/>
@@ -1704,7 +1704,8 @@
                      HorizontalScrollBarVisibility Disabled, not Auto: the cards are meant to take
                      the drawer's width, and Auto would let a long buyer name widen the content and
                      put a horizontal bar under columns that fit perfectly well. -->
-                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                <ScrollViewer x:Name="InvoiceDetailScroll"
+                              VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled"
                               Focusable="False" Padding="0,0,2,0">
                   <StackPanel>
@@ -1744,22 +1745,39 @@
                   <StackPanel>
                     <TextBlock x:Name="InvoiceLinesHeading" Text="LINES"
                                Style="{StaticResource KpiLabel}"/>
-                    <!-- NO MaxHeight, and no scrollbar of its own. The cap was 220px, which is
-                         five rows: a six-line invoice put a second scrollbar inside the drawer's
-                         scrollbar and the two of them fought over the wheel. The drawer scrolls
-                         now, so every line is simply drawn and the one bar carries the lot —
-                         which is also what makes "the page shows fewer lines than I typed"
-                         impossible to produce by scrolling.
+                    <!-- TEN ROWS, then it holds its height and scrolls. On request, Sept 2026.
+
+                         This is the 220px cap coming back, and the reason it went is worth keeping
+                         in view: at five rows a six-line invoice put a second scrollbar inside the
+                         drawer's scrollbar and the two fought over the wheel, so the drawer froze
+                         whenever the pointer was over the table. Two things are different now.
+                         The height is MEASURED in CapInvoiceLinesHeight rather than guessed, so it
+                         is exactly ten rows and never a clipped half one; and PreviewMouseWheel
+                         hands the wheel back to the drawer once this table reaches its end, which
+                         is what the old cap never did.
+
+                         Under ten rows the cap is removed altogether, so a short invoice draws
+                         every line with no bar at all, exactly as it does today.
 
                          CanContentScroll=False so the outer bar moves by pixel rather than by
-                         row, and cannot stop half a line short of the bottom. -->
+                         row, and cannot stop half a line short of the bottom.
+
+                         HORIZONTALLY IT SCROLLS ITSELF, and that is the one bar this grid needs.
+                         Five columns of MinWidth 58/52/52/52/72 want 286px before padding, and the
+                         drawer is narrower than that on a normal window, so AMOUNT, the figure
+                         the whole card is about, was simply clipped off the right with no way to
+                         reach it. Disabled here meant not "it fits" but "it is cut off silently".
+                         Auto, so the bar appears only on the widths where it is needed.
+
+                         Vertical stays Disabled: that one belongs to the drawer, and two vertical
+                         bars in the same card is the fight this comment already describes. -->
                     <DataGrid x:Name="InvoiceLinesGrid" Margin="0,8,0,0"
                               BorderThickness="0" Background="Transparent"
                               CanUserSortColumns="False"
                               HeadersVisibility="Column" GridLinesVisibility="None"
                               ScrollViewer.CanContentScroll="False"
-                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                              ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                              ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                              PreviewMouseWheel="InvoiceLinesWheel"
                               AutomationProperties.Name="Lines on this invoice">
                       <DataGrid.Columns>
                         <DataGridTextColumn Header="GRADE" Binding="{Binding GradeShort}" Width="Auto" MinWidth="58"
@@ -1895,8 +1913,8 @@
             <Grid>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="*" MinWidth="130"/>
-                <ColumnDefinition Width="1.4*" MinWidth="170"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*" MinWidth="170"/>
                 <ColumnDefinition Width="Auto"/>
               </Grid.ColumnDefinitions>
 
@@ -1910,7 +1928,7 @@
 
               <StackPanel Grid.Column="1" Margin="0,0,8,0">
                 <TextBlock Text="BUYER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                <ComboBox x:Name="ReceivablesBuyer" Height="34" SelectionChanged="ReceivablesFilter_Changed"
+                <ComboBox x:Name="ReceivablesBuyer" MinWidth="130" MaxWidth="300" Height="34" SelectionChanged="ReceivablesFilter_Changed"
                           ui:PickerSearch.On="True"
                           AutomationProperties.Name="Filter by buyer"
                           AutomationProperties.HelpText="Type to search"/>
@@ -2186,14 +2204,14 @@
 
               <StackPanel Grid.Column="0" Margin="0,0,8,0">
                 <TextBlock Text="GRADE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                <ComboBox x:Name="StockGradeFilter" ui:PickerSearch.On="True" ui:FieldHint.Text="All grades" Width="150" Height="34"
+                <ComboBox x:Name="StockGradeFilter" ui:PickerSearch.On="True" ui:FieldHint.Text="All grades" MinWidth="150" MaxWidth="300" Height="34"
                           SelectionChanged="StockFilter_Changed"
                           AutomationProperties.Name="Filter by grade"/>
               </StackPanel>
 
               <StackPanel Grid.Column="1" Margin="0,0,8,0">
                 <TextBlock Text="SIZE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                <ComboBox x:Name="StockSizeFilter" ui:PickerSearch.On="True" ui:FieldHint.Text="All sizes" Width="120" Height="34"
+                <ComboBox x:Name="StockSizeFilter" ui:PickerSearch.On="True" ui:FieldHint.Text="All sizes" MinWidth="120" MaxWidth="220" Height="34"
                           SelectionChanged="StockFilter_Changed"
                           AutomationProperties.Name="Filter by size"/>
               </StackPanel>
@@ -2273,7 +2291,7 @@
                  sentence: what is left, and what is spoken for. Warning ink rather than danger,
                  because a hold is not a fault; it is stock somebody is in the middle of selling. -->
             <Border Style="{StaticResource KpiTile}" Margin="0,0,10,10"
-                    ToolTip="Carats a sales entry is holding: taken out of available stock the moment a line is typed, and not yet sold.&#10;&#10;Confirming the sale turns the hold into a sale. Move to stock releases it and the carats return to available stock.">
+                    ToolTip="Held by a sales entry from the moment its line is typed, and not yet sold.">
               <Grid>
                 <Grid.ColumnDefinitions>
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
@@ -2361,7 +2379,7 @@
               <!-- The tooltip carries the long form. The caption underneath has to work at a
                    glance; anyone who wants the whole explanation hovers. -->
               <StackPanel Grid.Column="0" Margin="0,0,28,0"
-                          ToolTip="Total Stock is the position right now.&#10;&#10;The workbook figure is the position at the moment of the last import. Every sale, rejection, intake and adjustment recorded since then has moved it, so the two differ by exactly that trading.&#10;&#10;Re-import the workbook to bring them back together.">
+                          ToolTip="The position right now. The workbook figure is the last import; the difference is everything traded since.">
                 <TextBlock Text="TOTAL STOCK" Style="{StaticResource KpiLabel}"/>
                 <TextBlock x:Name="StockBreakdownTotal" Style="{StaticResource KpiValue}"
                            Margin="0,4,0,0" Text="—"/>
@@ -3438,16 +3456,82 @@
                   <DataGrid x:Name="GradeGrid" BorderThickness="0" VerticalAlignment="Top"
                             ClipToBounds="True" UseLayoutRounding="True"
                             SizeChanged="GradeGrid_SizeChanged"
-                            IsReadOnly="False" CellEditEnding="GradeAlias_Committed"
+                            RowHeight="NaN" MinRowHeight="42"
                             AutomationProperties.Name="Grades">
+                    <DataGrid.RowStyle>
+                      <!-- AND THE ROW STYLE'S OWN HEIGHT RELEASED, which RowHeight="NaN" above does
+                           NOT do on its own. AppRow sets Height="42" as a hard value, and a Height
+                           on the row wins over the grid's RowHeight however that is set. Released
+                           here and replaced with a floor, so a grade whose aliases wrap onto a
+                           second line can actually draw the second line while every short row
+                           stays exactly 42 as before.
+
+                           Worth knowing: AuditGrid sets RowHeight="NaN" for the same purpose and
+                           does not override this style, so its wrapped WHAT column is still being
+                           held to one line. Left alone here, since this change is about Master
+                           data, but it is the same one-line fix. -->
+                      <Style TargetType="DataGridRow" BasedOn="{StaticResource AppRow}">
+                        <Setter Property="Height" Value="Auto"/>
+                        <Setter Property="MinHeight" Value="42"/>
+                      </Style>
+                    </DataGrid.RowStyle>
                     <DataGrid.Columns>
-                      <DataGridTextColumn Header="CODE" Binding="{Binding Code}" Width="110" IsReadOnly="True"/>
+                      <!-- A FLOOR UNDER EVERY COLUMN, or the header is the first thing lost. This grid
+                           shares the page with the buyers sidebar, so its columns are squeezed long
+                           before the window is small: measured at 1420px, GRADE NAME had asked for
+                           150 and been given 108. Squeezed past its own heading the text ellipsises
+                           and "ON THE SHEET" reads "ON THE S...", "ORDER" reads "OR...". Each
+                           MinWidth below is the measured width of that heading plus its padding, so
+                           a column can still give ground but never so much that it stops saying what
+                           it holds. Past the floors the grid scrolls, which is the honest way to run
+                           out of room.
+
+                           MEASURED WITH THE SORT MARK, which is what the first attempt at these
+                           numbers missed. A header is not just its text: the two sort triangles sit
+                           in their own column beside the content and take about 15px whether or not
+                           the column is currently sorted. Counting only the text and the padding put
+                           ON THE SHEET at 104 when it needs 113, so it went on ellipsising at its
+                           own declared width of 110 with nothing squeezing it at all. Each Width and
+                           MinWidth below comes from measuring the whole header with no width
+                           imposed on it. -->
+                      <DataGridTextColumn Header="CODE" Binding="{Binding Code}" Width="110" MinWidth="70" IsReadOnly="True">
+                        <DataGridTextColumn.ElementStyle>
+                          <!-- Wraps, as GRADE NAME does. "Unknown Grade" is the longest code the
+                               catalogue can hold and it was being cut to "Unknown G" on a page
+                               this grid shares with the buyers sidebar. -->
+                          <Style TargetType="TextBlock">
+                            <Setter Property="TextWrapping" Value="Wrap"/>
+                            <Setter Property="VerticalAlignment" Value="Center"/>
+                            <Setter Property="ToolTip" Value="{Binding Code}"/>
+                          </Style>
+                        </DataGridTextColumn.ElementStyle>
+                      </DataGridTextColumn>
                       <!-- The mark the printed sheet uses, which is what every picker in the app now
                            shows. Listed beside the other two names rather than replacing either:
                            this grid is the catalogue itself, and it is the one place all three
                            spellings of a grade should be visible at once. -->
-                      <DataGridTextColumn Header="ON THE SHEET" Binding="{Binding ShortName}" Width="110" IsReadOnly="True"/>
-                      <DataGridTextColumn Header="GRADE NAME" Binding="{Binding DisplayName}" Width="150" IsReadOnly="True"/>
+                      <DataGridTextColumn Header="ON THE SHEET" Binding="{Binding ShortName}" Width="122" MinWidth="118" IsReadOnly="True">
+                        <DataGridTextColumn.ElementStyle>
+                          <Style TargetType="TextBlock">
+                            <Setter Property="TextWrapping" Value="Wrap"/>
+                            <Setter Property="VerticalAlignment" Value="Center"/>
+                            <Setter Property="ToolTip" Value="{Binding ShortName}"/>
+                          </Style>
+                        </DataGridTextColumn.ElementStyle>
+                      </DataGridTextColumn>
+                      <DataGridTextColumn Header="GRADE NAME" Binding="{Binding DisplayName}" Width="150" MinWidth="112" IsReadOnly="True">
+                        <DataGridTextColumn.ElementStyle>
+                          <!-- WRAPS. "No. 1 Bottom Black" is wider than any width this column can be
+                               given on a page it shares with the buyers sidebar, and cut to
+                               "No. 1 Bottom Blacl" it reads as a different grade. The row grows to
+                               fit instead, the same trade Remark makes on Sales entry. -->
+                          <Style TargetType="TextBlock">
+                            <Setter Property="TextWrapping" Value="Wrap"/>
+                            <Setter Property="VerticalAlignment" Value="Center"/>
+                            <Setter Property="ToolTip" Value="{Binding DisplayName}"/>
+                          </Style>
+                        </DataGridTextColumn.ElementStyle>
+                      </DataGridTextColumn>
                       <!-- The one editable column here, and the only one with a floor under it.
                            Every other column is a fixed width, so the star column is the single
                            one that gives when the grid is narrow — and with nothing to stop it, it
@@ -3459,12 +3543,56 @@
 
                            CellStyle, not ElementStyle: the frame changes, the binding and the
                            stored value do not. -->
-                      <DataGridTextColumn Header="ALIASES" Binding="{Binding Aliases}"
-                                          Width="*" MinWidth="240"
-                                          CellStyle="{StaticResource EditableCell}"/>
-                      <DataGridTextColumn Header="ORDER" Binding="{Binding SortOrder}" Width="70" IsReadOnly="True"
+                      <!-- THE SAME FIELD THE REMARK COLUMN IS, and for the same reason. It was a
+                           text column you had to DOUBLE-CLICK to open, dressed with a cell template
+                           that drew a box so it would look like a field before it was one. Two
+                           states for one control: a box that is not a box until you find out it is.
+                           Remark on Sales entry is simply a TextBox in the cell, always live, with
+                           grey placeholder text when it is empty, and this is now the same thing.
+
+                           It also settles the missing bottom border for good: that bug existed
+                           because the DOUBLE-CLICK cell drew a bordered box of its own whose lower
+                           edge fell wherever the grid's viewport was cut. A CellTextBox sits inside
+                           the row like Remark's does and has no edge of its own to lose.
+
+                           Mode=OneWay on purpose. The handler is what writes, after the confirm
+                           that guards clearing every alias. A two-way binding would have put the
+                           new value on the model before anyone was asked. -->
+                      <DataGridTemplateColumn Header="ALIASES" Width="*" MinWidth="240">
+                        <DataGridTemplateColumn.CellTemplate>
+                          <DataTemplate>
+                            <Grid>
+                              <!-- WRAPS, and the row grows with it, which is the rest of
+                                   "the same field Remark is". A single-line box can only show one
+                                   column's worth of an alias list: "GHOST;GH-VVS;GHVVS;GH VS;GH1"
+                                   was cut at whichever end the caret was not, and neither end is
+                                   the value. AcceptsReturn stays False, because a newline is not a
+                                   separator here; the semicolon is. -->
+                              <TextBox x:Name="AliasBox"
+                                       Text="{Binding Aliases, Mode=OneWay}"
+                                       Style="{StaticResource CellTextBox}"
+                                       TextWrapping="Wrap" AcceptsReturn="False"
+                                       Height="Auto" MinHeight="28" VerticalContentAlignment="Center"
+                                       LostFocus="GradeAliasBox_LostFocus"
+                                       ToolTip="Separate spellings with a semicolon."
+                                       AutomationProperties.Name="Aliases"
+                                       AutomationProperties.HelpText="Spellings a workbook may use for this grade"/>
+                              <!-- KEYED ON THE BOX, NOT ON THE MODEL, and that follows from the
+                                   OneWay binding above. grade.Aliases does not change while
+                                   somebody types, and that is the whole point of OneWay: the
+                                   confirm before clearing has an old value to compare
+                                   against. So a placeholder watching the model stayed on screen underneath
+                                   whatever was being typed, and the two read as one smeared word.
+                                   Text is the honest question: is anything drawn in this box? -->
+                              <TextBlock Text="aliases" Style="{StaticResource CellPlaceholder}"
+                                         Visibility="{Binding Text, ElementName=AliasBox, Converter={StaticResource Empty}}"/>
+                            </Grid>
+                          </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                      </DataGridTemplateColumn>
+                      <DataGridTextColumn Header="ORDER" Binding="{Binding SortOrder}" Width="82" MinWidth="78" IsReadOnly="True"
                                           ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
-                      <DataGridTemplateColumn Header="STATUS" Width="100" IsReadOnly="True"
+                      <DataGridTemplateColumn Header="STATUS" Width="100" MinWidth="66" IsReadOnly="True"
                                               CellTemplate="{StaticResource StatusBadgeTemplate}"/>
                     </DataGrid.Columns>
                   </DataGrid>
@@ -3772,13 +3900,15 @@
                 <ColumnDefinition Width="Auto"/>
                 <!-- The search column takes the larger share: its placeholder names four fields
                      and the two dropdowns beside it only have to show a buyer or a grade. -->
-                <!-- 150, not 104: buyer names are the widest thing this bar shows and "ABC EXPORTS"
-                     was being cut to "C EXPORTS". -->
+                <!-- AUTO, not a star share. Both of these hold a picker, and a picker now sizes
+                     itself to the longest value it can be asked to show (PickerSearch.FitToContent).
+                     A share of the bar cannot do that, and every hand picked number here was beaten
+                     by the next database's names: "ABC EXPORTS" cut to "C EXPORTS" at 104, then
+                     "RAJDEEP GEMS (RA" at 150. The search box takes what is left, which is what the
+                     old 3.2 star share was expressing anyway. -->
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*" MinWidth="150"/>
-                <!-- 122, not 92: the hint reads "All grades" and at 92 it was cut to "All gra...". The
-                     widest thing this column ever draws is its own placeholder. -->
-                <ColumnDefinition Width="0.85*" MinWidth="122"/>
-                <ColumnDefinition Width="3.2*" MinWidth="150"/>
                 <ColumnDefinition Width="Auto"/>
               </Grid.ColumnDefinitions>
 
@@ -3817,7 +3947,7 @@
                 <!-- No FieldHint: this one always has "All buyers" SELECTED, so there is never an empty
                      box for a hint to fill. A placeholder as well would be a second way of saying
                      the same thing, in grey, that could disagree with the first. -->
-                <ComboBox x:Name="FilterBuyer" Height="34"
+                <ComboBox x:Name="FilterBuyer" MinWidth="150" MaxWidth="300" Height="34"
                           ItemTemplate="{StaticResource NameTemplate}"
                           ItemContainerStyle="{StaticResource PartyItemContainer}"
                           SelectionChanged="DashFilter_Changed"
@@ -3827,7 +3957,7 @@
               </StackPanel>
               <StackPanel Grid.Column="4" Margin="0,0,8,0">
                 <TextBlock Text="GRADE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                <ComboBox x:Name="FilterGrade" Style="{StaticResource GradePicker}" ui:FieldHint.Text="All grades" SelectionChanged="DashFilter_Changed"
+                <ComboBox x:Name="FilterGrade" Style="{StaticResource GradePicker}" ui:FieldHint.Text="All grades" MinWidth="122" MaxWidth="260" SelectionChanged="DashFilter_Changed"
                           AutomationProperties.Name="Filter by grade"/>
               </StackPanel>
               <StackPanel Grid.Column="5" Margin="0,0,8,0">
@@ -4293,7 +4423,10 @@
                                         Binding="{Binding ScopedAmount, Converter={StaticResource Money}}"
                                         ElementStyle="{StaticResource Num}"
                                         HeaderStyle="{StaticResource AppNumericHeader}"/>
-                    <DataGridTextColumn Header="DATE" Width="96"
+                    <!-- MinWidth, or the card squeezes it and "03-09-2026" reads "03-09-20",
+                         which is a date in the year 20. The floor is the measured width of a full
+                         dd-MM-yyyy plus the cell padding and the sort mark this column carries. -->
+                    <DataGridTextColumn Header="DATE" Width="96" MinWidth="96"
                                         Binding="{Binding InvoiceDate, StringFormat=dd-MM-yyyy}"/>
                     <DataGridTemplateColumn Header="STATUS" Width="104"
                                             SortMemberPath="Outstanding"
@@ -4570,12 +4703,12 @@
                          the width these give up. -->
                     <DataGridTextColumn Header="WHEN" Binding="{Binding When}" Width="Auto" MinWidth="132"/>
                     <DataGridTextColumn Header="ENTITY" Binding="{Binding EntityName}" Width="Auto" MinWidth="118"/>
-                    <DataGridTemplateColumn Header="ACTION" Width="94"
+                    <DataGridTemplateColumn Header="ACTION" Width="94" MinWidth="80"
                                             SortMemberPath="Action"
                                             CellTemplate="{StaticResource AuditActionBadge}"/>
                     <!-- 74, not 62. Trimming to the widest VALUE ("#1030") left the column too
                          narrow for its own HEADING, which rendered as "RECORE". -->
-                    <DataGridTextColumn Header="RECORD" Binding="{Binding Record}" Width="74"/>
+                    <DataGridTextColumn Header="RECORD" Binding="{Binding Record}" Width="84" MinWidth="82"/>
                     <!-- The page is titled "Every change, who and when" and showed only the when.
                          changed_by was captured and mapped all along; nothing bound it. -->
                     <DataGridTextColumn Header="WHO" Binding="{Binding By}" Width="Auto" MinWidth="90"/>

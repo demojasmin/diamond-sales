@@ -1,0 +1,122 @@
+﻿// DRY RUN. Reads the sale workbook through the app's own importer against PRIYA's live catalogue
+// and live stock, and reports which lines the shelf cannot cover -- BEFORE anything is written.
+// Nothing here imports: SaleFileImport.Plan touches no table but grade and size.
+
+using System.IO;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+using InvProbe;
+
+Db.Use(Db.Workspaces.First(w => w.Name == "Priya"));
+Environment.SetEnvironmentVariable("SOLITAIRE_SESSION",
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                 "SolitaireDesk", $"session-{Db.Active.Ref}.dat"));
+await ProbeEnv.SignInAsync();
+await ProbeEnv.LoadProfileAsync();
+
+var cfg = (await Db.Client.From<AppConfig>().Get()).Models.FirstOrDefault(c => c.Key == "company_name");
+Console.WriteLine($"database: {cfg?.Value}  ({Db.Active.Ref})\n");
+
+var grades = await Repo.GradesAsync();
+var sizes  = await Repo.SizesAsync();
+var gradeMap = SaleFileImport.AliasMap(grades.Select(g => (g.Code, g.Aliases)));
+var sizeMap  = SaleFileImport.SizeAliasMap(sizes.Select(s => s.Code));
+
+string path = @"C:\Users\jbc\Downloads\sale upload (1).xlsx";
+var plan = SaleFileImport.Plan(path, gradeMap, sizeMap);
+
+Console.WriteLine($"file    : {Path.GetFileName(path)}");
+Console.WriteLine($"valid   : {plan.IsValid}   invoices {plan.Invoices.Count}   lines {plan.LineCount}   "
+                + $"skipped {plan.SkippedRows}");
+if (plan.FirstDate is not null)
+    Console.WriteLine($"dates   : {plan.FirstDate:dd-MM-yyyy} to {plan.LastDate:dd-MM-yyyy}");
+
+foreach (var p in plan.Problems)   Console.WriteLine($"  PROBLEM  {p.Message}");
+foreach (var e in plan.Exceptions.Take(10)) Console.WriteLine($"  SKIPPED  {e.Message}");
+if (plan.UnknownGrades.Count > 0)
+    Console.WriteLine($"  UNKNOWN GRADES: {string.Join(", ", plan.UnknownGrades)}");
+if (plan.UnknownSizes.Count > 0)
+    Console.WriteLine($"  UNKNOWN SIZES : {string.Join(", ", plan.UnknownSizes.Select(u => u.Label))}");
+
+if (!plan.IsValid) { Console.WriteLine("\nThe file cannot be imported as it stands."); return; }
+
+// ── what the shelf holds right now ──────────────────────────────────────────
+var pos = (await Db.Client.From<VStockPosition>().Get()).Models;
+decimal Have(string g, string s) =>
+    pos.FirstOrDefault(p => p.GradeCode == g && p.SizeCode == s)?.BalanceCt ?? 0;
+
+// THE IMPORT CAPS PER BUCKET, walking the lines oldest first, so the bucket is the unit that
+// decides whether anything is short -- not the individual line.
+var wanted = plan.Invoices
+    .SelectMany(i => i.Lines.Select(l => (i.InvoiceNo, i.Date, l)))
+    .GroupBy(x => (x.l.GradeCode, x.l.SizeCode))
+    .Select(g => new
+    {
+        g.Key.GradeCode,
+        g.Key.SizeCode,
+        Want  = g.Sum(x => x.l.GrossCt),
+        Have  = Have(g.Key.GradeCode, g.Key.SizeCode),
+        Lines = g.OrderBy(x => x.Date).ThenBy(x => x.InvoiceNo).ToList()
+    })
+    .Select(b => new { b.GradeCode, b.SizeCode, b.Want, b.Have, b.Lines, Short = Math.Max(0, b.Want - b.Have) })
+    .ToList();
+
+var shortBuckets = wanted.Where(b => b.Short > 0.00005m)
+                         .OrderByDescending(b => b.Short).ToList();
+
+Console.WriteLine($"\nbuckets this sheet sells from : {wanted.Count}");
+Console.WriteLine($"buckets the shelf cannot cover: {shortBuckets.Count}");
+Console.WriteLine($"carats that will NOT come out  : {shortBuckets.Sum(b => b.Short):N4} ct\n");
+
+if (shortBuckets.Count > 0)
+{
+    Console.WriteLine("grade x size          wants      has     short");
+    foreach (var b in shortBuckets)
+        Console.WriteLine($"{b.GradeCode,-10} x {b.SizeCode,-6} {b.Want,9:N4} {b.Have,8:N4} {b.Short,9:N4}");
+
+    // ── THE RECORDS THEMSELVES ──────────────────────────────────────────────
+    // 0051 shares a bucket out in INVOICE-DATE ORDER, oldest first: each line takes what is left
+    // and no more, so the earliest sales come out whole and the shortfall lands on the LAST ones.
+    // Replaying that here names the invoice and the workbook row that will be short, which is the
+    // thing the client is actually looking at.
+    Console.WriteLine("\n============ THE SALES RECORDS THAT WILL NOT FULLY DEDUCT ============");
+    foreach (var b in shortBuckets)
+    {
+        Console.WriteLine($"\n{b.GradeCode} x {b.SizeCode}   shelf holds {b.Have:N4} ct, sheet sells {b.Want:N4} ct");
+        decimal left = b.Have;
+        foreach (var (no, date, l) in b.Lines)
+        {
+            decimal takes = Math.Max(0, Math.Min(l.GrossCt, left));
+            left -= takes;
+            decimal miss = l.GrossCt - takes;
+            string flag = miss > 0.00005m
+                        ? (miss >= l.GrossCt - 0.00005m ? "  <<< DEDUCTS NOTHING" : "  <<< PARTLY DEDUCTED")
+                        : "";
+            Console.WriteLine($"   {no,-10} {date:dd-MM-yyyy}  row {l.ExcelRow,-4} "
+                            + $"invoiced {l.GrossCt,8:N4}  deducts {takes,8:N4}  short {miss,7:N4}{flag}");
+        }
+    }
+
+    // Which INDIVIDUAL LINES fall in the band the client named.
+    Console.WriteLine("\n============ LINES OF 3 TO 4 CT THAT ARE SHORT ============");
+    bool any = false;
+    foreach (var b in shortBuckets)
+    {
+        decimal left = b.Have;
+        foreach (var (no, date, l) in b.Lines)
+        {
+            decimal takes = Math.Max(0, Math.Min(l.GrossCt, left));
+            left -= takes;
+            if (l.GrossCt >= 3m && l.GrossCt <= 4m && l.GrossCt - takes > 0.00005m)
+            {
+                any = true;
+                Console.WriteLine($"   {no}  {date:dd-MM-yyyy}  workbook row {l.ExcelRow}  "
+                                + $"{b.GradeCode} x {b.SizeCode}");
+                Console.WriteLine($"      invoiced {l.GrossCt:N4} ct, stock will move {takes:N4} ct, "
+                                + $"short {l.GrossCt - takes:N4} ct");
+            }
+        }
+    }
+    if (!any) Console.WriteLine("   none");
+}
+else Console.WriteLine("Every line on this sheet is fully covered by current stock.");

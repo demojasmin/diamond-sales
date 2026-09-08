@@ -1,0 +1,76 @@
+﻿// What does a Grades column header REALLY need? The last measurement counted the text and the
+// padding and came out too small, so something else in the header is taking room.
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    static IEnumerable<T> All<T>(DependencyObject? d) where T : DependencyObject
+    {
+        if (d is null) yield break;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+        {
+            var c = VisualTreeHelper.GetChild(d, i);
+            if (c is T hit) yield return hit;
+            foreach (var deep in All<T>(c)) yield return deep;
+        }
+    }
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 900, Height = 780 };
+    win.Show();
+    void Settle()
+    {
+        var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f);
+    }
+    var tabs = (TabControl)win.FindName("Tabs")!;
+    tabs.SelectedIndex = tabs.Items.Cast<TabItem>()
+        .Select((x, i) => (x, i)).First(p => (p.x.Header as string) == "Master data").i;
+    Settle(); Settle();
+
+    var grid = (DataGrid)win.FindName("GradeGrid")!;
+    grid.ItemsSource = new List<Grade>
+    {
+        new() { GradeId = 1, Code = "+23", DisplayName = "+23", Aliases = "", SortOrder = 109, Active = true },
+    };
+    Settle(); Settle();
+
+    Console.WriteLine("header          col width   natural need   short by");
+    foreach (var h in All<DataGridColumnHeader>(grid).Where(x => x.Content is string s && s.Length > 0))
+    {
+        string label = All<TextBlock>(h).FirstOrDefault()?.Text ?? "?";
+
+        // THE HEADER ITSELF, measured with no width imposed on it. That takes in the text, the
+        // padding, the border AND the sort-mark column beside the content, which is what the last
+        // measurement missed.
+        h.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double need = Math.Ceiling(h.DesiredSize.Width) + 2;
+        double got = h.Column?.ActualWidth ?? 0;
+        Console.WriteLine($"{label,-14} {got,9:N0} {need,14:N0}"
+                        + (need > got ? $"   short {need - got:N0} px" : "   fits"));
+    }
+
+    win.Close();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();

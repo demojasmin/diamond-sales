@@ -1,0 +1,131 @@
+﻿// 1. The wheel no longer changes a closed picker, anywhere.
+// 2. The alias box keeps its binding, so a recycled row cannot show the previous grade's value.
+using System.IO;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Input;
+using System.Windows.Media;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    // The registration App.OnStartup makes. Done here because the probe never calls OnStartup.
+    EventManager.RegisterClassHandler(typeof(ComboBox), UIElement.PreviewMouseWheelEvent,
+        new MouseWheelEventHandler((o, e) =>
+        {
+            if (o is not ComboBox { IsDropDownOpen: false } c) return;
+            e.Handled = true;
+            (c.Parent as UIElement)?.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
+            { RoutedEvent = UIElement.MouseWheelEvent, Source = c });
+        }));
+
+    static IEnumerable<T> All<T>(DependencyObject? d) where T : DependencyObject
+    {
+        if (d is null) yield break;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+        { var c = VisualTreeHelper.GetChild(d, i); if (c is T h) yield return h;
+          foreach (var x in All<T>(c)) yield return x; }
+    }
+
+    var host = new StackPanel();
+    var win = new Window { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 500, Height = 300, Content = host };
+    win.Show();
+    void Settle() { var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f); }
+
+    // ── 1 · a closed picker ignores the wheel ───────────────────────────────
+    var cb = new ComboBox { ItemsSource = new[] { "one", "two", "three" }, SelectedIndex = 1 };
+    host.Children.Add(cb);
+    Settle();
+
+    bool pageGotIt = false;
+    host.PreviewMouseWheel += (_, _) => pageGotIt = true;
+
+    var wheel = new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120)
+    { RoutedEvent = UIElement.PreviewMouseWheelEvent, Source = cb };
+    cb.RaiseEvent(wheel);
+    Settle();
+
+    Check("a closed picker does not change on the wheel", cb.SelectedIndex == 1,
+          $"SelectedIndex {cb.SelectedIndex}, text \"{cb.Text}\"");
+    Check("and the selected value is still on screen", (string?)cb.SelectedItem == "two",
+          cb.SelectedItem as string ?? "<null>");
+    Check("the wheel was handled rather than swallowed", wheel.Handled);
+
+    // ── 2 · the alias box keeps its binding ─────────────────────────────────
+    var grades = new List<Grade>
+    {
+        new() { GradeId = 1, Code = "A", DisplayName = "A", Aliases = "AAA;A1", SortOrder = 1, Active = true },
+        new() { GradeId = 2, Code = "B", DisplayName = "B", Aliases = "",       SortOrder = 2, Active = true },
+    };
+
+    // The cell as the markup builds it: a CellTextBox with a ONE-WAY binding to Aliases.
+    var box = new TextBox();
+    box.SetBinding(TextBox.TextProperty, new Binding("Aliases") { Mode = BindingMode.OneWay });
+    box.DataContext = grades[0];
+    host.Children.Add(box);
+    Settle();
+    Check("the box shows the first grade's aliases", box.Text == "AAA;A1", box.Text);
+
+    // What the handler now does: refresh the target. What it USED to do: box.Text = tidy.
+    System.Windows.Data.BindingOperations.GetBindingExpression(box, TextBox.TextProperty)?.UpdateTarget();
+    Settle();
+    Check("refreshing the target leaves the binding in place",
+          BindingOperations.GetBindingExpression(box, TextBox.TextProperty) is not null);
+
+    // RECYCLE the container onto another grade, exactly as the DataGrid does when you scroll.
+    box.DataContext = grades[1];
+    Settle();
+    Check("recycled onto a grade with NO aliases, the box is empty", box.Text.Length == 0,
+          $"\"{box.Text}\"");
+
+    // And prove the old way broke it.
+    var broken = new TextBox();
+    broken.SetBinding(TextBox.TextProperty, new Binding("Aliases") { Mode = BindingMode.OneWay });
+    broken.DataContext = grades[0];
+    host.Children.Add(broken);
+    Settle();
+    broken.Text = "AAA;A1";                      // the old `box.Text = tidy`
+    broken.DataContext = grades[1];
+    Settle();
+    Check("(the old way loses the binding and shows the previous grade)",
+          BindingOperations.GetBindingExpression(broken, TextBox.TextProperty) is null
+          && broken.Text == "AAA;A1",
+          $"binding {(BindingOperations.GetBindingExpression(broken, TextBox.TextProperty) is null ? "gone" : "kept")}, text \"{broken.Text}\"");
+
+    // ── 3 · the handler source no longer assigns Text ───────────────────────
+    string src = File.ReadAllText(@"D:\diamond inventory\DiamondDesktop\MainWindow.xaml.cs");
+    int at  = src.IndexOf("private async void GradeAliasBox_LostFocus", StringComparison.Ordinal);
+    int end = src.IndexOf("// ── MDM-003", at, StringComparison.Ordinal);
+    Check("the alias handler never assigns box.Text",
+          !src[at..end].Contains("box.Text =", StringComparison.Ordinal));
+
+    win.Close();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start(); t.Join();
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

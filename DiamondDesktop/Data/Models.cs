@@ -44,6 +44,22 @@ public class Grade : BaseModel
     /// LC 1, FL. Never to the empty string: a picker entry with no text is a row nobody can pick.
     /// </summary>
     public string ShortName => GradeNames.Short(Code);
+
+    /// <summary>
+    /// The mark, so the WPF fallback prints a grade rather than a type name.
+    ///
+    /// An editable ComboBox renders its text box through TextSearch.TextPath, and when that path
+    /// cannot be read it falls back to ToString(). EditableCellComboBox sets the path, but a
+    /// DataGrid RECYCLES row containers -- the Sales entry grade cell was intermittently rendering
+    /// "DiamondDesktop.Data.Grade", clipped on screen to "DiamondD...", on one row while the row
+    /// under it read "1BB".
+    ///
+    /// Chasing that timing window would fix one cell in one grid. Making the FALLBACK CORRECT fixes
+    /// every place WPF reaches for it -- the entry grid, the Update modal, any future picker -- and
+    /// cannot regress anything, because the type name was never a useful answer to "what is this
+    /// grade called". ShortName is what every screen already shows.
+    /// </summary>
+    public override string ToString() => ShortName;
 }
 
 /// <summary>
@@ -121,6 +137,10 @@ public class SizeBucket : BaseModel
 
     /// What the printed sheet calls this sieve -- "1/5" for the 0.2 the catalogue stores.
     public string ShortName => SizeNames.Short(Code);
+
+    /// The sieve, for the same reason Grade overrides it: when WPF cannot read TextSearch.TextPath
+    /// it prints ToString(), and a type name is never the right answer in a size cell.
+    public override string ToString() => ShortName;
 }
 
 /// Which sieve sizes a grade actually trades in. +14 uses +14/+18/+23, nobody else does.

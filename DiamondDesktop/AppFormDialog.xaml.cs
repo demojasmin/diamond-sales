@@ -45,13 +45,41 @@ public partial class AppFormDialog : Window
             var box = new TextBox { Text = f.Value, MaxLength = f.MaxLength, Margin = new Thickness(0, 0, 0, 14) };
             box.SetResourceReference(StyleProperty, f.Numeric ? "FormNumeric" : "FormInput");
 
+            // EVERY FIELD IN THIS FORM READS FROM THE LEFT, numbers included.
+            //
+            // FormNumeric right-aligns, which is right in a GRID -- a column of figures lines up on
+            // its decimal point and can be compared down the page. A form has no column: "Add a
+            // broker" put the name hard against the left edge and the default % hard against the
+            // right, two fields of the same width with their contents at opposite ends, and the
+            // eye has to travel to find the second value. Terms (days) on "Add a buyer" read the
+            // same way.
+            //
+            // Set here rather than on FormNumeric, because that style is also worn by the price box
+            // on Master data, which IS in a column of figures and should stay as it is.
+            if (f.Numeric) box.HorizontalContentAlignment = HorizontalAlignment.Left;
+
             d.Fields.Children.Add(label);
             d.Fields.Children.Add(box);
             d._boxes.Add(box);
         }
 
         // Focus the first field, not the button: the user opened this to type.
-        d.Loaded += (_, _) => { d._boxes.FirstOrDefault()?.Focus(); d._boxes.FirstOrDefault()?.SelectAll(); };
+        //
+        // FOCUSED, NOT SELECTED. SelectAll painted the value in a blue block, so "Manage user"
+        // opened with the role reading as something the app had picked out and was about to
+        // replace -- on a form whose other two fields are an active flag and a password, that is
+        // the wrong thing to imply. The caret goes to the end instead, which is the same rule the
+        // pickers follow: arriving in a field is not choosing anything.
+        //
+        // What SelectAll was doing -- making the first keystroke replace the value -- is not worth
+        // it here. These are short values somebody is CORRECTING, not searching, and a blind
+        // replace is how "owner" becomes "o".
+        d.Loaded += (_, _) =>
+        {
+            if (d._boxes.FirstOrDefault() is not { } first) return;
+            first.Focus();
+            first.CaretIndex = first.Text.Length;
+        };
 
         d.ShowDialog();
         return d._result;
