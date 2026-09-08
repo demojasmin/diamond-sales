@@ -1,10 +1,12 @@
 ﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:prim="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
-                    xmlns:ui="clr-namespace:DiamondDesktop">
+                    xmlns:ui="clr-namespace:DiamondDesktop"
+                    xmlns:sys="clr-namespace:System;assembly=System.Runtime">
 
     <ui:DayTitleConverter x:Key="DayTitle"/>
     <ui:StatusWordConverter x:Key="StatusWord"/>
+    <ui:UpperCaseConverter x:Key="UpperCase"/>
 
     <!-- APPLICATION level, not MainWindow.Resources. The Update dialog is its own window and
          cannot see anything declared on the page; putting these here is what lets that modal wear
@@ -72,7 +74,26 @@
                                 <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <ContentPresenter Grid.Column="0" VerticalAlignment="Center"
-                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}">
+                                <!-- CAPITALS, and drawn rather than stored. Stock and Invoices
+                                     write "GRADE" and "AVAILABLE CT"; Sales entry writes "Grade"
+                                     and "Weight ct". The font is identical on both (measured:
+                                     11.5pt SemiBold, same family, same brush), so capitalisation
+                                     was the whole of the difference.
+
+                                     Keyed on string, so this reaches every text header in the app
+                                     and leaves the tick column's CheckBox header alone. The Header
+                                     VALUES are untouched on purpose: ColumnHeaderFor matches on
+                                     them to put the caret on the cell a validation message is
+                                     about, and rewriting them would be a logic change dressed as
+                                     a style one. -->
+                                <ContentPresenter.Resources>
+                                    <DataTemplate DataType="{x:Type sys:String}">
+                                        <TextBlock Text="{Binding Converter={StaticResource UpperCase}}"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </DataTemplate>
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
                             <!-- THE SORT MARK, on every column the grid will actually sort by.
                                  The custom header template replaced WPF's own SortDirectionIndicator
                                  and never put anything back, so clicking a header reordered the

@@ -1,0 +1,125 @@
+﻿// FULL VERIFICATION of the sales import: the workbook against the database, row by row.
+//
+// Reads the client's file through the app's own importer, then reads back what actually landed on
+// Priya, and checks every line, every figure, every movement and every total. Nothing is written.
+
+using System.IO;
+using DiamondCalc;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+using InvProbe;
+using Supabase.Postgrest;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  · {d}")}"); if (!ok) fail++; }
+
+Db.Use(Db.Workspaces.First(w => w.Name == "Priya"));
+Environment.SetEnvironmentVariable("SOLITAIRE_SESSION",
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                 "SolitaireDesk", $"session-{Db.Active.Ref}.dat"));
+await ProbeEnv.SignInAsync();
+await ProbeEnv.LoadProfileAsync();
+
+var cfg = (await Db.Client.From<AppConfig>().Get()).Models.FirstOrDefault(c => c.Key == "company_name");
+Console.WriteLine($"database: {cfg?.Value}\n");
+
+// ── THE WORKBOOK, through the app's own reader ──────────────────────────────
+var grades = await Repo.GradesAsync();
+var sizes  = await Repo.SizesAsync();
+var plan = SaleFileImport.Plan(@"C:\Users\jbc\Downloads\sale upload (1).xlsx",
+    SaleFileImport.AliasMap(grades.Select(g => (g.Code, g.Aliases))),
+    SaleFileImport.SizeAliasMap(sizes.Select(s => s.Code)));
+
+// ── WHAT LANDED ─────────────────────────────────────────────────────────────
+var db      = (await Db.Client.From<VSalesLine>().Get()).Models
+                 .Where(l => (l.InvoiceNo ?? "").StartsWith("MIG-")).ToList();
+var invs    = (await Db.Client.From<VInvoice>().Get()).Models
+                 .Where(i => (i.InvoiceNo ?? "").StartsWith("MIG-")).ToList();
+var moves   = (await Db.Client.From<VStockMovement>()
+                  .Filter("ref_type", Constants.Operator.Equals, "sales_line").Get()).Models;
+var pos     = (await Db.Client.From<VStockPosition>().Get()).Models;
+var recon   = (await Db.Client.From<VReconciliation>().Get()).Models;
+
+Console.WriteLine("── 1 · EVERY ROW ARRIVED ───────────────────────────────────────");
+Check("the file still reads clean", plan.IsValid && plan.SkippedRows == 0,
+      $"valid {plan.IsValid}, {plan.SkippedRows} skipped");
+Check($"{plan.Invoices.Count} invoices planned = {invs.Count} in the database",
+      plan.Invoices.Count == invs.Count, $"{plan.Invoices.Count} vs {invs.Count}");
+Check($"{plan.LineCount} lines planned = {db.Count} in the database",
+      plan.LineCount == db.Count, $"{plan.LineCount} vs {db.Count}");
+
+// ── 2 · EVERY LINE MATCHES, FIGURE FOR FIGURE ───────────────────────────────
+Console.WriteLine("\n── 2 · EVERY FIGURE MATCHES ────────────────────────────────────");
+var unmatched = new List<string>();
+var pool = db.ToList();
+foreach (var inv in plan.Invoices)
+foreach (var l in inv.Lines)
+{
+    // AT THE STORED PRECISION. The workbook carries float noise from Excel -- row 31's weight is
+    // 10.719999999999999 -- and the column is numeric(12,4), so Postgres rounds on the way in.
+    // Comparing raw would report a mismatch that is only the four-place rounding the schema asks
+    // for. Four places is the carat precision this system uses everywhere.
+    static decimal R(decimal d) => Math.Round(d, 4, MidpointRounding.AwayFromZero);
+
+    var hit = pool.FirstOrDefault(d => d.InvoiceNo == inv.InvoiceNo
+                                    && d.GradeCode == l.GradeCode && d.SizeCode == l.SizeCode
+                                    && R(d.GrossWeightCt) == R(l.GrossCt)
+                                    && R(d.SelectionCt) == R(l.SelectionCt)
+                                    && R(d.PricePerCt) == R(l.PricePerCt));
+    if (hit is null) unmatched.Add($"{inv.InvoiceNo} row {l.ExcelRow} {l.GradeCode}x{l.SizeCode} {l.GrossCt:N4}");
+    else pool.Remove(hit);
+}
+Check("every workbook row has a line with identical grade, size, weight, selection and price",
+      unmatched.Count == 0, unmatched.Count == 0 ? null : string.Join("; ", unmatched.Take(4)));
+Check("and the database holds no line the workbook does not", pool.Count == 0,
+      pool.Count == 0 ? null : string.Join("; ", pool.Take(4).Select(p => $"{p.InvoiceNo} {p.GradeCode}")));
+
+Check("rejection = weight - selection on every line",
+      db.All(l => Math.Abs(l.RejectionCt - (l.GrossWeightCt - l.SelectionCt)) < 0.00005m));
+
+// ── 3 · THE MONEY ───────────────────────────────────────────────────────────
+Console.WriteLine("\n── 3 · THE MONEY ───────────────────────────────────────────────");
+var wrongAmount = db.Where(l => Math.Abs(l.Amount - Calc.RoundMoney(
+        Calc.LineAmount(l.SelectionCt, l.PricePerCt, l.ExRate, l.Less1Pct, l.Less2Pct, l.BrokerPct))) > 0.005m)
+    .ToList();
+Check("every line amount recomputes to what the database stored", wrongAmount.Count == 0,
+      wrongAmount.Count == 0 ? null : $"{wrongAmount.Count} line(s) differ");
+Console.WriteLine($"   invoiced total {db.Sum(l => l.Amount):N2}");
+Check("receipts imported", invs.Count(i => i.Received > 0) == plan.ReceiptCount,
+      $"{invs.Count(i => i.Received > 0)} vs {plan.ReceiptCount} planned");
+
+// ── 4 · THE STOCK ───────────────────────────────────────────────────────────
+Console.WriteLine("\n── 4 · THE STOCK ───────────────────────────────────────────────");
+decimal Took(long id) => moves.Where(m => m.RefId == id).Sum(m => m.WeightCt);
+var short_ = db.Where(l => Math.Abs(l.GrossWeightCt - Took(l.LineId)) > 0.00005m).ToList();
+Check("EVERY line deducted its full gross weight", short_.Count == 0,
+      short_.Count == 0 ? null : string.Join("; ", short_.Take(4)
+          .Select(l => $"{l.InvoiceNo} short {l.GrossWeightCt - Took(l.LineId):N4}")));
+
+var badPair = db.Where(l =>
+        moves.Where(m => m.RefId == l.LineId && m.MovementType == "SALE").Sum(m => m.WeightCt) != l.SelectionCt
+     || moves.Where(m => m.RefId == l.LineId && m.MovementType == "REJECTION").Sum(m => m.WeightCt) != l.RejectionCt)
+    .ToList();
+Check("SALE carries the selection and REJECTION the rejection, on every line", badPair.Count == 0,
+      badPair.Count == 0 ? null : $"{badPair.Count} line(s)");
+
+Check("no line wrote a movement twice",
+      moves.Where(m => db.Any(l => l.LineId == m.RefId))
+           .GroupBy(m => (m.RefId, m.MovementType)).All(g => g.Count() == 1));
+
+Console.WriteLine($"   sheet gross {db.Sum(l => l.GrossWeightCt):N4} ct = ledger out {db.Sum(l => Took(l.LineId)):N4} ct");
+Check("carats out equal carats invoiced", db.Sum(l => l.GrossWeightCt) == db.Sum(l => Took(l.LineId)));
+
+// ── 5 · THE POSITION ────────────────────────────────────────────────────────
+Console.WriteLine("\n── 5 · THE POSITION ────────────────────────────────────────────");
+Check("no bucket is negative", !pos.Any(p => p.LedgerCt < 0),
+      string.Join(", ", pos.Where(p => p.LedgerCt < 0).Select(p => $"{p.GradeCode}x{p.SizeCode}")));
+Check("reconciliation reports nothing", recon.All(r => r.DiffCt == 0),
+      string.Join(", ", recon.Where(r => r.DiffCt != 0).Select(r => $"{r.GradeCode}x{r.SizeCode} {r.DiffCt:N4}")));
+Console.WriteLine($"   ledger {pos.Sum(p => p.LedgerCt):N4} ct, available {pos.Sum(p => p.BalanceCt):N4} ct, "
+                + $"reserved {pos.Sum(p => p.ReservedCt):N4} ct");
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "SALES IMPORT VERIFIED - no CT mismatch" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

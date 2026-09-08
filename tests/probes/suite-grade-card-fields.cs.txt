@@ -1,0 +1,126 @@
+﻿// Every Grades column shows its value in full, and the alias placeholder gets out of the way the
+// moment anything is typed.
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    static IEnumerable<T> All<T>(DependencyObject? d) where T : DependencyObject
+    {
+        if (d is null) yield break;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+        {
+            var c = VisualTreeHelper.GetChild(d, i);
+            if (c is T hit) yield return hit;
+            foreach (var deep in All<T>(c)) yield return deep;
+        }
+    }
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1280, Height = 800 };
+    win.Show();
+    void Settle()
+    {
+        var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f);
+    }
+    var tabs = (TabControl)win.FindName("Tabs")!;
+    tabs.SelectedIndex = tabs.Items.Cast<TabItem>()
+        .Select((x, i) => (x, i)).First(p => (p.x.Header as string) == "Master data").i;
+    Settle(); Settle();
+
+    var grid = (DataGrid)win.FindName("GradeGrid")!;
+
+    // LET THE APP'S OWN LOAD FINISH FIRST. LoadMasterAsync runs on startup and assigns this grid's
+    // ItemsSource when it returns (or fails). Assigning before that races it, and the rows measured
+    // here would be whichever of the two landed last.
+    for (int i = 0; i < 12; i++) Settle();
+
+    grid.ItemsSource = new List<Grade>
+    {
+        // The longest values the catalogue can actually hold, and one row with NO aliases at all
+        // so the placeholder has somewhere to show.
+        new() { GradeId = 1, Code = "Unknown Grade", DisplayName = "Unknown Grade",
+                Aliases = "", SortOrder = 107, Active = true },
+        new() { GradeId = 2, Code = "NO 1 BB", DisplayName = "No. 1 Bottom Black",
+                Aliases = "GHOST;GH-VVS;GHVVS;GH VS;GH1;GHVS;GH-1;GHOST VS;GH VVS;GHOSTVS", SortOrder = 3, Active = true },
+    };
+    Settle(); Settle();
+
+    Console.WriteLine($"   grid: items {grid.Items.Count}, MaxHeight {grid.MaxHeight:N0}, ActualHeight {grid.ActualHeight:N0}");
+    Console.WriteLine($"   realised rows: {All<DataGridRow>(grid).Count()}");
+    foreach (var r in All<DataGridRow>(grid))
+        Console.WriteLine($"      row {grid.Items.IndexOf(r.Item)} height {r.ActualHeight:N0}");
+
+    // ── every text cell shows its whole value ───────────────────────────────
+    foreach (string want in new[] { "Unknown Grade", "No. 1 Bottom Black", "NO 1 BB" })
+    {
+        var tb = All<TextBlock>(grid).FirstOrDefault(x => x.Text == want);
+        Check($"\"{want}\" is drawn in full", tb is not null, tb is null ? "<not found>" : "found");
+        if (tb is not null)
+            Check($"   and wraps rather than trimming",
+                  tb.TextWrapping == TextWrapping.Wrap && tb.TextTrimming == TextTrimming.None,
+                  $"wrap {tb.TextWrapping}, trim {tb.TextTrimming}");
+    }
+
+    // ── the placeholder ─────────────────────────────────────────────────────
+    var boxes = All<TextBox>(grid).Where(b =>
+        System.Windows.Automation.AutomationProperties.GetName(b) == "Aliases").ToList();
+    Console.WriteLine($"\n   alias boxes: {boxes.Count}");
+
+    foreach (var b in boxes)
+    {
+        var row = All<DataGridRow>(grid).FirstOrDefault(r => All<TextBox>(r).Contains(b));
+        var hint = row is null ? null : All<TextBlock>(row).FirstOrDefault(x => x.Text == "aliases");
+        string state = hint?.Visibility.ToString() ?? "<no placeholder>";
+        Console.WriteLine($"   box text \"{(b.Text.Length > 28 ? b.Text[..28] + "..." : b.Text)}\"  placeholder {state}");
+
+        if (b.Text.Length == 0)
+            Check("empty box SHOWS the placeholder", hint?.Visibility == Visibility.Visible, state);
+        else
+            Check("filled box HIDES the placeholder", hint?.Visibility != Visibility.Visible, state);
+    }
+
+    // ── and it hides the moment anything is typed, not when the model changes ──
+    var empty = boxes.FirstOrDefault(b => b.Text.Length == 0);
+    if (empty is not null)
+    {
+        var row = All<DataGridRow>(grid).First(r => All<TextBox>(r).Contains(empty));
+        var hint = All<TextBlock>(row).First(x => x.Text == "aliases");
+        empty.Text = "TYPED";                       // the model is untouched, as OneWay intends
+        Settle();
+        Check("typing hides it even though the model has not changed",
+              hint.Visibility != Visibility.Visible,
+              $"placeholder {hint.Visibility}, model still \"{(row.Item as Grade)?.Aliases}\"");
+    }
+
+    win.Close();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

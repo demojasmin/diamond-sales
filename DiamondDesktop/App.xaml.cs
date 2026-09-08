@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Windows;
 using System.Windows.Markup;
 using DiamondDesktop.Data;
@@ -24,6 +24,7 @@ public partial class App : Application
     {
         base.OnStartup(e);
         UseThreeLetterDayNames();
+        StopTheWheelChangingPickers();
 
         // Without this, any unhandled exception closes the app with no window, no message and no
         // log — from the user's side it just vanishes, which is indistinguishable from the sign-in
@@ -93,6 +94,54 @@ public partial class App : Application
             // and a splash left alive would hold the process open under OnExplicitShutdown.
             splash.Close();
         }
+    }
+
+    /// <summary>
+    /// A mouse wheel over a drop-down scrolls the PAGE. It does not change the drop-down.
+    ///
+    /// WPF's default is the opposite: a closed ComboBox takes the wheel and steps its selection, so
+    /// scrolling down a page silently re-picks whatever the pointer happened to pass over. On the
+    /// Dashboard that swapped "Sales by buyer" for "Inventory aging" mid-scroll; on a filter bar it
+    /// changes what the table below is showing. The person is reading, not choosing, and a value
+    /// that changes because the pointer moved over it is a value nobody entered.
+    ///
+    /// ELEVEN CONTROLS ALREADY DID THIS, one PreviewMouseWheel="NoWheelChange" at a time -- Sales
+    /// entry's three filters, the ledger pickers, the price grid. The Dashboard's four and every
+    /// picker added since were simply never given the attribute, which is the trouble with a rule
+    /// written per control: the next one is written without it.
+    ///
+    /// A CLASS HANDLER makes it the behaviour of the CONTROL TYPE instead, so it covers every
+    /// ComboBox in the app, on every page, including ones not written yet. It runs before instance
+    /// handlers, so the existing per-control attributes simply never fire -- they are left in place
+    /// as harmless, and as the record of which screens hit this first.
+    ///
+    /// WHILE THE LIST IS OPEN THE WHEEL IS THE LIST'S, which is what NoWheelChange's own
+    /// IsDropDownOpen test is for: scrolling a long grade list is exactly what the wheel should do
+    /// there. Only a CLOSED picker hands the wheel back to the page.
+    /// </summary>
+    private static void StopTheWheelChangingPickers() =>
+        EventManager.RegisterClassHandler(
+            typeof(System.Windows.Controls.ComboBox),
+            UIElement.PreviewMouseWheelEvent,
+            new System.Windows.Input.MouseWheelEventHandler(WheelGoesToThePage));
+
+    /// <summary>
+    /// Marks the wheel handled so the picker ignores it, then re-raises it at the parent so the
+    /// page still scrolls. Without the second half the wheel would simply die over every drop-down
+    /// and the page would feel stuck.
+    ///
+    /// The same shape as MainWindow.NoWheelChange, which this replaces the need for.
+    /// </summary>
+    private static void WheelGoesToThePage(object sender, System.Windows.Input.MouseWheelEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.ComboBox { IsDropDownOpen: false } combo) return;
+
+        e.Handled = true;
+        (combo.Parent as UIElement)?.RaiseEvent(new System.Windows.Input.MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
+        {
+            RoutedEvent = UIElement.MouseWheelEvent,
+            Source = combo,
+        });
     }
 
     /// <summary>

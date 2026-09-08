@@ -356,6 +356,21 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             // In a finally: a read that fails half way through has still cleared whatever it got to,
             // so the screen needs putting back whether or not the rest of it worked.
             _invoice.CatalogueChanged();
+
+            // AND THE LINE FILTERS GO BACK TO EMPTY, so the entry screen opens showing its rows.
+            //
+            // The two party pickers are pointed at Buyers and Brokers while both are still EMPTY --
+            // PointAt runs from DataContextChanged, this method fills them afterwards -- and a
+            // Selector being given its items writes back down a two-way SelectedItem binding. The
+            // app therefore opened with FilterBuyer and FilterBroker holding a party nobody chose,
+            // the grid showed "0 of 2 rows shown, filtered", and an entry with lines in it looked
+            // empty. Add line was the only way out, because it clears the filters to make its own
+            // row visible -- which is exactly how this was noticed.
+            //
+            // Here rather than in the pickers: a filter is a thing the person sets, so the honest
+            // rule is that a screen nobody has touched yet is not filtering. Same call the Clear
+            // button makes, so there is one definition of "no filter" and not two.
+            _invoice.ClearFilters();
         }
     }
 
@@ -974,6 +989,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// worth holding does not go back to the database. Keyed by LineKey, valued by what was sent.
     private readonly Dictionary<Guid, (long Grade, long Size, decimal Ct)> _held = [];
 
+    /// One refusal box at a time. A line the shelf cannot cover is refused on every change to it,
+    /// so without this a few keystrokes queue a stack of identical dialogs.
+    private bool _refusalShowing;
+
     /// <summary>
     /// Holds this line's carats, or corrects the hold it already has.
     ///
@@ -1006,7 +1025,47 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         string? failure = await Repo.ReserveLineAsync(
             _invoice.ClientRef, line.LineKey, grade.GradeId, size.SizeId, line.GrossWeightCt);
 
-        if (failure is not null) { Say(failure); return; }
+        if (failure is not null)
+        {
+            // IN A BOX, not only along the bottom. This is the one refusal on this screen that
+            // changes what the desk may do next -- "Insufficient stock for NO II x 1/6: required
+            // 3.43 ct, available 0 ct" means the parcel cannot be sold, and the status strip sits
+            // at the very bottom of a 900px window, a long way from the cell just typed. Read as a
+            // line that quietly did not hold, which is exactly the silence 0053 set out to end.
+            //
+            // The bar FIRST and always, so the text is there to re-read after the box is gone.
+            Say(failure, popup: false);
+
+            // DEFERRED, because this arrives while the grid is committing the cell that caused it,
+            // and a modal opened inside a commit re-enters the DataGrid. Background priority puts
+            // it after the edit has landed.
+            //
+            // AND ONLY FOR A SHORTFALL. This was every failure, and that was wrong: ReserveLineAsync
+            // also returns a message when the desk is offline, when RLS refuses, or when the
+            // workspace has no reserve_line at all -- and none of those is a decision anybody can
+            // act on mid-keystroke. Say's own comment says why making every refusal modal is a
+            // mistake; a box that appears because the network blinked is exactly that mistake.
+            //
+            // The shortfall is different. It is a fact about the parcel, it will not clear itself,
+            // and it changes what may be typed next. So the box is for that one message, named by
+            // the text 0053 gives it, and everything else stays on the bar as before.
+            bool shortfall = failure.Contains("Insufficient stock", StringComparison.OrdinalIgnoreCase);
+
+            // AND ONE AT A TIME. A line that fails to hold is not recorded in _held, so the next
+            // change to that line asks again and is refused again; without the guard a few
+            // keystrokes would queue a stack of identical dialogs to click through.
+            if (shortfall && !_refusalShowing)
+            {
+                _refusalShowing = true;
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
+                    new Action(() =>
+                    {
+                        try { ShowRefused(failure); }
+                        finally { _refusalShowing = false; }
+                    }));
+            }
+            return;
+        }
 
         if (line.GrossWeightCt <= 0) _held.Remove(line.LineKey);
         else _held[line.LineKey] = want;
@@ -2531,6 +2590,104 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         InvoiceLinesHeading.Text = lines is null ? "LINES"
                                  : lines.Count == 1 ? "1 LINE"
                                  : $"{lines.Count} LINES";
+
+        CapInvoiceLinesHeight(lines?.Count ?? 0);
+    }
+
+    /// <summary>Ten rows, then the table holds its height and scrolls. On request, Sept 2026.</summary>
+    private const int InvoiceLinesVisibleRows = 10;
+
+    /// <summary>
+    /// Holds the lines table at ten rows and lets it scroll past that.
+    ///
+    /// MEASURED, NOT A NUMBER IN THE MARKUP. A MaxHeight in XAML is a guess at the row height, and
+    /// a guess that is wrong by a few pixels shows a half row at the bottom -- which reads as a
+    /// clipped table rather than a scrolling one, and would break again the first time the theme
+    /// changes a font size or a cell padding. The header and the first realised row report their
+    /// own heights, so the cap is exactly ten rows whatever they are.
+    ///
+    /// AFTER LAYOUT, at Loaded priority: the containers do not exist until the grid has arranged
+    /// the items just assigned, and ActualHeight is zero before that.
+    ///
+    /// UNDER TEN ROWS THE CAP IS REMOVED, not merely unreached. Leaving a MaxHeight on a short
+    /// table is invisible until somebody changes the row height, and then a three-line invoice
+    /// starts scrolling for no reason.
+    ///
+    /// THE WHEEL, which is the reason the previous cap was taken out (see the markup): a scrollbar
+    /// inside the drawer's own scrollbar fought it for the wheel, and the drawer stopped moving
+    /// whenever the pointer was over the table. The grid keeps CanContentScroll="False" so it
+    /// scrolls by pixel, and InnerWheel -- the same handler the Bucket ledger uses -- hands the
+    /// wheel back to the drawer once this table has reached its end.
+    /// </summary>
+    private void CapInvoiceLinesHeight(int rows)
+    {
+        if (InvoiceLinesGrid is null) return;
+
+        if (rows <= InvoiceLinesVisibleRows)
+        {
+            InvoiceLinesGrid.MaxHeight = double.PositiveInfinity;
+            ScrollViewer.SetVerticalScrollBarVisibility(InvoiceLinesGrid, ScrollBarVisibility.Disabled);
+            return;
+        }
+
+        ScrollViewer.SetVerticalScrollBarVisibility(InvoiceLinesGrid, ScrollBarVisibility.Auto);
+
+        // ON EVERY LAYOUT PASS UNTIL IT WORKS, not once after a delay.
+        //
+        // A single deferred attempt is not enough, and the reason is worth stating: the rows have
+        // no height until the grid has ARRANGED them, and it cannot arrange them while the detail
+        // panel is still collapsed. Selecting an invoice fills the lines and reveals the panel, and
+        // nothing guarantees which of those the layout system gets to first -- measured at row
+        // height 0, which left MaxHeight at infinity and the cap silently never applied.
+        //
+        // LayoutUpdated fires after each pass, so this simply waits for the one where the rows are
+        // real, sets the height and unhooks itself. It detaches the previous attempt first: a
+        // handler per invoice click would otherwise pile up on the same grid.
+        InvoiceLinesGrid.LayoutUpdated -= _capInvoiceLines;
+        _capInvoiceLines = (_, _) =>
+        {
+            if (InvoiceLinesGrid?.ItemContainerGenerator.ContainerFromIndex(0)
+                    is not DataGridRow first || first.ActualHeight <= 0) return;   // not arranged yet
+
+            // The column headers sit above the rows and are not scrolled away, so they are part of
+            // the height the table must be given, not part of the ten.
+            double header =
+                Descendant<System.Windows.Controls.Primitives.DataGridColumnHeadersPresenter>(InvoiceLinesGrid)
+                    ?.ActualHeight ?? 0;
+
+            InvoiceLinesGrid.MaxHeight = header + (first.ActualHeight * InvoiceLinesVisibleRows);
+            InvoiceLinesGrid.LayoutUpdated -= _capInvoiceLines;
+        };
+        InvoiceLinesGrid.LayoutUpdated += _capInvoiceLines;
+    }
+
+    /// The pending height measurement, held so a second invoice click replaces it rather than
+    /// stacking another handler on the same grid.
+    private EventHandler? _capInvoiceLines;
+
+    /// <summary>
+    /// Once the lines table has scrolled as far as it can, the wheel goes back to the drawer.
+    ///
+    /// Without this the drawer stops dead whenever the pointer is over the table: a ScrollViewer
+    /// that cannot scroll further does not pass the wheel up, so the detail panel became unusable
+    /// around its own middle. It is why the previous ten-row cap was removed rather than fixed.
+    ///
+    /// Same shape as InnerWheel, which does this for the Dashboard, but pointed at this drawer:
+    /// InnerWheel names DashScroll outright and would scroll the wrong panel from here.
+    /// </summary>
+    private void InvoiceLinesWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (e.Handled || InvoiceDetailScroll is null) return;
+
+        if (Descendant<ScrollViewer>((DependencyObject)sender) is { } inner)
+        {
+            bool up = e.Delta > 0 && inner.VerticalOffset > 0.5;
+            bool down = e.Delta < 0 && inner.VerticalOffset < inner.ScrollableHeight - 0.5;
+            if (up || down) return;                      // the table still has room of its own
+        }
+
+        e.Handled = true;
+        InvoiceDetailScroll.ScrollToVerticalOffset(InvoiceDetailScroll.VerticalOffset - e.Delta);
     }
 
     /// The due date, with the lateness appended only when there is any — a bare "0 days overdue"
@@ -4262,19 +4419,16 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         if (GradeGrid is null) return;
 
-        // RowHeight is 42 here, set on the grid, and this method has always worked: measured at a
-        // 861px window it writes MaxHeight 124 = a 40px header plus two whole 42px rows, which is
-        // right. Sizing the grid was never the missing piece -- the grid also PAINTS the row after
-        // the ones that fit, because nothing in the chain clips it. GradeGrid sets ClipToBounds for
-        // that half; see the comment on it.
+        // THE ROWS ARE NO LONGER ALL THE SAME HEIGHT, and that is what this had to learn.
         //
-        // The fallback measures a realised row if RowHeight is ever left unset, so a style change
-        // that moved the 42 onto AppRow alone could not silently turn the trimming off.
-        double row = GradeGrid.RowHeight;
-        if (double.IsNaN(row) || row <= 0)
-            row = VisualTree.FindChild<DataGridRow>(GradeGrid)?.ActualHeight ?? 0;
-        if (row <= 0) return;                           // no realised row yet; runs again when there is
-
+        // It used to divide the room by a single row height, which was exactly right while the grid
+        // pinned every row at 42. ALIASES and GRADE NAME now WRAP, so a grade with a long alias list
+        // is two or three lines tall and its neighbour is one: dividing by any single number would
+        // cut through the middle of a tall row, which is the very thing this method exists to stop.
+        //
+        // So the heights are ADDED UP instead, in order, and the last row that fits whole is where
+        // the grid ends. Same answer as before on a table of even rows -- n x 42 either way -- and
+        // the right answer on a table of uneven ones.
         var header = VisualTree.FindChild<System.Windows.Controls.Primitives.DataGridColumnHeadersPresenter>(GradeGrid);
         double head = header?.ActualHeight ?? 0;
         if (head <= 0) return;                          // not laid out yet; this runs again when it is
@@ -4282,7 +4436,31 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         double room = available - head;
         if (room <= 0) return;
 
-        double whole = Math.Floor(room / row) * row;
+        // AN UNREALISED ROW IS ASSUMED TO BE A PLAIN ONE, and that is not a detail -- without it
+        // this method eats itself. A DataGrid only realises the rows its current height has room
+        // for, so stopping at the first missing container caps the grid at what is already on
+        // screen, which stops the next row realising, which keeps the cap. Measured: the grid
+        // pinned itself to ONE row and stayed there however tall the window was.
+        //
+        // Estimating the unseen ones at the floor height breaks the loop: the grid grows, they
+        // realise, and the next layout pass replaces the estimate with what they really measure.
+        double floorHeight = GradeGrid.MinRowHeight > 0 ? GradeGrid.MinRowHeight : 42;
+
+        double whole = 0;
+        double last = floorHeight;
+        for (int i = 0; i < GradeGrid.Items.Count; i++)
+        {
+            double h = GradeGrid.ItemContainerGenerator.ContainerFromIndex(i) is DataGridRow r
+                       && r.ActualHeight > 0
+                     ? r.ActualHeight
+                     : last;
+            last = h;
+            if (whole + h > room) break;                // this one would be cut; stop before it
+            whole += h;
+        }
+
+        // Nothing measurable yet, or not even one row fits. Either way there is nothing to snap to,
+        // and writing a height now would freeze the grid at a guess.
         if (whole <= 0) return;
 
         double want = whole + head;
@@ -4503,33 +4681,60 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// whether a workbook spelling resolves on import, and there was previously nowhere in the app
     /// to see them, let alone correct one.
     /// </summary>
-    private async void GradeAlias_Committed(object? sender, DataGridCellEditEndingEventArgs e)
+    /// <summary>
+    /// Saves an alias list when the field is left.
+    ///
+    /// It used to be CellEditEnding, because ALIASES was a text column you double-clicked to open.
+    /// It is now a live TextBox in the cell, exactly as Remark is on Sales entry, so the moment to
+    /// save is the moment focus leaves it. EVERY RULE BELOW IS THE ONE THAT WAS THERE: the
+    /// semicolons are tidied, an unchanged value writes nothing, clearing the last alias asks
+    /// first, and a refusal puts the grid back to what the database holds.
+    ///
+    /// The binding is OneWay, so grade.Aliases still says what was SAVED while box.Text says what
+    /// was typed. That gap is what makes the comparison and the confirm possible at all.
+    /// </summary>
+    private async void GradeAliasBox_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (e.EditAction != DataGridEditAction.Commit) return;
-        if (e.Row.Item is not Grade grade) return;
-        if (e.EditingElement is not TextBox box) return;
+        if (sender is not TextBox box) return;
+        if (box.DataContext is not Grade grade) return;
 
         string typed = box.Text.Trim();
         string tidy = string.Join(';', typed.Split(';', StringSplitOptions.RemoveEmptyEntries
                                                         | StringSplitOptions.TrimEntries));
-        box.Text = tidy;
 
-        if (string.Equals(tidy, grade.Aliases?.Trim() ?? "", StringComparison.Ordinal)) return;
+        // NEVER ASSIGN box.Text, and this is the whole of the wandering-alias bug.
+        //
+        // The Text here is a ONE-WAY binding to grade.Aliases. Writing the property directly does
+        // not write "through" a one-way binding the way a two-way one would -- it REPLACES it with
+        // a local value, and the binding is gone for the life of that control. A DataGrid recycles
+        // its row containers, so the next grade scrolled into that row got a box that no longer
+        // asked the model anything and still showed the previous grade's aliases. That is why the
+        // value "sometimes appeared and sometimes did not": it depended entirely on which row the
+        // recycled container had last been used for.
+        //
+        // The binding is refreshed from the model instead, which shows the tidied text without
+        // taking the binding away. Doing it now covers the no-change path below as well, so typing
+        // only whitespace puts the stored value back on screen rather than leaving the whitespace.
+        void ShowStored() =>
+            System.Windows.Data.BindingOperations.GetBindingExpression(box, TextBox.TextProperty)?.UpdateTarget();
 
-        // Clearing every alias is the one destructive edit on this page: those spellings are what
-        // let a workbook import resolve, and losing them fails the next import silently.
-        if (tidy.Length == 0 && (grade.Aliases ?? "").Trim().Length > 0)
-        {
-            bool go = AppDialog.Confirm(this, "Remove all aliases",
-                $"Remove every alias from {grade.Code}?", null,
-                [("Grade", grade.Code), ("Aliases to remove", grade.Aliases!.Trim())],
-                "Imports resolve workbook spellings through these aliases. Without them, rows using "
-                + "those spellings will be skipped on the next import.",
-                null, null, "Remove them", "Keep them");
+        if (string.Equals(tidy, grade.Aliases?.Trim() ?? "", StringComparison.Ordinal))
+        { ShowStored(); return; }
 
-            if (!go) { box.Text = grade.Aliases; await LoadMasterAsync(); return; }
-        }
-
+        // NO DIALOG EITHER WAY, on request (Sept 2026). This field is now the same kind of field
+        // Remark is on Sales entry -- a box in a cell that saves what is in it when you leave it --
+        // and Remark asks nothing and announces nothing. Two boxes that look identical and behave
+        // differently is worse than either behaviour on its own.
+        //
+        // WHAT THIS GIVES UP, said plainly rather than discovered later. Clearing the last alias
+        // used to ask first, because those spellings are what let a workbook import resolve a
+        // grade: without them the next import skips the rows that use them. That confirmation is
+        // gone, so an alias list emptied by accident is now emptied silently. What remains is the
+        // audit trail, which records the old and new value of every alias edit, so it can be read
+        // back and retyped.
+        //
+        // The status bar still says what happened. That is not a popup -- it is the same one-line
+        // report every other quiet action on this screen makes.
         string? failure = await Repo.SetGradeAliasesAsync(grade.GradeId, tidy);
         if (failure is not null)
         {
@@ -4538,7 +4743,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             return;
         }
         grade.Aliases = tidy;
-        Say($"Aliases for {grade.Code} saved", ok: true);
+        ShowStored();                 // the tidied value, through the binding, not over it
+
+        // popup: false, or Say raises the "Done" box for a confirmation. The bar alone is right for
+        // a field that saves itself as you leave it.
+        Say(tidy.Length == 0
+                ? $"Aliases cleared for {grade.Code}"
+                : $"Aliases for {grade.Code} saved",
+            ok: true, popup: false);
     }
 
     // ── MDM-003 · price list ────────────────────────────────────────────────
@@ -7305,7 +7517,22 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         var existing = await Read(Repo.ImportedInvoiceIdsAsync);
         if (existing is null) return;
 
-        if (!ConfirmImport(plan, picker.FileName, existing.Count)) { Say("Import cancelled", neutral: true); return; }
+        // WHAT THE SHELF CANNOT COVER, read before the question is asked rather than reported after
+        // it has been answered.
+        //
+        // A failed read is not fatal here. The import is then no worse off than it was before this
+        // check existed -- it goes ahead and reports the shortfall afterwards, as it always did --
+        // and refusing an import outright because a second read failed would be a worse trade.
+        var position = await Read(Repo.StockAsync);
+        var salesMoves = position is null ? null : await Read(Repo.ImportedSalesMovementsAsync);
+        var migLines = salesMoves is null ? null : await Read(Repo.ImportedSaleLinesAsync);
+
+        var shortfalls = position is null || salesMoves is null || migLines is null
+            ? null
+            : ShortfallLines(plan, position, salesMoves, migLines, existing);
+
+        if (!ConfirmImport(plan, picker.FileName, existing.Count, shortfalls))
+        { Say("Import cancelled", neutral: true); return; }
 
         // 6-9 · clear the old, write the new, report what landed.
         // The whole window is disabled behind this, so a second import cannot be started and no
@@ -8324,12 +8551,92 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             secondaryText: "Cancel");
     }
 
-    private bool ConfirmImport(ImportPlan plan, string path, int existingCount)
+    /// <summary>
+    /// The grade × size buckets this workbook sells more from than the shelf holds, worked out
+    /// BEFORE anything is written.
+    ///
+    /// WHY THIS EXISTS. The import has always capped a line at what its bucket holds (0051) and
+    /// said so afterwards — "2.79 ct could not be taken out of stock across 3 bucket(s)". That note
+    /// is true, and it is also the last time anyone sees it: click Done and the only trace left is
+    /// a difference between the Invoices page and the Stock page, with nothing naming the lines
+    /// that caused it. Finding one afterwards meant reading the ledger movement by movement.
+    ///
+    /// So the same arithmetic runs FIRST, against the plan and the live position, and goes in front
+    /// of the person about to commit it. A sheet that would not deduct in full can then be fixed —
+    /// a sieve corrected on a row, or the stock counted again — BEFORE it becomes a mismatch,
+    /// rather than investigated after.
+    ///
+    /// THE BUCKET IS THE UNIT, not the line, because that is how 0051 shares a bucket out: lines
+    /// are filled oldest first and the shortfall lands on whichever is last. Naming a line here
+    /// would name one that is only short because of the order it happens to sit in.
+    ///
+    /// GROSS, matching what the import actually deducts: a SALE for the selection and a REJECTION
+    /// for the rest, both of which leave the bucket.
+    ///
+    /// It changes nothing about what is imported or how much is deducted. It only means the figure
+    /// is known in time to act on.
+    /// </summary>
+    private static List<string> ShortfallLines(
+        ImportPlan plan, List<VStockPosition> stock,
+        List<VStockMovement> salesMovements, List<VSalesLine> importedLines,
+        IReadOnlyCollection<long> importedInvoiceIds)
+    {
+        // WHAT THE PREVIOUS IMPORT IS STILL HOLDING, given back to each bucket first.
+        //
+        // replace_imported_sales DELETES its own movements before it caps anything, so on a
+        // re-import the shelf those lines meet is today's balance plus whatever the last run took
+        // out of that bucket. Judged against the raw balance instead, a sheet imported twice would
+        // report almost every busy bucket as short by roughly what it had just sold -- measured on
+        // this database, 302.99 ct on a bucket that is not short at all. A warning that is wrong on
+        // every re-import is worse than none, because it teaches the desk to click past it.
+        //
+        // Scoped to the MIG- lines, and deliberately not to every sales_line movement: an invoice
+        // typed in the app is not the import's to give back, and crediting it would make the shelf
+        // look larger than it is and UNDER-warn, which is the dangerous direction to be wrong in.
+        var importedLineIds = importedLines.Select(l => l.LineId).ToHashSet();
+        var invoiceIds = importedInvoiceIds.ToHashSet();
+
+        var back = salesMovements
+            .Where(m => m.RefId is { } id
+                        && (m.RefType == "sales_line" ? importedLineIds.Contains(id)
+                                                      : invoiceIds.Contains(id)))
+            .GroupBy(m => (m.GradeCode, m.SizeCode))
+            .ToDictionary(g => g.Key, g => g.Sum(m => m.WeightCt));
+
+        var have = stock.ToDictionary(
+            p => (p.GradeCode, p.SizeCode),
+            p => p.BalanceCt + back.GetValueOrDefault((p.GradeCode, p.SizeCode), 0m));
+
+        return plan.Invoices
+            .SelectMany(i => i.Lines)
+            .GroupBy(l => (l.GradeCode, l.SizeCode))
+            .Select(g => new
+            {
+                g.Key.GradeCode,
+                g.Key.SizeCode,
+                Wants = g.Sum(l => l.GrossCt),
+                Has = have.GetValueOrDefault(g.Key, 0m),
+            })
+            .Where(b => b.Wants - b.Has > 0.00005m)
+            .OrderByDescending(b => b.Wants - b.Has)
+            .Select(b => $"{b.GradeCode} × {b.SizeCode}: the sheet sells {b.Wants:N4} ct, "
+                       + $"stock holds {b.Has:N4} ct — {b.Wants - b.Has:N4} ct will not come out")
+            .ToList();
+    }
+
+    private bool ConfirmImport(ImportPlan plan, string path, int existingCount,
+                               List<string>? shortfalls = null)
     {
         string scope = existingCount == 0
             ? "There is no previous import to replace."
             : $"This will DELETE the {existingCount:N0} previously imported invoice(s), " +
               "along with their lines and receipts.";
+
+        // THE SHORTFALL TAKES THE LIST when there is one, because it is the thing worth stopping
+        // for. A skipped row will not be imported at all and is already counted in the emphasis
+        // line; a shortfall is a row that WILL import and whose carats will not fully move, which
+        // is the harder fault to notice once the dialog is gone.
+        bool anyShort = shortfalls is { Count: > 0 };
 
         var skipped = plan.SkippedRows == 0
             ? null
@@ -8349,11 +8656,20 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 ("Dates", $"{plan.FirstDate:dd MMM yyyy} — {plan.LastDate:dd MMM yyyy}"),
             ],
             emphasis: scope + " Invoices entered in the app are numbered separately and are not "
-                      + "affected.",
-            listTitle: plan.SkippedRows == 0
-                ? null
-                : $"{plan.SkippedRows:N0} row(s) will be skipped and not imported",
-            bullets: skipped,
+                      + "affected."
+                      + (anyShort
+                            ? $" {shortfalls!.Count} grade/size bucket(s) hold less than this sheet "
+                              + "sells: those sales would be invoiced in full but only partly deducted."
+                            : "")
+                      + (anyShort && plan.SkippedRows > 0
+                            ? $" {plan.SkippedRows:N0} row(s) will also be skipped."
+                            : ""),
+            listTitle: anyShort
+                ? "Stock cannot cover every line on this sheet"
+                : plan.SkippedRows == 0
+                    ? null
+                    : $"{plan.SkippedRows:N0} row(s) will be skipped and not imported",
+            bullets: anyShort ? shortfalls : skipped,
             primaryText: "Import now",
             secondaryText: "Cancel");
     }

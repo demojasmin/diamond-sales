@@ -376,14 +376,28 @@ var t = new Thread(() =>
 
     // The tooltips are the only place the scope is written in words, and they were the thing
     // saying the opposite: "Confirms the WHOLE entry, not only the ticked rows".
+    //
+    // SHORTENED ON REQUEST, Sept 2026, and these assertions moved with them. They used to look for
+    // the word TICKED in capitals and for two further promises spelled out underneath -- "Unticked
+    // rows stay on this entry and keep their hold on stock" and "Nothing is saved and no stock
+    // moves". The desk asked for one short line per button, so those sentences are gone from the
+    // markup deliberately and asserting them here would be asserting the change had not been made.
+    //
+    // WHAT STILL HAS TO HOLD is the thing the tooltips exist for: each one says it acts on the
+    // TICKED lines and not on the whole entry, and Confirm is the only one of the two that says
+    // stock moves. That distinction is the one a person can be hurt by getting wrong.
     Check("TOOLTIP - Confirm sale says it acts on the ticked lines",
-          (post.ToolTip as string ?? "").Contains("TICKED"), post.ToolTip as string);
-    Check("TOOLTIP - and that the rest keep their hold",
-          (post.ToolTip as string ?? "").Contains("keep their hold"), post.ToolTip as string);
-    Check("TOOLTIP - Print memo says the same",
-          (memo.ToolTip as string ?? "").Contains("TICKED"), memo.ToolTip as string);
-    Check("TOOLTIP - and still promises not to save",
-          (memo.ToolTip as string ?? "").Contains("Nothing is saved"), memo.ToolTip as string);
+          (post.ToolTip as string ?? "").Contains("ticked", StringComparison.OrdinalIgnoreCase),
+          post.ToolTip as string);
+    Check("TOOLTIP - and that it moves stock",
+          (post.ToolTip as string ?? "").Contains("stock", StringComparison.OrdinalIgnoreCase),
+          post.ToolTip as string);
+    Check("TOOLTIP - Print memo says the same about scope",
+          (memo.ToolTip as string ?? "").Contains("ticked", StringComparison.OrdinalIgnoreCase),
+          memo.ToolTip as string);
+    Check("TOOLTIP - and does NOT claim to move stock, which is what tells the two apart",
+          !(memo.ToolTip as string ?? "").Contains("stock", StringComparison.OrdinalIgnoreCase),
+          memo.ToolTip as string);
 
     // ── the pager has its own strip, and does not sit on the scrollbar ────
     // It used to be a panel laid over the grid at the bottom-right, squarely on top of the

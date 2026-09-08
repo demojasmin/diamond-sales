@@ -1,0 +1,105 @@
+﻿// The Invoice detail lines table: ten rows, then it holds its height and scrolls.
+//
+// Driven through ShowInvoiceLines, the method the Invoices page itself calls, so this exercises the
+// real path rather than poking MaxHeight directly. MIG-9 on Demo has 20 lines, which is the case
+// that was clipped.
+
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1420, Height = 900 };
+    win.Show();
+
+    void Settle()
+    {
+        var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f);
+    }
+    Settle();
+
+    // THE INVOICES TAB FIRST. A TabControl only builds the selected tab's content, so on any
+    // other tab the lines grid does not exist as a visual at all and every height reads 0.
+    var tabs = (TabControl)win.FindName("Tabs")!;
+    tabs.SelectedIndex = tabs.Items.Cast<TabItem>()
+        .Select((t, i) => (t, i)).First(x => (x.t.Header as string) == "Invoices").i;
+    Settle();
+
+    // The panel must be OPEN, or the grid never arranges its rows and every height reads 0.
+    // That is the real sequence too: selecting an invoice fills the lines and reveals the card.
+    var card = (System.Windows.Controls.Border)win.FindName("InvoiceDetailCard")!;
+    var col  = (ColumnDefinition)win.FindName("InvoiceDetailCol")!;
+    card.Visibility = Visibility.Visible;
+    col.Width = new GridLength(360);
+
+    var grid = (DataGrid)win.FindName("InvoiceLinesGrid")!;
+    var show = typeof(MainWindow).GetMethod("ShowInvoiceLines", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    static List<VSalesLine> Lines(int n) =>
+        Enumerable.Range(0, n).Select(i => new VSalesLine
+        { LineId = i + 1, GradeCode = "NO II", SizeCode = "1/6",
+          GrossWeightCt = 3.43m, SelectionCt = 3.43m, Amount = 1000m }).ToList();
+
+    // ── a short invoice is untouched ────────────────────────────────────────
+    show.Invoke(win, [Lines(5)]);
+    Settle(); Settle();
+    Check("5 lines: no cap at all", double.IsPositiveInfinity(grid.MaxHeight), $"{grid.MaxHeight}");
+    Check("5 lines: no scrollbar of its own",
+          ScrollViewer.GetVerticalScrollBarVisibility(grid) == ScrollBarVisibility.Disabled,
+          ScrollViewer.GetVerticalScrollBarVisibility(grid).ToString());
+
+    // ── MIG-9's twenty ──────────────────────────────────────────────────────
+    show.Invoke(win, [Lines(20)]);
+    Settle(); Settle();
+
+    Check("20 lines: the bar is on",
+          ScrollViewer.GetVerticalScrollBarVisibility(grid) == ScrollBarVisibility.Auto,
+          ScrollViewer.GetVerticalScrollBarVisibility(grid).ToString());
+    Check("20 lines: the height is capped", !double.IsPositiveInfinity(grid.MaxHeight), $"{grid.MaxHeight:N1} px");
+
+    var row0 = grid.ItemContainerGenerator.ContainerFromIndex(0) as DataGridRow;
+    double rowH = row0?.ActualHeight ?? 0;
+    Console.WriteLine($"   row height {rowH:N1} px, cap {grid.MaxHeight:N1} px, actual {grid.ActualHeight:N1} px");
+
+    // EXACTLY ten rows plus the header: a cap that is not a whole number of rows shows a half row,
+    // which reads as a clipped table rather than a scrolling one.
+    double header = grid.MaxHeight - (rowH * 10);
+    Check("the cap is the header plus exactly 10 rows",
+          rowH > 0 && header >= 0 && header < rowH,
+          $"cap {grid.MaxHeight:N1} = header {header:N1} + 10 x {rowH:N1}");
+
+    Check("all 20 rows are still IN the table, just not all visible",
+          grid.Items.Count == 20, $"{grid.Items.Count}");
+
+    win.Close();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

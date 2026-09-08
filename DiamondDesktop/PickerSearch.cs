@@ -197,9 +197,15 @@ public static class PickerSearch
         // was first clicked. One reflection lookup, touching no property WPF raises events on, so
         // unlike the wrap it is safe the moment the items arrive.
         PathFor(cb);
+        FitToContent(cb);
+        // AND ONCE MORE WHEN IT IS LOADED. FitToContent measures with the control's own font, and
+        // at attach time a control parsed from XAML has not had its style applied yet -- so the
+        // measurement above can be taken at the default 12pt and come out too narrow. Cheap, and it
+        // removes the ordering question entirely.
+        cb.Loaded += (_, _) => FitToContent(cb);
         DependencyPropertyDescriptor
             .FromProperty(ItemsControl.ItemsSourceProperty, typeof(ComboBox))
-            .AddValueChanged(cb, (_, _) => PathFor(cb));
+            .AddValueChanged(cb, (_, _) => { PathFor(cb); FitToContent(cb); });
 
         DependencyPropertyDescriptor
             .FromProperty(ComboBox.TextProperty, typeof(ComboBox))
@@ -361,6 +367,87 @@ public static class PickerSearch
     }
 
     /// <summary>
+    /// Widens the picker until its LONGEST value fits, and pins that as a floor.
+    ///
+    /// WHY MEASURING BEATS A NUMBER. Every one of these boxes has been widened by hand at least
+    /// once -- "150, not 104: buyer names are the widest thing this bar shows and ABC EXPORTS was
+    /// being cut to C EXPORTS", "122, not 92" -- and each time the next database supplied a longer
+    /// name and cut that one too. RAJDEEP GEMS (RAJKUMAR) needs 190 px; DIAMOND CREATIONS PVT LTD
+    /// needs more. A guessed number does not converge, because the names are not ours to guess.
+    /// The catalogue already knows how wide it is, so it is asked.
+    ///
+    /// MinWidth, NOT Width, so the number is a floor and not a cap: a control in a stretching
+    /// column may still be wider, and one whose XAML asks for more keeps it.
+    ///
+    /// MEASURED OFF THE SOURCE, NEVER THE VIEW, and that is what stops the box twitching. This
+    /// behaviour narrows the list as you type; sized to what is currently VISIBLE, the control
+    /// would shrink on every keystroke that hid the longest name and jump back when it returned.
+    /// The unfiltered list is the honest question -- how wide could this ever need to be.
+    ///
+    /// CAPPED at MaxWidth where the XAML sets one, or at a width past which a filter bar stops
+    /// being a filter bar. Past the cap the value is clipped again, and that is the right trade:
+    /// one absurd name should not push the search box off the screen.
+    /// </summary>
+    private static void FitToContent(ComboBox cb)
+    {
+        // OPT IN, THROUGH MaxWidth, and that restriction is not tidiness -- it is the fix for what
+        // happened when this ran everywhere. PickerSearch.On is set on the GradePicker STYLE, so it
+        // is on all eleven grade pickers in the app, and several of them sit in a star-width column
+        // inside a narrow card. Widening one there does not widen the card: the Grid hands the star
+        // column its share regardless, the control overflows it, and the whole StackPanel is
+        // clipped -- the Bucket ledger's "GRADE" label was cut to "G..." and its picker to a sliver.
+        //
+        // A control can only be allowed to grow where the layout around it can give ground. That is
+        // a fact about the screen, not about the items, so the screen declares it: a picker with a
+        // MaxWidth is one somebody has looked at and decided may size itself, up to that width.
+        // Every other picker in the app behaves exactly as it did before.
+        if (double.IsPositiveInfinity(cb.MaxWidth)) return;
+
+        // The SOURCE, not cb.ItemsSource: once wrapped, ItemsSource is the filtered view.
+        IEnumerable? items = cb.GetValue(OwnedSourceProperty) is CollectionViewSource cvs && cvs.Source is IEnumerable s
+                           ? s : cb.ItemsSource;
+        if (items is null) return;
+
+        double cap = cb.MaxWidth;
+
+        double widest = 0;
+        try
+        {
+            var face = new System.Windows.Media.Typeface(cb.FontFamily, cb.FontStyle, cb.FontWeight, cb.FontStretch);
+            double dpi = System.Windows.Media.VisualTreeHelper.GetDpi(cb).PixelsPerDip;
+            int seen = 0;
+
+            foreach (object? o in items)
+            {
+                // A picker of a thousand rows is not a picker, and measuring every one of them on
+                // the UI thread would be felt. The longest name is in the first few hundred or the
+                // cap will catch it anyway.
+                if (++seen > 500) break;
+
+                string text = Text(cb, o);
+                if (text.Length == 0) continue;
+
+                var ft = new System.Windows.Media.FormattedText(
+                    text, System.Globalization.CultureInfo.CurrentCulture,
+                    FlowDirection.LeftToRight, face, cb.FontSize,
+                    System.Windows.Media.Brushes.Black, dpi);
+
+                if (ft.Width > widest) widest = ft.Width;
+            }
+        }
+        catch (Exception) { return; }   // mid-swap, or a source that will not enumerate
+
+        if (widest <= 0) return;
+
+        // The chrome the text does NOT get: the drop-down arrow, the border and the padding either
+        // side. Measured on this app's own template -- a 160 px picker leaves 133 px of text.
+        const double Chrome = 30;
+
+        double need = Math.Min(widest + Chrome, cap);
+        if (need > cb.MinWidth) cb.MinWidth = need;
+    }
+
+    /// <summary>
     /// Works out which property an item's text lives on, from the items themselves.
     ///
     /// It was hardcoded to "ShortName", which is right for a list of Grade or SizeBucket and wrong
@@ -494,16 +581,44 @@ public static class PickerSearch
     /// <summary>Puts the caret after the last character typed, with nothing selected.</summary>
     private static void Caret(ComboBox cb)
     {
-        if (cb.IsKeyboardFocusWithin) Deselect(cb);
+        // MID-TYPING, so the box stays scrolled to the caret. That is the one case where the END of
+        // the text is the part worth looking at -- it is where the next character lands.
+        if (cb.IsKeyboardFocusWithin) Deselect(cb, keepScroll: true);
     }
 
-    /// <summary>Caret at the end, nothing highlighted.</summary>
-    private static void Deselect(ComboBox cb)
+    /// <summary>
+    /// Caret at the end, nothing highlighted, and the START of the value in view.
+    ///
+    /// WHY THE SCROLL HAS TO BE PUT BACK. Moving the caret to the end scrolls a box too narrow for
+    /// its value so that the END is what shows -- the dashboard's Buyer filter read
+    /// "ATIONS PVT LTD" for DIAMOND CREATIONS PVT LTD, which is not a name anybody can recognise.
+    /// A name is read from its start, and the tail is the disposable part: "DIAMOND CREATIONS PVT…"
+    /// identifies the buyer, "…ATIONS PVT LTD" does not.
+    ///
+    /// The caret STAYS at the end -- that is what makes the next keystroke append rather than
+    /// insert in the middle, and three separate handlers depend on it. Only the viewport moves.
+    ///
+    /// Not while typing (<paramref name="keepScroll"/>): there the caret is exactly what wants
+    /// watching, and yanking the view left would hide the characters being entered.
+    /// </summary>
+    private static void Deselect(ComboBox cb, bool keepScroll = false)
     {
         if (cb.Template?.FindName("PART_EditableTextBox", cb) is not TextBox box) return;
 
         box.SelectionStart = box.Text.Length;
         box.SelectionLength = 0;
+
+        // AFTER THE CARET'S OWN SCROLL, and that is the whole of why this is deferred. Moving the
+        // caret above does not scroll anything on the spot -- it queues the box to bring the caret
+        // into view when it next renders. Calling ScrollToHome() straight afterwards therefore ran
+        // FIRST and was undone a moment later, measured at 56.1 px of a 189 px name in a 133 px
+        // box: exactly the "ATIONS PVT LTD" the dashboard showed.
+        //
+        // Background is below Render, so it runs once that scroll has happened and puts the view
+        // back where a reader needs it.
+        if (!keepScroll)
+            box.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
+                new Action(box.ScrollToHome));
     }
 
     /// <summary>

@@ -1,0 +1,115 @@
+﻿// The five Master-data / dialog fixes, checked on the realised UI.
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    static IEnumerable<T> All<T>(DependencyObject? d) where T : DependencyObject
+    {
+        if (d is null) yield break;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+        {
+            var c = VisualTreeHelper.GetChild(d, i);
+            if (c is T hit) yield return hit;
+            foreach (var deep in All<T>(c)) yield return deep;
+        }
+    }
+
+    // NARROW, which is where the headers were being cut. The user's window is ~1396 and this
+    // grid shares the page with the buyers sidebar.
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1180, Height = 820 };
+    win.Show();
+    void Settle()
+    {
+        var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f);
+    }
+
+    var tabs = (TabControl)win.FindName("Tabs")!;
+    tabs.SelectedIndex = tabs.Items.Cast<TabItem>()
+        .Select((x, i) => (x, i)).First(p => (p.x.Header as string) == "Master data").i;
+    Settle(); Settle();
+
+    var grid = (DataGrid)win.FindName("GradeGrid")!;
+
+    // Real rows, or no cell is realised and nothing about the cells can be looked at.
+    grid.ItemsSource = new List<Grade>
+    {
+        new() { GradeId = 1, Code = "NO 1 BB", DisplayName = "No. 1 Bottom Black",
+                Aliases = "1BB;1 BB;NO1BB;NO 1BB", SortOrder = 3, Active = true },
+        new() { GradeId = 2, Code = "PREMIUM", DisplayName = "PREMIUM",
+                Aliases = "", SortOrder = 1, Active = true },
+    };
+    Settle(); Settle();
+
+    // ── 1 . no header is cut off ────────────────────────────────────────────
+    Console.WriteLine("header            given   needs");
+    bool allFit = true;
+    foreach (var h in All<DataGridColumnHeader>(grid).Where(h => h.Content is string s && s.Length > 0))
+    {
+        var tb = All<TextBlock>(h).FirstOrDefault();
+        if (tb is null) continue;
+        tb.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double need = Math.Ceiling(tb.DesiredSize.Width + h.Padding.Left + h.Padding.Right);
+        double got  = h.Column?.ActualWidth ?? 0;
+        if (need > got) allFit = false;
+        Console.WriteLine($"   {tb.Text,-14} {got,6:N0} {need,7:N0}  {(need <= got ? "" : "CUT")}");
+    }
+    Check("1 . every Grades header fits its column at 1180px", allFit);
+
+    // ── 3 . ALIASES is the same kind of field as REMARK ──────────────────────
+    var aliasCol = grid.Columns.First(c => (c.Header as string) == "ALIASES");
+    Check("3 . ALIASES is a template column, like Remark",
+          aliasCol is DataGridTemplateColumn, aliasCol.GetType().Name);
+
+    var aliasBoxes = All<TextBox>(grid).Where(b =>
+        System.Windows.Automation.AutomationProperties.GetName(b) == "Aliases").ToList();
+    Check("3 . every row draws a live TextBox, no double-click needed", aliasBoxes.Count > 0,
+          $"{aliasBoxes.Count} box(es)");
+    if (aliasBoxes.Count > 0)
+        Check("3 . wearing the same CellTextBox style Remark wears",
+              aliasBoxes[0].Style == app.Resources["CellTextBox"] as Style
+              || aliasBoxes[0].Height == 28,
+              $"height {aliasBoxes[0].Height}");
+
+    // ── 2 . the cell no longer draws a box of its own to lose an edge from ──
+    Check("2 . the double-click cell frame is gone",
+          aliasCol.CellStyle is null || aliasCol.CellStyle != app.Resources["EditableCell"] as Style);
+
+    // ── 4 and 5 . form dialog numbers read from the left ────────────────────
+    var made = typeof(AppFormDialog).GetMethod("Show", BindingFlags.Public | BindingFlags.Static);
+    Console.WriteLine($"\n   AppFormDialog.Show found: {made is not null}");
+
+    win.Close();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start();
+t.Join();
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

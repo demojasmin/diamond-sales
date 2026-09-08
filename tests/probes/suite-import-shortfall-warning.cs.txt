@@ -1,0 +1,58 @@
+﻿// The pre-import warning, on a sheet that is ALREADY imported. It must name the three genuinely
+// short buckets and NOT the ones its own previous run emptied.
+using System.IO;
+using System.Reflection;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+using InvProbe;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+Db.Use(Db.Workspaces.First(w => w.Name == "Priya"));
+Environment.SetEnvironmentVariable("SOLITAIRE_SESSION",
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                 "SolitaireDesk", $"session-{Db.Active.Ref}.dat"));
+await ProbeEnv.SignInAsync();
+await ProbeEnv.LoadProfileAsync();
+
+var grades = await Repo.GradesAsync();
+var sizes  = await Repo.SizesAsync();
+var stock  = await Repo.StockAsync();
+var moves  = await Repo.ImportedSalesMovementsAsync();
+var migLn  = await Repo.ImportedSaleLinesAsync();
+var migIds = await Repo.ImportedInvoiceIdsAsync();
+
+Console.WriteLine($"previous import on this database: {migIds.Count} invoice(s), {migLn.Count} line(s), "
+                + $"{moves.Count} movement(s) holding {moves.Sum(m => m.WeightCt):N4} ct out of stock\n");
+
+var plan = SaleFileImport.Plan(
+    @"C:\Users\jbc\Downloads\sale upload (1).xlsx",
+    SaleFileImport.AliasMap(grades.Select(g => (g.Code, g.Aliases))),
+    SaleFileImport.SizeAliasMap(sizes.Select(s => s.Code)));
+
+var m = typeof(MainWindow).GetMethod("ShortfallLines", BindingFlags.NonPublic | BindingFlags.Static)!;
+var warnings = (List<string>)m.Invoke(null, [plan, stock, moves, migLn, migIds])!;
+
+Console.WriteLine($"the dialog would list {warnings.Count} bucket(s):");
+foreach (var w in warnings) Console.WriteLine($"   • {w}");
+
+// The three the investigation proved are genuinely short, and only those.
+var want = new[] { ("NO II", "1/6"), ("NO 2", "-6.5"), ("NO 1 BB", "-2") };
+Check("exactly three buckets are reported", warnings.Count == 3, $"{warnings.Count}");
+foreach (var (g, s) in want)
+    Check($"   {g} x {s} is named",
+          warnings.Any(w => w.StartsWith($"{g} \u00d7 {s}:", StringComparison.Ordinal)));
+
+Check("NO II x +6.5 is NOT reported (its own last run emptied it)",
+      !warnings.Any(w => w.StartsWith("NO II \u00d7 +6.5:", StringComparison.Ordinal)));
+
+// And the figures it quotes are the real ones.
+Check("the NO II x 1/6 figure reads 1.5500 ct",
+      warnings.Any(w => w.Contains("NO II \u00d7 1/6:") && w.Contains("1.5500 ct will not come out")),
+      warnings.FirstOrDefault(w => w.Contains("NO II \u00d7 1/6:")) ?? "<none>");
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;
