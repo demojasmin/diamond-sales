@@ -1,0 +1,147 @@
+﻿// THE VISIBILITY GUARD.
+//
+// Walks every page, finds every figure drawn in the KPI style, and fails when one cannot be opened
+// and is not on the list below. The list is the point: an entry there is a DECISION, recorded with
+// its reason; a figure missing from both is an OVERSIGHT, and the suite is what tells the two
+// apart before the client does.
+//
+// Add a figure here only when there is genuinely nothing behind it to show. If there are rows, wire
+// ui:Drill.On and a handler instead.
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
+using System.Windows.Media;
+using DiamondDesktop;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+// ── figures deliberately left closed, and why ───────────────────────────────
+// Every line here is a decision somebody made. Delete a line and the suite starts demanding that
+// figure be openable, which is the right way round.
+var closedOnPurpose = new Dictionary<string, string>
+{
+    ["Stock report · TOTAL STOCK"]   = "the report IS the rows; the figure is their sum",
+    ["Stock report · SALES"]         = "same page, same rows",
+    ["Stock report · ON HAND STOCK"] = "same page, same rows",
+    ["Stock · Available carats"]     = "the bucket list below is already exactly these rows",
+    ["Stock · TOTAL STOCK"]          = "the bucket list below is already exactly these rows",
+
+    // Intake & movements' four tiles are SESSION COUNTERS -- how many intakes, conversions,
+    // rejections and adjustments this operator has posted since the window opened. They count
+    // actions, not rows: there is no list behind them to open, and every movement they counted is
+    // already openable on the Stock page's bucket ledger, which is where it lives. Making these
+    // clickable would offer a list this page does not hold.
+    ["Intake & movements · Intakes"]      = "session counter; the movements are on Stock's bucket ledger",
+    ["Intake & movements · Conversions"]  = "session counter; the movements are on Stock's bucket ledger",
+    ["Intake & movements · Rejections"]   = "session counter; open Stock's Rejected carats instead",
+    ["Intake & movements · Adjustments"]  = "session counter; the movements are on Stock's bucket ledger",
+
+    // Staff is every account that is NOT an owner -- managers, salespeople, whatever the book
+    // calls them. The ROLE box picks one role, so no single filter value says "all the others",
+    // and there is nothing here worth a list of its own. Owners, Active and Total accounts each
+    // map onto a filter and are wired.
+    ["Users · Staff"] = "every non-owner role; one ROLE value cannot express it",
+};
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    static IEnumerable<T> All<T>(DependencyObject? d) where T : DependencyObject
+    {
+        if (d is null) yield break;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+        { var c = VisualTreeHelper.GetChild(d, i); if (c is T h) yield return h;
+          foreach (var x in All<T>(c)) yield return x; }
+    }
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1420, Height = 900 };
+    win.Show();
+    void Settle() { var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f); }
+
+    var kpi = (Style)app.Resources["KpiValue"];
+    var label = (Style)app.Resources["KpiLabel"];
+    var tabs = (TabControl)win.FindName("Tabs")!;
+
+    var open = new List<string>();
+    var shut = new List<string>();
+    var drilled = new List<FrameworkElement>();
+
+    foreach (var item in tabs.Items.Cast<TabItem>())
+    {
+        string page = item.Header as string ?? "?";
+        tabs.SelectedItem = item;
+        for (int i = 0; i < 6; i++) Settle();
+
+        foreach (var value in All<TextBlock>(win).Where(x => x.Style == kpi))
+        {
+            string name = "(unlabelled)";
+            for (DependencyObject? p = value; p is not null; p = VisualTreeHelper.GetParent(p))
+            {
+                var found = All<TextBlock>(p).FirstOrDefault(x => x.Style == label && x.Text.Length > 0);
+                if (found is not null) { name = found.Text; break; }
+            }
+
+            FrameworkElement? tile = null;
+            for (DependencyObject? p = value; p is not null; p = VisualTreeHelper.GetParent(p))
+                if (p is FrameworkElement fe && (Drill.GetOn(fe) || fe is ButtonBase)) { tile = fe; break; }
+
+            string key = $"{page} \u00b7 {name}";
+            if (tile is not null) { open.Add(key); if (Drill.GetOn(tile)) drilled.Add(tile); }
+            else shut.Add(key);
+        }
+    }
+
+    Console.WriteLine($"figures found : {open.Count + shut.Count}");
+    Console.WriteLine($"  openable    : {open.Count}");
+    Console.WriteLine($"  closed      : {shut.Count}\n");
+
+    var unexplained = shut.Where(k => !closedOnPurpose.ContainsKey(k)).Distinct().ToList();
+    if (unexplained.Count > 0)
+    {
+        Console.WriteLine("figures with no way in and no recorded reason:");
+        foreach (var k in unexplained) Console.WriteLine($"   {k}");
+        Console.WriteLine();
+    }
+
+    Check("every figure is either openable or a recorded decision",
+          unexplained.Count == 0, $"{unexplained.Count} unexplained");
+
+    // The mechanism itself has to deliver what it promises, or the attribute is decoration.
+    foreach (var tile in drilled.Distinct())
+    {
+        Check("   an opened figure takes the pointer", tile.Cursor == Cursors.Hand);
+        Check("   and the keyboard", tile.Focusable);
+        Check("   and says what it will show",
+              tile.ToolTip is string s && s.Length > 0, tile.ToolTip as string);
+    }
+
+    // A stale exception is its own kind of rot: it says a figure cannot be opened when it can.
+    var stale = closedOnPurpose.Keys.Where(k => open.Contains(k)).ToList();
+    Check("no exception is stale", stale.Count == 0, string.Join(", ", stale));
+
+    win.Close();
+    System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start(); t.Join();
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

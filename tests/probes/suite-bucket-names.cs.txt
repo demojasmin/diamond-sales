@@ -1,0 +1,74 @@
+// THE BUCKET IS NAMED THE WAY THE DESK NAMES IT.
+//
+// The database stores a grade CODE and every screen shows a MARK: "NO DX" is stored, "DX1" is what
+// the sheet prints and what the Stock page's filter says. Fourteen sentences built their own
+// "{GradeCode} × {SizeCode}" out of the raw stored values instead, so an import that had matched
+// "Dx1" to NO DX correctly then reported it back as "NO DX" -- which reads as a different grade to
+// somebody holding the sheet.
+//
+// Two checks: the helper maps, and nothing builds the pair by hand any more. The second is the one
+// that matters, because the first fix for this was per-call-site and the next sentence somebody
+// wrote would have been the fifteenth.
+using System.IO;
+using System.Text.RegularExpressions;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+Check("MARK - the stored code becomes the mark the sheet prints",
+      GradeNames.Bucket("NO DX", "-6.5") == "DX1 × -6.5", GradeNames.Bucket("NO DX", "-6.5"));
+Check("MARK - and every other grade the client's sheet spells differently",
+      GradeNames.Bucket("NO II", "1/6") == "# × 1/6"
+      && GradeNames.Bucket("NO 1 BB", "+11") == "1BB × +11"
+      && GradeNames.Bucket("GH", "-6.5") == "GH VS × -6.5",
+      GradeNames.Bucket("NO II", "1/6"));
+Check("MARK - a code with no mark is left exactly as it is",
+      GradeNames.Bucket("Unknown Grade", "0.2") == "Unknown Grade × 1/5",
+      GradeNames.Bucket("Unknown Grade", "0.2"));
+Check("MARK - and nothing is invented for a missing code",
+      GradeNames.Bucket(null, null) == " × ");
+
+// The guard. A user-facing sentence pairing the two raw codes is the bug this suite exists for.
+// FULL PATH, resolved -- see the note in suite-stock-scope-wording. The unresolved form carries
+// this probe's own "bin" in it, so a "skip anything under bin" test threw away every file and this
+// guard passed while reading nothing.
+string root = Path.GetFullPath(
+    Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop"));
+var offenders = new List<string>();
+int scanned = 0;
+foreach (string f in Directory.GetFiles(root, "*.cs", SearchOption.AllDirectories))
+{
+    string rel = Path.GetRelativePath(root, f);
+    if (rel.StartsWith("obj" + Path.DirectorySeparatorChar)
+        || rel.StartsWith("bin" + Path.DirectorySeparatorChar)) continue;
+    scanned++;
+    string[] lines = File.ReadAllLines(f);
+    for (int i = 0; i < lines.Length; i++)
+    {
+        string line = lines[i];
+        if (line.TrimStart().StartsWith("//") || line.TrimStart().StartsWith("///")) continue;
+
+        // "{x.GradeCode} <anything short> {x.SizeCode}" inside a string -- the shape of the bug.
+        if (!Regex.IsMatch(line, @"\{[A-Za-z0-9_\.\[\]]*GradeCode\}.{0,6}\{[A-Za-z0-9_\.\[\]]*SizeCode\}"))
+            continue;
+
+        // FormatSheetRates is the one exception, and it is not a sentence: it serialises the
+        // sheet-rate setting as "grade,size,rate;grade,size,rate" into the settings table. Those
+        // are STORED VALUES read back by code, not words anybody reads -- translating them to
+        // marks would rewrite saved data and break every rate already on file.
+        if (line.Contains("string.Join(\";\"")) continue;
+
+        offenders.Add($"{Path.GetFileName(f)}:{i + 1}  {line.Trim()}");
+    }
+}
+
+if (offenders.Count > 0) foreach (string o in offenders) Console.WriteLine("   " + o);
+Check("GUARD - the scan actually read the app's source", scanned > 20, $"{scanned} file(s)");
+Check("GUARD - no sentence pairs the raw stored codes; they go through GradeNames.Bucket",
+      offenders.Count == 0, $"{offenders.Count} site(s) of {scanned} file(s)");
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

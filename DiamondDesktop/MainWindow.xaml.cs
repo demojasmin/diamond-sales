@@ -151,8 +151,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// </summary>
     private void RerenderForPolicy()
     {
-        foreach (var grid in new[] { StockGrid, InvoiceGrid, ReceivablesGrid })
-            if (grid?.ItemsSource is not null) grid.Items.Refresh();
+        foreach (var grid in new[] { StockGrid, InvoiceGrid, ReceivablesGrid }
+                     .Where(g => g?.ItemsSource is not null))
+            grid!.Items.Refresh();
     }
     private readonly ObservableCollection<DispositionRow> _dispositions = [];
     private bool _saving;
@@ -517,9 +518,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         int n = lines.Count(l => l.Selected);
 
         if (_tickAll is not null)
-            _tickAll.IsChecked = lines.Count == 0 || n == 0 ? false
-                               : n == lines.Count ? true
-                               : null;                       // some, but not all
+            // some, but not all -> null, which is the indeterminate box
+            _tickAll.IsChecked = n switch
+            {
+                0 => false,
+                _ when n == lines.Count => true,
+                _ => null,
+            };
 
         // Called from the constructor's path too, before the template has produced the button.
         if (DeleteLines is null) return;
@@ -852,12 +857,15 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // runs the same ConfirmProblems() this reads, so nothing posts and no stock moves -- and
         // the refusal lands under the field at fault, which is where it can be acted on.
         Post.IsEnabled = true;
-        Post.ToolTip = why is null
-            ? _postTip
-            : _postTip + gap + (problems.Count == 1
-                                    ? "Not yet: " + why
-                                    : $"Not yet ({problems.Count} to fix):" + Environment.NewLine
-                                      + string.Join(Environment.NewLine, problems.Select(x => "  " + x)));
+        if (why is null) Post.ToolTip = _postTip;
+        else
+        {
+            string detail = problems.Count == 1
+                ? "Not yet: " + why
+                : $"Not yet ({problems.Count} to fix):" + Environment.NewLine
+                  + string.Join(Environment.NewLine, problems.Select(x => "  " + x));
+            Post.ToolTip = _postTip + gap + detail;
+        }
 
         // And in the open, not only on hover. See BlockChip in the markup.
         if (BlockChip is not null)
@@ -967,9 +975,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         // _held is empty, so every line is sent. See the summary: this is the repair pass, and the
         // unique key is what makes it cost nothing when there was nothing to repair.
-        _restoringHolds = true;
-        try { foreach (var line in _invoice.Lines) await HoldLineAsync(line); }
-        finally { _restoringHolds = false; }
+        foreach (var line in _invoice.Lines) await HoldLineAsync(line);
 
         // No box: this fires while the window is still opening, and a modal over a half-drawn
         // screen is not a confirmation of anything the desk just did.
@@ -1004,11 +1010,6 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// round trip between keystrokes would make the grid unusable. A refusal reaches the status
     /// bar; it does not interrupt.
     /// </summary>
-    /// True while a reopened entry's lines are being re-held in bulk. A refusal then belongs in the
-    /// bar, not in a box: nobody pressed anything, the window is still opening, and one modal per
-    /// line would have to be dismissed before the screen could even be read.
-    private bool _restoringHolds;
-
     private async Task HoldLineAsync(SaleLine line)
     {
         if (line.Grade is not { } grade || line.Size is not { } size)
@@ -1352,8 +1353,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 // happening.
                 if (_busy.Release(button, out object? original)) button.Content = original;
 
-                foreach (var b in row)
-                    if (_busy.Enable(b)) b.IsEnabled = true;
+                foreach (var b in row.Where(_busy.Enable)) b.IsEnabled = true;
 
                 EndBusy();
             }
@@ -1773,7 +1773,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         if (problem.StartsWith("Buyer")) { FieldError.Show(BuyerPicker, problem); return; }
         if (problem.StartsWith("Terms")) { FieldError.Show(TermsBox, problem); return; }
-        if (problem.StartsWith("Broker %")) { FieldError.Show(BrokerPctBox, problem); return; }
+        if (problem.StartsWith("Broker %")) FieldError.Show(BrokerPctBox, problem);
 
         // A line problem names its row, and the row colours itself and carries the text on its
         // tooltip already. FocusFirstProblem pins the first of them to its actual cell.
@@ -1943,7 +1943,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         //
         // NOT ONE TRANSACTION, and it cannot be from here: each is its own save-then-post pair
         // against PostgREST. So a failure part-way leaves the earlier ones POSTED, and the only
-        // honest thing is to say exactly which. They are separate documents to separate buyers;
+        // honest thing is to say exactly which. They are separate documents to separate buyers,
         // rolling back a confirmed sale to a different buyer because a later one was short of
         // stock would be worse than leaving it standing.
         var posted = new List<string>();
@@ -1962,8 +1962,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             {
                 if (outcome.Shortfalls.Count > 0)
                 {
+                    // ON SHELF, not deductible. Confirming a sale meets the shelf as it stands --
+                    // there is no previous import holding anything back, so the figure here is the
+                    // Stock page's own and is said in the Stock page's words. The import's
+                    // "can be deducted" would be a different claim and wrong on this screen.
                     string short_ = string.Join(Environment.NewLine, outcome.Shortfalls.Select(sf =>
-                        $"{sf.GradeCode} × {sf.SizeCode} — {sf.BalanceCt:N4} ct on hand, {sf.NeededCt:N4} ct needed"));
+                        $"{GradeNames.Bucket(sf.GradeCode, sf.SizeCode)} needs "
+                        + $"{sf.NeededCt:N4} ct — {Carats.Say(sf.BalanceCt, StockScope.OnShelf)}"));
 
                     MessageBox.Show(this,
                         $"{outcome.Message}{Environment.NewLine}{Environment.NewLine}"
@@ -2233,7 +2238,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             // Any POSTED invoice can be corrected, imported ones included (0040, 0042). An
             // imported invoice carries no stock movements of its own -- its carats are already
             // out of the imported opening balance -- so the database moves only the DIFFERENCE
-            // its correction makes, as a signed ADJUST. That is what makes this safe to enable;
+            // its correction makes, as a signed ADJUST -- which is what makes this safe to enable.
             // before 0042 it would have deducted every carat on the invoice a second time.
             bool imported = Repo.IsImported(sel?.InvoiceNo);
             bool posted = sel is { Status: InvoiceStatus.POSTED };
@@ -2244,18 +2249,21 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             // which is the one thing it is not. The status decides the word; whether the
             // button is lit is a separate question the tooltip answers.
             EditDraftButton.Content = draft ? "Edit memo" : "Update invoice";
-            EditDraftButton.ToolTip = posted && imported
-                ? "Open this imported sale to update it. Its carats are already in the opening "
-                  + "balance, so saving moves only the difference the correction makes."
-                : posted
-                ? "Open this posted invoice to update it. Saving rewrites its stock movements in one step."
-                : draft
-                ? "Open this memo in Sales entry"
+            EditDraftButton.ToolTip = (posted, imported, draft) switch
+            {
+                (true, true, _) =>
+                    "Open this imported sale to update it. Its carats are already in the opening "
+                    + "balance, so saving moves only the difference the correction makes.",
+                (true, false, _) =>
+                    "Open this posted invoice to update it. Saving rewrites its stock movements in one step.",
+                (false, _, true) => "Open this memo in Sales entry",
+
                 // Cancelled, and anything else that is neither. Names the path that DOES work:
                 // the old text said only what was refused, which is no help to somebody holding
                 // an invoice with a wrong figure on it.
-                : "Only a memo or a posted sale can be edited. A cancelled invoice has already "
-                  + "had its stock returned, so there is nothing to correct.";
+                _ => "Only a memo or a posted sale can be edited. A cancelled invoice has already "
+                     + "had its stock returned, so there is nothing to correct.",
+            };
         }
 
         // Hand the layout to the size handler rather than setting the two column widths here.
@@ -2587,9 +2595,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (InvoiceLinesGrid is null) return;
 
         InvoiceLinesGrid.ItemsSource = lines;
-        InvoiceLinesHeading.Text = lines is null ? "LINES"
-                                 : lines.Count == 1 ? "1 LINE"
-                                 : $"{lines.Count} LINES";
+        InvoiceLinesHeading.Text = lines?.Count switch
+        {
+            null => "LINES",
+            1 => "1 LINE",
+            _ => $"{lines.Count} LINES",
+        };
 
         CapInvoiceLinesHeight(lines?.Count ?? 0);
     }
@@ -3154,7 +3165,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             // Retired or deleted since the draft was written. Named, never guessed at.
             if (grade is null || size is null)
             {
-                unresolved.Add($"{l.GradeCode} × {l.SizeCode}");
+                unresolved.Add(GradeNames.Bucket(l.GradeCode, l.SizeCode));
                 continue;
             }
 
@@ -3383,6 +3394,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private static string GradeLabel(string code, Grade? grade) =>
         grade is not null ? grade.ShortName : GradeNames.Short(code);
 
+    /// The same mark where no catalogue row is to hand — the printed sheet's own spelling.
+    private static string GradeLabel(string code) => GradeLabel(code, null);
+
     private async void LoadStock_Click(object sender, RoutedEventArgs e)
     {
         // The traded-buckets read that used to happen here went with the filter that needed it:
@@ -3484,10 +3498,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // named beside it when there is one, so a total that has moved with nothing sold explains
         // itself here rather than on the tiles below the fold.
         decimal onHold = rows.Sum(r => r.ReservedCt);
+        string reserved = onHold > 0 ? $"   ·   {onHold:N4} ct reserved" : "";
         StockSummary.Text = rows.Count == 0
             ? ""
-            : $"{rows.Sum(r => r.BalanceCt):N4} ct available"
-              + (onHold > 0 ? $"   ·   {onHold:N4} ct reserved" : "")
+            : $"{rows.Sum(r => r.BalanceCt):N4} ct available" + reserved
               + $"   ·   value {Money.Short(rows.Sum(r => r.StockValue))}";
     }
 
@@ -3543,8 +3557,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         string gradeLabel = FilterChoice(StockGradeFilter);
         string grade = StockGradeCode(gradeLabel);
         string sizeLabel = FilterChoice(StockSizeFilter);
-        string size = sizeLabel.Length == 0 ? ""
-            : _stockSizeCodes.TryGetValue(sizeLabel, out var sc) ? sc : sizeLabel;
+        string size = sizeLabel;
+        if (sizeLabel.Length == 0) size = "";
+        else if (_stockSizeCodes.TryGetValue(sizeLabel, out var sc)) size = sc;
         string term = StockSearch?.Text.Trim() ?? "";
 
         // Grade, size and search FIRST; "hide empty" last. The order used to be the other way
@@ -3670,12 +3685,22 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         decimal reserved = matched.Sum(r => r.ReservedCt);
         decimal moved = held + reserved - atImport;
 
+        string direction = moved < 0 ? "out since" : "in since";
+        string spokenFor = reserved > 0 ? $" · {reserved:N4} ct reserved" : "";
+        string only = filtered ? " · filtered" : "";
         StockBreakdownTotalNote.Text = atImport == 0m
-            ? (filtered ? "Carats on hand · filtered" : "Carats on hand")
+            ? "Carats on hand" + only
             : $"Workbook at import: {atImport:N4} ct · {Math.Abs(moved):N4} ct "
-              + (moved < 0 ? "out since" : "in since")
-              + (reserved > 0 ? $" · {reserved:N4} ct reserved" : "")
-              + (filtered ? " · filtered" : "");
+              + direction + spokenFor + only;
+
+        // The list behind the number, kept as the number is written so the two cannot disagree.
+        _rejectionsShown = rejected;
+        _rejectionScope = new[] { grade, size, term.Length == 0 ? "" : $"“{term}”" }
+            .Where(x => x.Length > 0).DefaultIfEmpty("Every bucket")
+            .Aggregate((a, b) => $"{a} · {b}");
+
+        // The five tiles above are counted under the same filters, so they say the same thing.
+        _kpiScope = _rejectionScope;
 
         decimal ct = rejected.Sum(m => m.WeightCt);
         StockBreakdownRejection.Text = $"{ct:N4} ct";
@@ -3706,8 +3731,23 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// <paramref name="show"/>: a bucket at exactly zero balance can still be holding carats for a
     /// sales entry, and hiding the bucket must not hide the hold.
     /// </param>
+    /// <summary>
+    /// The rows the five Stock figures were counted from, kept as they are counted.
+    ///
+    /// Same reason the rejection card keeps its own: a figure and the list behind it must be the
+    /// same rows, or opening one answers a different question from the one the number asked. The
+    /// tiles are computed from two lists -- <c>show</c> for the four that report what is on screen,
+    /// <c>matched</c> for Reserved, which counts holds in buckets the "hide empty" tick may have
+    /// dropped -- so both are kept, and each figure opens the one it used.
+    /// </summary>
+    private List<VStockPosition> _kpiShow = [];
+    private List<VStockPosition> _kpiMatched = [];
+
     private void ShowStockKpis(List<VStockPosition> show, List<VStockPosition> matched)
     {
+        _kpiShow = show;
+        _kpiMatched = matched;
+
         // The tiles report what is on screen. That is right — but silently, the caption read
         // "across 3 buckets" whether that was the company position or one grade's slice of it,
         // while the header above kept totalling all 207. Two different numbers, both unlabelled.
@@ -3742,6 +3782,135 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             : "Stock left that never arrived";
     }
 
+    /// <summary>
+    /// One line per bucket, for the figures whose rows ARE buckets.
+    ///
+    /// Pure and shared, for the reason RejectionLines is: the wording is what these dialogs are
+    /// for, a click handler is async void and swallows its own faults, and four figures saying the
+    /// same thing four slightly different ways is how a screen stops being trustworthy.
+    ///
+    /// <paramref name="figure"/> decides what the line leads with, because the number that was
+    /// clicked is the number the reader is looking for.
+    /// </summary>
+    public static List<string> BucketLines(IEnumerable<VStockPosition> rows, string figure) =>
+        rows.Select(r => figure switch
+            {
+                "value" => $"{Money.Short(r.StockValue)} · {GradeNames.Bucket(r.GradeCode, r.SizeCode)} · "
+                         + $"{r.BalanceCt:N4} ct at {Money.Short(r.AvgCost ?? 0)} per ct",
+                "reserved" => $"{r.ReservedCt:N4} ct held · {GradeNames.Bucket(r.GradeCode, r.SizeCode)} · "
+                            + $"{r.LedgerCt:N4} ct in the ledger, {r.BalanceCt:N4} ct still free to sell",
+                "negative" => $"{r.LedgerCt:N4} ct · {GradeNames.Bucket(r.GradeCode, r.SizeCode)} · "
+                            + "more has left this bucket than ever arrived in it",
+                _ => $"{r.BalanceCt:N4} ct · {GradeNames.Bucket(r.GradeCode, r.SizeCode)}"
+                   + (r.OldestIntake is { } d ? $" · oldest intake {d:dd MMM yyyy}" : ""),
+            })
+            .ToList();
+
+    /// <summary>
+    /// Reserved carats: which buckets a half-typed sales entry is holding, and how much.
+    ///
+    /// The figure has always been the reason the tile beside it can fall without anything being
+    /// sold, and it named no bucket. Counted from `matched` rather than what is on screen, because
+    /// a hold in a bucket the "hide empty" tick dropped is still a hold.
+    /// </summary>
+    private void ReservedCarats_Click(object sender, MouseButtonEventArgs e)
+    {
+        var held = _kpiMatched.Where(r => r.ReservedCt > 0)
+                              .OrderByDescending(r => r.ReservedCt).ToList();
+
+        AppDialog.Info(this,
+            title: "Reserved carats",
+            headline: held.Count == 0
+                ? "Nothing is being held"
+                : $"{held.Sum(r => r.ReservedCt):N4} ct held by sales entries",
+            subhead: _kpiScope,
+            facts: held.Count == 0 ? [] :
+            [
+                ("Buckets holding", $"{held.Count:N0}"),
+                ("Still free to sell", $"{held.Sum(r => r.BalanceCt):N4} ct"),
+            ],
+            listTitle: held.Count == 0 ? null : "Which buckets, and how much of each",
+            bullets: held.Count == 0 ? null : BucketLines(held, "reserved"),
+            note: "A sales entry holds its carats from the moment a line is typed. They return to "
+                + "stock when the entry is cleared, and become a sale when it is confirmed.");
+    }
+
+    /// <summary>Stock value: which buckets carry it, dearest first.</summary>
+    private void StockValue_Click(object sender, MouseButtonEventArgs e)
+    {
+        var worth = _kpiShow.Where(r => r.StockValue != 0)
+                            .OrderByDescending(r => r.StockValue).ToList();
+
+        AppDialog.Info(this,
+            title: "Stock value",
+            headline: $"{Money.Short(worth.Sum(r => r.StockValue))} at average cost",
+            subhead: _kpiScope,
+            facts:
+            [
+                ("Buckets with a value", $"{worth.Count:N0}"),
+                ("Carats behind it", $"{worth.Sum(r => r.BalanceCt):N4} ct"),
+            ],
+            listTitle: worth.Count == 0 ? null : "Where the value sits, dearest first",
+            bullets: worth.Count == 0 ? null : BucketLines(worth, "value"),
+            note: "Average cost is what was paid into each bucket, so a bucket that has never been "
+                + "bought into carries no value however many carats it holds.");
+    }
+
+    /// <summary>Buckets in stock: which ones are holding a balance.</summary>
+    private void BucketsInStock_Click(object sender, MouseButtonEventArgs e)
+    {
+        var holding = _kpiShow.Where(r => r.BalanceCt > 0)
+                              .OrderByDescending(r => r.BalanceCt).ToList();
+
+        AppDialog.Info(this,
+            title: "Buckets in stock",
+            headline: $"{holding.Count:N0} bucket(s) holding {holding.Sum(r => r.BalanceCt):N4} ct",
+            subhead: _kpiScope,
+            facts:
+            [
+                ("Largest", holding.Count == 0 ? "—"
+                    : $"{GradeNames.Bucket(holding[0].GradeCode, holding[0].SizeCode)} · {holding[0].BalanceCt:N4} ct"),
+                ("Empty buckets in view", $"{_kpiShow.Count(r => r.BalanceCt == 0):N0}"),
+            ],
+            listTitle: holding.Count == 0 ? null : "Every bucket holding a balance, largest first",
+            bullets: holding.Count == 0 ? null : BucketLines(holding, "balance"),
+            note: "A bucket is one grade in one sieve. The catalogue carries every pairing; only "
+                + "the ones that have been bought into hold anything.");
+    }
+
+    /// <summary>
+    /// Negative balances: the buckets more has left than ever arrived in, and how they got there.
+    ///
+    /// The most worth opening of the five. "Stock left that never arrived" is a fault, and the tile
+    /// said how many there were and not which -- so the only way to find one was to sort the grid
+    /// and read down it.
+    /// </summary>
+    private void NegativeBalances_Click(object sender, MouseButtonEventArgs e)
+    {
+        var below = _kpiShow.Where(r => r.BalanceCt < 0)
+                            .OrderBy(r => r.BalanceCt).ToList();
+
+        AppDialog.Info(this,
+            title: "Negative balances",
+            headline: below.Count == 0
+                ? "Nothing to reconcile"
+                : $"{below.Count:N0} bucket(s) below zero, {below.Sum(r => r.LedgerCt):N4} ct in all",
+            subhead: _kpiScope,
+            facts: below.Count == 0 ? [] :
+            [
+                ("Deepest", $"{GradeNames.Bucket(below[0].GradeCode, below[0].SizeCode)} · {below[0].LedgerCt:N4} ct"),
+            ],
+            listTitle: below.Count == 0 ? null : "Which buckets, and by how much",
+            bullets: below.Count == 0 ? null : BucketLines(below, "negative"),
+            note: below.Count == 0
+                ? "Every bucket holds at least what has been taken out of it."
+                : "A bucket goes below zero when a sale or rejection took carats the count never "
+                + "showed. Select the row and press Show movements to see how it got there.");
+    }
+
+    /// <summary>What the Stock filters were narrowed to when the figures were counted.</summary>
+    private string _kpiScope = "Every bucket";
+
     /// Which empty this is decides what to do about it, so the hint says which one it is.
     /// <param name="emptied">
     /// How many buckets DID match the filters and were then dropped for holding nothing. Any
@@ -3770,7 +3939,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private static string BucketSubtitle(VStockPosition? row)
     {
         if (row is null) return "Select a bucket in the list";
-        string bucket = $"{row.GradeCode} × {row.SizeCode}";
+        string bucket = GradeNames.Bucket(row.GradeCode, row.SizeCode);
         return row.AgeDays is { } age ? $"{bucket} · oldest intake {age:N0} days" : bucket;
     }
 
@@ -3863,13 +4032,142 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // A bucket that has never been traded loads successfully and returns nothing. Leaving the
         // "press Show movements" prompt up made that look like the button had failed.
         if (rows.Count == 0)
-            MovementHint.Text = $"No movements for {row.GradeCode} × {row.SizeCode}.\n" +
+            MovementHint.Text = $"No movements for {GradeNames.Bucket(row.GradeCode, row.SizeCode)}.\n" +
                                 "Nothing has been taken in, sold or adjusted here.";
 
         // No Say here. The drawer is open on the bucket, headed with its grade and size, and either
         // lists the entries or says there are none — repeating that in the status bar said the same
         // sentence twice on one screen.
     }
+
+    /// <summary>
+    /// One line per rejection: what left, which bucket, off which invoice, when, and what became
+    /// of it.
+    ///
+    /// PURE, and separate from the click handler on purpose. A click handler is async void, and an
+    /// exception inside one of those disappears without trace -- which makes the wording impossible
+    /// to check by driving the screen. The sentence is the part worth being sure of, so it is built
+    /// here where it can be called with rows and compared.
+    ///
+    /// THE ORDER IS THE ORDER THE QUESTIONS GET ASKED: how much, out of where, off what, when, and
+    /// only then why.
+    ///
+    /// WHERE THERE IS NO WHY IT SAYS SO. A disposition is the only record of what became of a
+    /// rejection, and the sales importer writes none -- the workbook keeps its destinations in cell
+    /// comments the importer never reads. So an imported rejection genuinely has no destination,
+    /// and that is a fact about the data worth reading rather than a blank to leave.
+    /// </summary>
+    public static List<string> RejectionLines(
+        IEnumerable<VStockMovement> rejections,
+        IReadOnlyCollection<RejectionDisposition> dispositions,
+        IReadOnlyDictionary<long, string> gradeNames,
+        IReadOnlyDictionary<long, string> invoiceOfLine)
+    {
+        var byMovement = dispositions.GroupBy(d => d.MovementId)
+                                     .ToDictionary(g => g.Key, g => g.ToList());
+
+        return rejections
+            .OrderByDescending(m => m.MovementDate).ThenByDescending(m => m.MovementId)
+            .Select(m =>
+            {
+                string from = "recorded by hand";
+                if (m.RefType == "sales_line")
+                    from = m.RefId is { } id && invoiceOfLine.TryGetValue(id, out string? no) && no.Length > 0
+                        ? $"off invoice {no}" : "off an invoice line";
+
+                string why;
+                if (byMovement.TryGetValue(m.MovementId, out var d))
+                    why = string.Join("; ", d.Select(x =>
+                        (x.ToGradeId is { } to && gradeNames.TryGetValue(to, out string? g)
+                            ? $"{x.WeightCt:N4} ct to {g}" : $"{x.WeightCt:N4} ct")
+                        + (string.IsNullOrWhiteSpace(x.Note) ? "" : $" ({x.Note.Trim()})")));
+                else
+                    why = m.RefType == "sales_line"
+                        ? "no destination recorded (the sales importer records none)"
+                        : "no destination recorded";
+
+                return $"{m.WeightCt:N4} ct · {GradeNames.Bucket(m.GradeCode, m.SizeCode)} · {from} "
+                     + $"· {m.MovementDate:dd MMM yyyy} — {why}";
+            })
+            .ToList();
+    }
+
+    /// <summary>
+    /// Every rejection behind the figure on the card: what left, which bucket, which invoice, and
+    /// what became of it.
+    ///
+    /// WHY IT EXISTS. The card carried a total and a count, and that was the whole of what this app
+    /// said about rejections anywhere. 414.84 ct had left the ledger on the client's database and
+    /// the only way to find one was to guess a bucket, select its row and press Show movements --
+    /// which works if you already know where to look, and is useless if the question is "what has
+    /// been rejected". A number nobody can open is a number nobody can act on.
+    ///
+    /// FILTERED WITH THE CARD. The figure already respects the grade, size and search boxes, and
+    /// the list behind it uses the very rows the figure was computed from, so opening it cannot
+    /// answer a different question from the one the number asked.
+    /// </summary>
+    private async void Rejections_Click(object sender, MouseButtonEventArgs e)
+    {
+        var rejected = _rejectionsShown;
+
+        if (rejected.Count == 0)
+        {
+            AppDialog.Info(this,
+                title: "Rejections",
+                headline: "Nothing has been rejected",
+                subhead: _rejectionScope,
+                facts: [], listTitle: null, bullets: null,
+                note: "A rejection is carats taken out of a bucket as rejected, either off an "
+                    + "invoice line or recorded by hand on Intake & movements.");
+            return;
+        }
+
+        // The destinations and the invoice numbers. A failed read is not fatal: the rejections are
+        // already in hand, and a list that cannot say what became of them still answers what left
+        // and from where -- it just has to be honest about the half it is missing.
+        var dispositions = await Read(Repo.DispositionsAsync) ?? [];
+        var lines = await Read(Repo.ImportedSaleLinesAsync) ?? [];
+
+        var bullets = RejectionLines(
+            rejected, dispositions,
+            Catalogue.Grades.ToDictionary(g => g.GradeId, g => g.ShortName),
+            lines.ToDictionary(l => l.LineId, l => l.InvoiceNo ?? ""));
+
+        int onSales = rejected.Count(m => m.RefType == "sales_line");
+        var placedIds = dispositions.Select(d => d.MovementId).ToHashSet();
+        int placed = rejected.Count(m => placedIds.Contains(m.MovementId));
+
+        AppDialog.Info(this,
+            title: "Rejections",
+            headline: $"{rejected.Sum(m => m.WeightCt):N4} ct rejected",
+            subhead: _rejectionScope,
+            facts:
+            [
+                ("Rejections", $"{rejected.Count:N0}"),
+                ("Off invoice lines", $"{onSales:N0}"),
+                ("Recorded by hand", $"{rejected.Count - onSales:N0}"),
+                ("With a destination recorded", $"{placed:N0} of {rejected.Count:N0}"),
+            ],
+            listTitle: "What was rejected, from where, and what became of it",
+            bullets: bullets,
+            note: placed == rejected.Count
+                ? "These carats have left their buckets. A destination records where they went; it "
+                + "does not move them back."
+                : "These carats have left their buckets. The ones with no destination recorded left "
+                + "with nothing saying where they went — the sales importer does not read the "
+                + "workbook's destination comments.");
+    }
+
+    /// <summary>
+    /// Exactly the rejections the card counted, and the filter it counted them under.
+    ///
+    /// Captured where the figure is worked out rather than derived again when the card is clicked.
+    /// The grade and size boxes hold LABELS that have to be resolved to codes, and that resolution
+    /// lives in ShowStockBreakdown's caller -- a second copy here would be a second thing to keep
+    /// in step, and the one guarantee this list must give is that it shows what the number said.
+    /// </summary>
+    private List<VStockMovement> _rejectionsShown = [];
+    private string _rejectionScope = "Every bucket";
 
     private async void Invariants_Click(object sender, RoutedEventArgs e)
     {
@@ -3903,7 +4201,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             broken.Count == 0 ? null : "Where they differ",
             broken.Count == 0 ? null
                 : broken.OrderByDescending(r => Math.Abs(r.DiffCt)).Select(r =>
-                    $"{r.GradeCode} × {r.SizeCode} — moved {r.MovedOutCt:N4} ct, "
+                    $"{GradeNames.Bucket(r.GradeCode, r.SizeCode)} — moved {r.MovedOutCt:N4} ct, "
                     + $"invoiced {r.SoldOnInvoicesCt:N4} ct, off by {r.DiffCt:N4} ct"),
             broken.Count == 0 ? null : "Nothing has been changed. This is a read-only check.");
 
@@ -4844,6 +5142,253 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private Dictionary<long, (decimal Amount, decimal Carats, decimal Broker)> _gradeShare = [];
 
     /// One invoice's contribution under the current filters.
+    /// <summary>
+    /// Every Dashboard figure opens the invoices behind it.
+    ///
+    /// ONE HANDLER, EIGHT TILES, each naming its figure in Tag. Eight near-identical handlers is
+    /// how the wording drifts apart -- four of these are the same list read four ways, and they
+    /// should say so in the same voice.
+    ///
+    /// THE SAME INVOICES THE CHARTS USE. _drill is what the range, buyer, grade and search boxes
+    /// have narrowed to, and Sale() applies the grade share, so a figure opened with a grade filter
+    /// set shows that grade's part of each invoice and not the whole document. Anything else would
+    /// answer a different question from the one the number asked.
+    ///
+    /// TWO OF THEM ARE NOT INVOICES AT ALL. Inventory value is stock, and Margin is a ratio whose
+    /// interesting part is which invoices could not be costed -- so those two say what they are made
+    /// of rather than pretending to a list they do not have.
+    /// </summary>
+    private void DashFigure_Click(object sender, MouseButtonEventArgs e)
+    {
+        string figure = (sender as FrameworkElement)?.Tag as string ?? "";
+        var rows = _drill;
+        string scope = $"{rows.Count:N0} invoice(s) in this view";
+
+        static string Line(VInvoice i, string money, string extra) =>
+            $"{money} · {i.InvoiceNo} · {i.BuyerName} · {i.InvoiceDate:dd MMM yyyy}{extra}";
+
+        switch (figure)
+        {
+            case "sales":
+            {
+                var byValue = rows.OrderByDescending(i => Sale(i).Amount).ToList();
+                AppDialog.Info(this, "Total sales",
+                    $"{Money.Short(byValue.Sum(i => Sale(i).Amount))} across {byValue.Count:N0} invoice(s)",
+                    scope,
+                    [("Carats sold", $"{byValue.Sum(i => Sale(i).Carats):N4} ct"),
+                     ("Largest", byValue.Count == 0 ? "—" : byValue[0].InvoiceNo ?? "")],
+                    byValue.Count == 0 ? null : "Every invoice in this view, largest first",
+                    byValue.Count == 0 ? null : byValue.Select(i =>
+                        Line(i, Money.Short(Sale(i).Amount), $" · {Sale(i).Carats:N4} ct")),
+                    "Amount is what was invoiced, before anything received. With a grade filter set "
+                    + "this is that grade's share of each invoice.");
+                return;
+            }
+
+            case "carats":
+            {
+                var byCt = rows.OrderByDescending(i => Sale(i).Carats).ToList();
+                AppDialog.Info(this, "Carats sold",
+                    $"{byCt.Sum(i => Sale(i).Carats):N4} ct across {byCt.Count:N0} invoice(s)",
+                    scope,
+                    [("Invoiced", Money.Short(byCt.Sum(i => Sale(i).Amount)))],
+                    byCt.Count == 0 ? null : "Every invoice in this view, heaviest first",
+                    byCt.Count == 0 ? null : byCt.Select(i =>
+                        Line(i, $"{Sale(i).Carats:N4} ct", $" · {Money.Short(Sale(i).Amount)}")),
+                    "Carats sold counts the SELECTION on each line. Rejected carats are not sold and "
+                    + "are reported separately on the Stock page.");
+                return;
+            }
+
+            case "rate":
+            {
+                decimal amount = rows.Sum(i => Sale(i).Amount);
+                decimal carats = rows.Sum(i => Sale(i).Carats);
+                AppDialog.Info(this, "Blended rate",
+                    carats == 0 ? "No carats sold, so there is no rate"
+                                : $"{Money.Short(amount / carats)} per ct",
+                    scope,
+                    [("Invoiced", Money.Short(amount)), ("Carats sold", $"{carats:N4} ct"),
+                     ("Rate", carats == 0 ? "—" : $"{Money.Short(amount / carats)} per ct")],
+                    rows.Count == 0 ? null : "The invoices it is blended from, dearest per carat first",
+                    rows.Count == 0 ? null : rows
+                        .Where(i => Sale(i).Carats > 0)
+                        .OrderByDescending(i => Sale(i).Amount / Sale(i).Carats)
+                        .Select(i => Line(i, $"{Money.Short(Sale(i).Amount / Sale(i).Carats)} per ct",
+                                          $" · {Sale(i).Carats:N4} ct")),
+                    "A blended rate is the whole amount divided by the whole weight, not the average "
+                    + "of the line rates: a heavy line pulls it further than a light one.");
+                return;
+            }
+
+            case "broker":
+            {
+                var brokered = rows.Where(i => Sale(i).Broker != 0)
+                                   .OrderByDescending(i => Sale(i).Broker).ToList();
+                AppDialog.Info(this, "Broker cost",
+                    $"{Money.Short(brokered.Sum(i => Sale(i).Broker))} payable to brokers",
+                    scope,
+                    [("Invoices with a broker", $"{brokered.Count:N0} of {rows.Count:N0}")],
+                    brokered.Count == 0 ? null : "Which invoices carry it",
+                    brokered.Count == 0 ? null : brokered.Select(i =>
+                        Line(i, Money.Short(Sale(i).Broker),
+                             $" · {i.BrokerName ?? "broker"} at {i.BrokerPct:N2}%")),
+                    "Brokerage is a percentage of the line amount, set per invoice and editable on "
+                    + "each one.");
+                return;
+            }
+
+            case "outstanding":
+            {
+                var owed = rows.Where(i => i.Outstanding > 0)
+                               .OrderByDescending(i => i.Outstanding).ToList();
+                AppDialog.Info(this, "Outstanding",
+                    $"{Money.Short(owed.Sum(i => i.Outstanding))} receivable",
+                    scope,
+                    [("Invoices owing", $"{owed.Count:N0} of {rows.Count:N0}"),
+                     ("Overdue", $"{owed.Count(i => i.IsOverdue):N0}")],
+                    owed.Count == 0 ? null : "Who owes it, most first",
+                    owed.Count == 0 ? null : owed.Select(i =>
+                        Line(i, Money.Short(i.Outstanding),
+                             $" · due {i.DueDate:dd MMM yyyy}{(i.IsOverdue ? " · OVERDUE" : "")}")),
+                    "Outstanding is the invoice total less everything received against it. "
+                    + "Receivables shows the same money aged into bands.");
+                return;
+            }
+
+            case "confirmed":
+            {
+                AppDialog.Info(this, "Confirmed sales",
+                    $"{rows.Count:N0} invoice(s) in this view",
+                    scope,
+                    [("Invoiced", Money.Short(rows.Sum(i => Sale(i).Amount))),
+                     ("Carats", $"{rows.Sum(i => Sale(i).Carats):N4} ct"),
+                     ("Still owing", Money.Short(rows.Sum(i => i.Outstanding)))],
+                    rows.Count == 0 ? null : "Every one of them, newest first",
+                    rows.Count == 0 ? null : rows
+                        .OrderByDescending(i => i.InvoiceDate)
+                        .Select(i => Line(i, Money.Short(Sale(i).Amount), $" · {i.Status}")),
+                    "A confirmed sale is a POSTED invoice. Drafts are not counted and have moved no "
+                    + "stock.");
+                return;
+            }
+
+            case "margin":
+            {
+                var costed = rows.Where(i => i.CostTotal is not null).ToList();
+                var uncosted = rows.Where(i => i.CostTotal is null).ToList();
+                AppDialog.Info(this, "Margin",
+                    $"{Money.Short(rows.Sum(i => i.Margin ?? 0))} on {costed.Count:N0} of {rows.Count:N0} invoice(s)",
+                    scope,
+                    [("Costed", $"{costed.Count:N0}"), ("Not costable", $"{uncosted.Count:N0}")],
+                    uncosted.Count == 0 ? null : "The invoices with no cost behind them",
+                    uncosted.Count == 0 ? null : uncosted.Select(i =>
+                        Line(i, Money.Short(Sale(i).Amount), " · no cost recorded")),
+                    "Margin needs an average cost for every bucket a line sold from. An imported "
+                    + "invoice carries none — its carats were already out of the opening balance — "
+                    + "so it is left out of the figure rather than counted at zero cost.");
+                return;
+            }
+
+            case "inventory":
+            {
+                AppDialog.Info(this, "Inventory value",
+                    "This figure is stock, not sales",
+                    "Every bucket, whatever the Dashboard filters say",
+                    [("Where it is listed", "Stock page")],
+                    listTitle: null, bullets: null,
+                    note: "Inventory value is the whole position at average cost and does not move "
+                        + "with the date range beside it. Open Stock, where the same figure lists "
+                        + "the buckets it is made of, dearest first.");
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A figure that SETS THE FILTER, rather than opening a list of its own.
+    ///
+    /// The first version of this opened a dialog listing the invoices behind each band. It was
+    /// redundant and the client said so: the AGE box beside the tiles already narrows the table to
+    /// exactly those rows. Two surfaces answering one question is how the scopes drift apart --
+    /// that dialog managed it within a day, titling itself "1 to 30 days" over a sub-head reading
+    /// "Every age", because the title described the band and the sub-head described the page.
+    ///
+    /// So the tile now does what the desk would have done by hand: it sets the filter. The rows
+    /// appear in the real grid, sortable and exportable like every other row on the page, and
+    /// there is one scope on screen instead of two. The figure stays traceable, which was the
+    /// whole point; it just stops being its own little report.
+    ///
+    /// The same reasoning holds on Audit and Users below. Where a page has NO filter behind a
+    /// figure -- Stock's rejected carats, the Dashboard's eight -- a dialog is the only way in and
+    /// stays.
+    /// </summary>
+    private void RecBand_Click(object sender, MouseButtonEventArgs e)
+    {
+        string band = (sender as FrameworkElement)?.Tag as string ?? "";
+
+        if (band == "buyer")
+        {
+            // The detail card's total is the selected buyer's whole position, so the filter that
+            // says the same thing is theirs, across every age.
+            if (ReceivablesGrid.SelectedItem is not VReceivablesAgeing row) return;
+            Choose(ReceivablesBucket, "All ages");
+            Choose(ReceivablesBuyer, row.BuyerName);
+        }
+        else Choose(ReceivablesBucket, band);
+
+        ApplyReceivablesFilter();
+        ReceivablesGrid.Focus();
+    }
+
+    /// <summary>
+    /// Selects an item on a filter list, quietly doing nothing if this run has no such value.
+    ///
+    /// The age and buyer lists are rebuilt from whatever came back, so a band with no invoices in
+    /// it is not on the list at all -- and its tile still exists, reading zero. Clicking that
+    /// should leave the page as it was, not throw.
+    /// </summary>
+    private static void Choose(System.Windows.Controls.ComboBox list, string value)
+    {
+        if (list.Items.Contains(value)) list.SelectedItem = value;
+    }
+
+    /// <summary>The audit counts: the same rows the ACTION box beside them selects.</summary>
+    private void AuditCount_Click(object sender, MouseButtonEventArgs e)
+    {
+        string action = (sender as FrameworkElement)?.Tag as string ?? "";
+
+        var item = AuditAction.Items.OfType<System.Windows.Controls.ComboBoxItem>()
+            .FirstOrDefault(i => (i.Tag?.ToString() ?? "") == action);
+        if (item is null) return;
+
+        AuditAction.SelectedItem = item;
+        ApplyAuditFilter();
+        AuditGrid.Focus();
+    }
+
+    /// <summary>The user counts, likewise through the ROLE and STATUS boxes.</summary>
+    private void UserCount_Click(object sender, MouseButtonEventArgs e)
+    {
+        string which = (sender as FrameworkElement)?.Tag as string ?? "";
+
+        // Status first, since three of the four tiles say nothing about it and should not leave a
+        // stale one applied.
+        var status = UserStatus.Items.OfType<System.Windows.Controls.ComboBoxItem>()
+            .FirstOrDefault(i => (i.Tag?.ToString() ?? "") == (which == "active" ? "ACTIVE" : ""));
+        if (status is not null) UserStatus.SelectedItem = status;
+
+        // "owner" as the book spells it: role has no CHECK constraint, so "Owner" and "owner" both
+        // occur and an exact compare would find neither reliably.
+        Choose(UserRole, which == "owner"
+            ? UserRole.Items.OfType<string>().FirstOrDefault(
+                  r => string.Equals(r.Trim(), "owner", StringComparison.OrdinalIgnoreCase)) ?? ""
+            : "All roles");
+
+        ApplyUserFilter();
+        UserGrid.Focus();
+    }
+
     private (decimal Amount, decimal Carats, decimal Broker) Sale(VInvoice i)
     {
         if (_gradeShare.Count == 0) return (i.AmountTotal, i.CaratsSold, i.BrokerPayable);
@@ -4939,7 +5484,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// </summary>
     private bool _dashLoading, _dashPending;
 
-    private async void AutoApply()
+    /// <summary>
+    /// Fire-and-forget from three places, and a Task rather than async void so a failure inside
+    /// the load surfaces through Report rather than reaching the dispatcher unhandled.
+    /// </summary>
+    private void AutoApply() => _ = AutoApplyAsync();
+
+    private async Task AutoApplyAsync()
     {
         if (RangePicker is null || _syncingRange) return;      // still loading the XAML
 
@@ -4958,6 +5509,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 await LoadDashboardAsync();
             }
             while (_dashPending);
+        }
+        catch (Exception ex)
+        {
+            // async void used to let this reach the dispatcher and close the app. The dashboard is
+            // a read: a failed one belongs in the status bar, with the page as it was.
+            Say(ex.Message);
         }
         finally
         {
@@ -5405,7 +5962,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private void DatePicker_CalendarClosed(object sender, RoutedEventArgs e) =>
         Deselect((DatePicker)sender);
 
-    private void Deselect(DatePicker picker) =>
+    private static void Deselect(DatePicker picker) =>
         picker.Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
         {
             if (picker.Template?.FindName("PART_TextBox", picker) is TextBox box)
@@ -5507,11 +6064,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// </summary>
     private static Func<decimal, string> AxisScale(decimal peak)
     {
-        (decimal unit, string suffix) =
-            peak >= 1_000_000_000m ? (1_000_000_000m, " B")
-          : peak >= 1_000_000m ? (1_000_000m, " M")
-          : peak >= 1_000m ? (1_000m, " K")
-          : (1m, "");
+        (decimal unit, string suffix) = peak switch
+        {
+            >= 1_000_000_000m => (1_000_000_000m, " B"),
+            >= 1_000_000m => (1_000_000m, " M"),
+            >= 1_000m => (1_000m, " K"),
+            _ => (1m, ""),
+        };
 
         return v => v == 0m ? "0"
                             : (v / unit).ToString("0.##", CultureInfo.InvariantCulture) + suffix;
@@ -5701,11 +6260,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             if (margin.InvoicesCosted == 0)
             {
                 KpiMargin.Text = "—";
-                KpiMarginBasis.Text = margin.InvoicesTotal == 0
-                    ? (margin.InvoicesUncostable > 0
-                        ? $"Cost not available · {margin.InvoicesUncostable:N0} migrated invoice(s)"
-                        : "no posted invoices in this range")
-                    : $"Cost not available · {margin.InvoicesTotal:N0} invoice(s) carry no purchase cost";
+                KpiMarginBasis.Text = (margin.InvoicesTotal, margin.InvoicesUncostable) switch
+                {
+                    (0, > 0) => $"Cost not available · {margin.InvoicesUncostable:N0} migrated invoice(s)",
+                    (0, _) => "no posted invoices in this range",
+                    _ => $"Cost not available · {margin.InvoicesTotal:N0} invoice(s) carry no purchase cost",
+                };
             }
             else
             {
@@ -5934,11 +6494,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // like a complete history, so "it is not in the audit trail" was being read as "it never
         // happened" when the entry had simply scrolled off. Say when the window is full.
         bool capped = _audit.Count >= Repo.AuditLimit;
+        string window = capped ? $" · newest {Repo.AuditLimit:N0} only, older entries not loaded" : "";
         AuditSpan.Text = _audit.Count == 0
             ? "Nothing recorded yet"
             : $"{_audit[^1].ChangedAt:dd MMM yyyy} to {_audit[0].ChangedAt:dd MMM yyyy} · "
               + $"{_audit.Select(a => a.Entity).Distinct().Count()} entities"
-              + (capped ? $" · newest {Repo.AuditLimit:N0} only, older entries not loaded" : "");
+              + window;
 
         // Every audited table, not just the ones on this page. Offering only what came back made
         // the filter useless exactly when it was needed most: after a bulk operation the list read
@@ -6382,8 +6943,6 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
     private static string SizeLabel(string code) => SizeNames.Short(code);
 
-    private static string GradeLabel(string code) => GradeNames.Short(code);
-
     /// <summary>
     /// The printed sheet read backwards: what is on the page, answering with the catalogue code.
     ///
@@ -6407,14 +6966,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var g in grades)
+        foreach (string code in grades.Select(g => g.Code))
         {
-            map[PdfStockFile.Normalise(g.Code)] = g.Code;
+            map[PdfStockFile.Normalise(code)] = code;
             // The spaceless form too, so a sheet setting "NO 1 BB" as "1BB" and one setting it as
             // "1 BB" both land on the same grade. TryAdd, not assignment: if two catalogue entries
             // ever collapse to the same letters the first keeps the key rather than the last
             // silently winning.
-            map.TryAdd(PdfStockFile.Normalise(g.Code).Replace(" ", ""), g.Code);
+            map.TryAdd(PdfStockFile.Normalise(code).Replace(" ", ""), code);
         }
 
         // After the codes, so a code is never displaced by another grade's alias.
@@ -6787,13 +7346,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         _reportAllSizes.Click += ReportAllSizes_Click;
         panel.Add(_reportAllSizes);
 
-        foreach (var size in Catalogue.AllSizes)
+        foreach (string code in Catalogue.AllSizes.Select(size => size.Code))
         {
             var box = ReportBox(new CheckBox
             {
-                Content = SizeLabel(size.Code),
-                Tag = size.Code,
-                IsChecked = ReportSizeOnByDefault(size.Code),
+                Content = SizeLabel(code),
+                Tag = code,
+                IsChecked = ReportSizeOnByDefault(code),
                 Margin = new Thickness(0, 0, 12, 0),
                 VerticalAlignment = VerticalAlignment.Center,
             });
@@ -7305,14 +7864,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         // The rows live inside a nested ItemsControl per card, so the container has to be found by
         // DataContext rather than by index.
-        foreach (var box in Descendants<TextBox>(SettingCards))
-            if (ReferenceEquals(box.DataContext, target))
-            {
-                box.BringIntoView();
-                box.Focus();
-                box.SelectAll();
-                return;
-            }
+        var box = Descendants<TextBox>(SettingCards)
+            .FirstOrDefault(b => ReferenceEquals(b.DataContext, target));
+        if (box is null) return;
+
+        box.BringIntoView();
+        box.Focus();
+        box.SelectAll();
     }
 
     private static IEnumerable<T> Descendants<T>(DependencyObject? root) where T : DependencyObject
@@ -8261,11 +8819,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (!AppDialog.Confirm(this,
                 title: one ? "A sieve size this file uses is not in the catalogue"
                            : "Sieve sizes this file uses are not in the catalogue",
-                headline: allRetired
-                    ? one ? $"\"{missing[0].Label}\" was retired and this file still uses it"
-                          : $"{missing.Count:N0} sieve sizes were retired and this file still uses them"
-                    : one ? $"\"{missing[0].Label}\" has never been seen before"
-                          : $"{missing.Count:N0} sieve sizes have never been seen before",
+                headline: (allRetired, one) switch
+                {
+                    (true, true) => $"\"{missing[0].Label}\" was retired and this file still uses it",
+                    (true, false) => $"{missing.Count:N0} sieve sizes were retired and this file still uses them",
+                    (false, true) => $"\"{missing[0].Label}\" has never been seen before",
+                    (false, false) => $"{missing.Count:N0} sieve sizes have never been seen before",
+                },
                 subhead: fileName,
                 facts: [.. missing.Select(m => (m.Label,
                     $"{m.Carats:N2} ct stands under it"
@@ -8279,20 +8839,24 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                     + "then splits across two buckets that are the same sieve.",
                 listTitle: null,
                 bullets: null,
-                primaryText: allRetired
-                    ? one ? "Bring it back and carry on" : "Bring them back and carry on"
-                    : one ? "Add it and carry on" : "Add them and carry on",
+                primaryText: (allRetired, one) switch
+                {
+                    (true, true) => "Bring it back and carry on",
+                    (true, false) => "Bring them back and carry on",
+                    (false, true) => "Add it and carry on",
+                    (false, false) => "Add them and carry on",
+                },
                 secondaryText: "Cancel"))
             return false;
 
         var failures = new List<string>();
         using (Busy(busyOn, allRetired ? "Restoring…" : "Adding…", busyOn))
-            foreach (var m in missing)
+            foreach (string label in missing.Select(m => m.Label))
             {
                 // The LABEL is what the file printed and what the dialog showed; the CODE is
                 // what gets stored. "'+18" is the first and must never be the second.
-                var wrote = await Repo.AddSizeAsync(StockFileImport.CleanCode(m.Label));
-                if (!wrote.Ok) failures.Add($"{m.Label} — {wrote.Failure}");
+                var wrote = await Repo.AddSizeAsync(StockFileImport.CleanCode(label));
+                if (!wrote.Ok) failures.Add($"{label} — {wrote.Failure}");
             }
 
         if (failures.Count > 0)
@@ -8576,7 +9140,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// It changes nothing about what is imported or how much is deducted. It only means the figure
     /// is known in time to act on.
     /// </summary>
-    private static List<string> ShortfallLines(
+    public static List<string> ShortfallLines(
         ImportPlan plan, List<VStockPosition> stock,
         List<VStockMovement> salesMovements, List<VSalesLine> importedLines,
         IReadOnlyCollection<long> importedInvoiceIds)
@@ -8619,8 +9183,23 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             })
             .Where(b => b.Wants - b.Has > 0.00005m)
             .OrderByDescending(b => b.Wants - b.Has)
-            .Select(b => $"{b.GradeCode} × {b.SizeCode}: the sheet sells {b.Wants:N4} ct, "
-                       + $"stock holds {b.Has:N4} ct — {b.Wants - b.Has:N4} ct will not come out")
+            .Select(b =>
+                // SHORT OF, not a sum the reader has to check.
+                //
+                // The figure this compares against is NOT the one on the Stock page, and cannot be:
+                // replace_imported_sales removes the previous import's own movements before it
+                // deducts anything, so the shelf these lines meet is today's balance plus whatever
+                // the last run took out of this bucket. On a bucket the last import emptied that is
+                // 4.1100 ct where Stock reads 0.0000 -- both true, of different questions.
+                //
+                // Naming the arithmetic on every line was the first attempt and it was worse:
+                // "stock will hold 4.1100 ct (0.0000 ct on the shelf now, plus 4.1100 ct the last
+                // import takes back)" is four numbers, one of them a parenthesised zero, and it
+                // explains the mechanism to somebody who only asked whether the sheet will import.
+                //
+                // So the line says the ONE thing that is actionable -- how much will not come out
+                // -- and the heading above the list says once, in words, which shelf is meant.
+                Carats.Short(b.GradeCode, b.SizeCode, b.Wants, b.Has, StockScope.Deductible))
             .ToList();
     }
 
@@ -8664,11 +9243,20 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                       + (anyShort && plan.SkippedRows > 0
                             ? $" {plan.SkippedRows:N0} row(s) will also be skipped."
                             : ""),
-            listTitle: anyShort
-                ? "Stock cannot cover every line on this sheet"
-                : plan.SkippedRows == 0
-                    ? null
-                    : $"{plan.SkippedRows:N0} row(s) will be skipped and not imported",
+            listTitle: (anyShort, plan.SkippedRows) switch
+            {
+                // The heading carries the scope for every line beneath it, so no line has to.
+                // "available to this import" is the whole of the answer to "why does Stock say
+                // 0.0000?": these carats are the ones this sheet's previous import is holding, and
+                // they come back to the shelf the moment it is replaced.
+                (true, _) => existingCount == 0
+                    ? "Stock cannot cover every line on this sheet"
+                    : "Stock cannot cover every line on this sheet — measured against what is "
+                      + "available to this import, which is the shelf today plus everything the "
+                      + "previous import of this sheet is holding",
+                (false, 0) => null,
+                _ => $"{plan.SkippedRows:N0} row(s) will be skipped and not imported",
+            },
             bullets: anyShort ? shortfalls : skipped,
             primaryText: "Import now",
             secondaryText: "Cancel");
@@ -9059,14 +9647,20 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// something invisible drifts the moment somebody rewords a sentence.
     /// </summary>
     private static string ColumnHeaderFor(string message) =>
-        message.Contains("Grade is required") ? "Grade"
-        // Move to stock's refusal. It is about the empty line rather than one bad value, and Grade
-        // is where that line gets filled in from, so it is written there.
-        : message.Contains("Pick a grade and size") ? "Grade"
-        : message.Contains("Size is required") || message.Contains("does not use size") ? "Size"
-        : message.Contains("Weight") ? "Weight"
-        : message.Contains("Price") ? "Price/ct"
-        : "";
+        message switch
+        {
+            _ when message.Contains("Grade is required") => "Grade",
+
+            // Move to stock's refusal names the empty line rather than one bad value, and Grade is
+            // where that line gets filled in from, so it is written there.
+            _ when message.Contains("Pick a grade and size") => "Grade",
+
+            _ when message.Contains("Size is required") => "Size",
+            _ when message.Contains("does not use size") => "Size",
+            _ when message.Contains("Weight") => "Weight",
+            _ when message.Contains("Price") => "Price/ct",
+            _ => "",
+        };
 
     /// <summary>
     /// Put a line message on the cell it is about.
@@ -9169,8 +9763,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => Say(message, ok, neutral, popup)); return; }
 
         // Token brushes, not Brushes.SeaGreen/Firebrick — those don't follow the light/dark swap.
-        Status.Foreground = (Brush)FindResource(neutral ? "TextMutedBrush"
-                                              : ok ? "SuccessBrush" : "DangerBrush");
+        Status.Foreground = (Brush)FindResource((neutral, ok) switch
+        {
+            (true, _) => "TextMutedBrush",
+            (false, true) => "SuccessBrush",
+            (false, false) => "DangerBrush",
+        });
 
         // Every message on every screen passes through here, so this is the one place a database
         // failure has to be made readable. The original is kept on the tooltip — a support call
@@ -9182,9 +9780,8 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // screen instead of the first line only -- and the unflattened text goes on the tooltip,
         // where line breaks survive and a support call can read the whole thing.
         Status.Text = System.Text.RegularExpressions.Regex.Replace(friendly, "[\r\n]+", "  ·  ").Trim();
-        Status.ToolTip = friendly.Contains('\n') ? friendly
-                       : Friendly.Translates(message) ? message
-                       : null;
+        if (friendly.Contains('\n')) Status.ToolTip = friendly;
+        else Status.ToolTip = Friendly.Translates(message) ? message : null;
 
         // How long it stays depends on what it is. The rule used to be "confirmations clear,
         // everything else is permanent", which left a prompt like "Pick a grade and size" sitting

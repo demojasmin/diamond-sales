@@ -92,6 +92,96 @@ public static class GradeNames
     public static string Short(string? code) =>
         code is null or "" ? ""
         : Marks.TryGetValue(code, out string? mark) ? mark : code;
+
+    /// <summary>
+    /// A bucket named the way the desk names one: "DX1 × -6.5", never "NO DX × -6.5".
+    ///
+    /// The database STORES a code and the app SHOWS a mark -- that split is deliberate and is what
+    /// keeps one grade under one row whatever a sheet spells it (0053). Every grid on every page
+    /// goes through ShortName and prints the mark. Fourteen sentences did not: the import warning,
+    /// the movement ledger, the reconciliation, the rejection list and the rest each built their
+    /// own "{GradeCode} × {SizeCode}" out of the raw stored values.
+    ///
+    /// So a sheet spelling a grade "Dx1" was matched correctly to NO DX and then reported back as
+    /// "NO DX", which reads as a DIFFERENT grade to anyone holding the sheet -- and the two figures
+    /// on screen, the warning's and the Stock page's, appeared to be about different goods.
+    ///
+    /// One place, because the last two attempts at this were per-call-site and the next sentence
+    /// somebody writes would have been the fifteenth.
+    /// </summary>
+    public static string Bucket(string? gradeCode, string? sizeCode) =>
+        $"{Short(gradeCode)} × {SizeNames.Short(sizeCode)}";
+}
+
+/// <summary>
+/// How many carats, and WHICH carats — because this app has three answers to "how much stock is
+/// there?" and they are routinely different numbers for the same bucket.
+///
+/// THE THREE, and why they cannot be merged:
+///
+///   OnShelf       what the Stock page shows. Movements, less what a sales entry is holding.
+///                 The answer to "what can I sell today?"
+///
+///   Deductible    what a REPLACEMENT import will find. The shelf, PLUS everything the previous
+///                 import of the same sheet is holding — because replace_imported_sales deletes
+///                 its own movements before it deducts anything, so those carats come back the
+///                 moment the sheet is replaced. Larger than OnShelf on any bucket a previous
+///                 import touched, and on one the client asked about it was 4.1100 against 0.0000.
+///
+///   Ledger        movements alone, ignoring reservations. What the stock REPORT prints, so that
+///                 reserving a parcel never moves a printed document (0044).
+///
+/// THE RULE, and the reason it is a type rather than a note in a comment:
+///
+/// The client's question was "Stock shows 0.0000 ct, why does the popup say 4.1100?" Both figures
+/// were right. Nothing on screen said they were answering different questions, because the sentence
+/// that printed the second one used the word "holds" — which is what the Stock page means. One word
+/// borrowed from the wrong scope, and two correct numbers became a contradiction.
+///
+/// A convention ("remember not to say 'holds' there") is the kind of rule the next sentence gets
+/// written without; this codebase has proved that three times now. So each quantity carries its own
+/// wording and cannot be printed with another's. Anything with carats to report says which kind it
+/// is, and the phrasing follows from that.
+/// </summary>
+public enum StockScope
+{
+    /// The Stock page's figure: free to sell right now.
+    OnShelf,
+
+    /// What a replacement import will find: the shelf plus what the previous import is holding.
+    Deductible,
+
+    /// Movements alone, reservations ignored. The stock report's figure.
+    Ledger,
+}
+
+/// <summary>Carats, said in the words of the scope they were measured in.</summary>
+public static class Carats
+{
+    /// <summary>
+    /// "4.1100 ct can be deducted", "0.0000 ct on the shelf", "12.5 ct in the ledger".
+    ///
+    /// Never "holds" for anything but OnShelf, and never a bare figure: a number with no scope on
+    /// it is the bug this exists to stop.
+    /// </summary>
+    public static string Say(decimal ct, StockScope scope) => scope switch
+    {
+        StockScope.OnShelf => $"{ct:N4} ct on the shelf",
+        StockScope.Deductible => $"{ct:N4} ct can be deducted",
+        StockScope.Ledger => $"{ct:N4} ct in the ledger",
+        _ => $"{ct:N4} ct",
+    };
+
+    /// <summary>
+    /// The whole sentence for a bucket that cannot cover what is being asked of it.
+    ///
+    /// Shortfall first, because it is the only number the desk can act on — the two that make it up
+    /// are there to be checked, not to be subtracted by the reader.
+    /// </summary>
+    public static string Short(string gradeCode, string sizeCode,
+                              decimal wanted, decimal have, StockScope scope) =>
+        $"{GradeNames.Bucket(gradeCode, sizeCode)} is short {wanted - have:N4} ct: "
+        + $"the sheet sells {wanted:N4} ct, {Say(have, scope)}";
 }
 
 /// <summary>
@@ -141,6 +231,36 @@ public class SizeBucket : BaseModel
     /// The sieve, for the same reason Grade overrides it: when WPF cannot read TextSearch.TextPath
     /// it prints ToString(), and a type name is never the right answer in a size cell.
     public override string ToString() => ShortName;
+}
+
+/// <summary>
+/// Where a rejected parcel went, hanging off the REJECTION movement that took it out (0018).
+///
+/// This is the WHY behind a rejection, and it is the only place the app holds one. A rejection
+/// removes carats from a bucket; the disposition says what became of them -- re-graded into another
+/// grade, sent for repair, re-selected. Nothing puts them back: the paired CONVERT_IN the domain
+/// model describes was deferred until the client settles the re-keying rule, so a disposition
+/// records intent and no more.
+///
+/// Rows exist only for rejections recorded BY HAND. The sales importer writes none, because the
+/// workbook keeps its destinations in cell comments the importer does not read -- so an imported
+/// rejection has no why at all, and the rejection list says so rather than leaving a blank.
+/// </summary>
+[Table("rejection_disposition")]
+public class RejectionDisposition : BaseModel
+{
+    [PrimaryKey("disposition_id", false)] public long DispositionId { get; set; }
+
+    /// The REJECTION movement these carats came out on. ON DELETE CASCADE, so a reversed rejection
+    /// takes its dispositions with it.
+    [Column("movement_id")] public long MovementId { get; set; }
+
+    /// The grade they went INTO, when they were re-graded. Null for an outcome that names no
+    /// destination -- repair, or a note that simply describes what happened.
+    [Column("to_grade_id")] public long? ToGradeId { get; set; }
+
+    [Column("weight_ct")] public decimal WeightCt { get; set; }
+    [Column("note")] public string? Note { get; set; }
 }
 
 /// Which sieve sizes a grade actually trades in. +14 uses +14/+18/+23, nobody else does.

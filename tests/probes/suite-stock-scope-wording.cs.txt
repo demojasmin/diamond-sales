@@ -1,0 +1,110 @@
+// CURRENT STOCK AND "CAN BE DEDUCTED" ARE NEVER THE SAME THING.
+//
+// This app has THREE answers to "how much stock is there?" for one bucket, and they are routinely
+// different numbers:
+//
+//   on the shelf     the Stock page. Movements less what a sales entry holds.
+//   can be deducted  what a REPLACEMENT import finds: the shelf plus what the previous import of
+//                    the same sheet is holding, since replacing it gives those carats back.
+//   in the ledger    movements alone. What the stock report prints.
+//
+// The client asked why Stock read 0.0000 ct while the import popup said 4.1100. Both were right.
+// The popup used the word "holds" -- the Stock page's word -- and two correct figures read as a
+// contradiction. One borrowed word.
+//
+// So the wording is not a convention any more, it is a type: Carats.Say(ct, scope). This suite is
+// the half that makes it global -- it fails when a scope's words leak onto another scope's figure,
+// and when a new sentence prints carats with no scope at all.
+using System.IO;
+using System.Text.RegularExpressions;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+// ── each scope says its own thing, and they do not overlap ──────────────────
+string shelf = Carats.Say(0m, StockScope.OnShelf);
+string deduct = Carats.Say(4.11m, StockScope.Deductible);
+string ledger = Carats.Say(12.5m, StockScope.Ledger);
+Console.WriteLine($"   OnShelf     {shelf}");
+Console.WriteLine($"   Deductible  {deduct}");
+Console.WriteLine($"   Ledger      {ledger}\n");
+
+Check("SCOPE - the shelf is called the shelf", shelf == "0.0000 ct on the shelf", shelf);
+Check("SCOPE - the import's figure is called deductible, never held",
+      deduct == "4.1100 ct can be deducted" && !deduct.Contains("hold"), deduct);
+Check("SCOPE - the ledger is called the ledger", ledger == "12.5000 ct in the ledger", ledger);
+
+Check("SCOPE - no two scopes can be confused for each other",
+      new[] { shelf, deduct, ledger }.Select(x => Regex.Replace(x, @"[\d.,]+", "")).Distinct().Count() == 3);
+
+// The exact pair the client compared. Different numbers, and now visibly different questions.
+Check("SCOPE - 0.0000 on the shelf and 4.1100 deductible cannot read as the same claim",
+      shelf != deduct && !shelf.Contains("deducted") && !deduct.Contains("shelf"),
+      $"{shelf}  /  {deduct}");
+
+// ── the whole sentence, for every grade and size ────────────────────────────
+string one = Carats.Short("NO DX", "-6.5", 4.17m, 4.11m, StockScope.Deductible);
+Console.WriteLine($"   {one}\n");
+Check("LINE - shortfall first, because that is the actionable number",
+      one.StartsWith("DX1 × -6.5 is short 0.0600 ct:"), one);
+Check("LINE - the mark, never the stored code", !one.Contains("NO DX"), one);
+Check("LINE - and the scope is on the figure",
+      one.EndsWith("4.1100 ct can be deducted"), one);
+
+foreach (var (g, sz, mark) in new[]
+{
+    ("NO II", "1/6", "# × 1/6"), ("NO 1 BB", "0.2", "1BB × 1/5"), ("TOP-COL", "+11", "TOP co × +11"),
+    ("GH", "-6.5", "GH VS × -6.5"), ("EX 1", "+11", "EX1 × +11"), ("COL", "+23", "color × +23"),
+    ("Unknown Grade", "0.25", "Unknown Grade × 1/4"),
+})
+{
+    string line = Carats.Short(g, sz, 5m, 2m, StockScope.OnShelf);
+    Check($"LINE - {mark}",
+          line.StartsWith($"{mark} is short 3.0000 ct:") && line.EndsWith("2.0000 ct on the shelf"),
+          line);
+}
+
+// ── THE GUARD. A carat figure printed with no scope is the bug coming back. ──
+// FULL PATH, resolved. The unresolved form still carries this probe's own "bin" in it
+// (tests\probesin\...\..\..\DiamondDesktop), so a "skip anything under bin" test threw away
+// EVERY file and the scan passed by examining nothing -- a guard that cannot fail, which is worse
+// than no guard because it reads as evidence.
+string root = Path.GetFullPath(
+    Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "DiamondDesktop"));
+var leaks = new List<string>();
+int scanned = 0;
+foreach (string f in Directory.GetFiles(root, "*.cs", SearchOption.AllDirectories))
+{
+    string rel = Path.GetRelativePath(root, f);
+    if (rel.StartsWith("obj" + Path.DirectorySeparatorChar)
+        || rel.StartsWith("bin" + Path.DirectorySeparatorChar)) continue;
+    if (Path.GetFileName(f) == "Models.cs") continue;          // where the wording is defined
+    scanned++;
+
+    string[] lines = File.ReadAllLines(f);
+    for (int i = 0; i < lines.Length; i++)
+    {
+        string line = lines[i];
+        if (line.TrimStart().StartsWith("//")) continue;
+        if (!line.Contains('"')) continue;
+
+        // "holds"/"on hand" next to carats is the Stock page's claim. Only the Stock page may make
+        // it, and only about its own figure -- never in an import or a sale sentence.
+        if (Regex.IsMatch(line, @"(stock holds|ct on hand|holds \{)", RegexOptions.IgnoreCase))
+            leaks.Add($"{Path.GetFileName(f)}:{i + 1}  {line.Trim()}");
+    }
+}
+
+if (leaks.Count > 0) foreach (string l in leaks) Console.WriteLine("   " + l);
+// The scan has to have READ something. See the note on root above: this check is here because the
+// first version of this guard passed while examining zero files.
+Check("GUARD - the scan actually read the app's source", scanned > 20, $"{scanned} file(s)");
+Check("GUARD - no sentence claims stock 'holds' carats outside the Stock page's own figure",
+      leaks.Count == 0, $"{leaks.Count} site(s) of {scanned} file(s)");
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

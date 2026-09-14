@@ -92,7 +92,7 @@ without them the app is missing whole features — most visibly stock reservatio
 where the desktop app calls `reserve_line` on every line typed and gets
 *"function does not exist"* back on each keystroke.
 
-1. **New query** → paste `0036_to_0052_since_schema.sql` → **Run**
+1. **New query** → paste `0036_to_0053_since_schema.sql` → **Run**
 
 One paste, ten sections, each committing itself. Takes 10–20 seconds.
 

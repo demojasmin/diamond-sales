@@ -1,0 +1,106 @@
+// THE SHORTFALL LINES, READ THE WAY THE DESK READS THEM.
+//
+// The figure a shortfall is measured against is NOT the one on the Stock page, and cannot be:
+// replace_imported_sales removes the previous import's own movements before it deducts anything,
+// so the shelf these lines meet is today's balance PLUS whatever the last run took out. On a bucket
+// the last import emptied that is 4.1100 ct where Stock reads 0.0000 -- both true, of different
+// questions, and the client asked the obvious one: which is it?
+//
+// Driven with the client's own numbers off "sale upload (1).xlsx".
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+static SaleRow Row(string grade, string size, decimal gross) => new(
+    ExcelRow: 2, Sr: 1, Date: new DateOnly(2026, 8, 22), Buyer: "SIYA IMPEX", Broker: "",
+    BrokerPct: 0m, TermsDays: 30, SizeCode: size, GradeCode: grade, GrossCt: gross,
+    SelectionCt: gross, PricePerCt: 20413m, ExRate: 1m, Less1Pct: 0m, Less2Pct: 0m,
+    DocType: "W BILL", ReceivedAmount: 0m);
+
+static ImportPlan Plan(params SaleRow[] rows)
+{
+    var p = new ImportPlan();
+    p.Invoices.Add(new PlannedInvoice("MIG-1", new DateOnly(2026, 8, 22), "SIYA IMPEX", null,
+                                      0m, 30, "W BILL", [.. rows], 0m, 0m));
+    return p;
+}
+
+static VStockPosition At(string grade, string size, decimal balance) =>
+    new() { GradeCode = grade, SizeCode = size, BalanceCt = balance };
+
+static VStockMovement Sold(string grade, string size, decimal ct, long lineId) =>
+    new() { GradeCode = grade, SizeCode = size, WeightCt = ct,
+            RefType = "sales_line", RefId = lineId, MovementType = "SALE" };
+
+// ── the client's bucket: shelf 0.0000, last import holding 4.1100, sheet sells 4.1700 ──
+var lines = MainWindow.ShortfallLines(
+    Plan(Row("NO DX", "-6.5", 4.17m)),
+    [At("NO DX", "-6.5", 0m)],
+    [Sold("NO DX", "-6.5", 4.11m, 501)],
+    [new VSalesLine { LineId = 501 }],
+    [1L]);
+
+Console.WriteLine("   " + string.Join("\n   ", lines));
+Console.WriteLine();
+
+string one = lines.Count == 1 ? lines[0] : "";
+Check("SHORT - one line for the one bucket that is short", lines.Count == 1, $"{lines.Count}");
+Check("SHORT - it leads with the mark the sheet prints, not the stored code",
+      one.StartsWith("DX1 × -6.5"), one);
+Check("SHORT - and with the number that is actionable: what will not come out",
+      one.Contains("is short 0.0600 ct"), one);
+Check("SHORT - the deductible figure is named as deductible, never as what stock 'holds'",
+      one.Contains("4.1100 ct can be deducted") && !one.Contains("stock holds"), one);
+
+// The wording that was rejected: four numbers and a parenthesised zero on every line.
+Check("SHORT - the arithmetic is NOT spelled out on the line",
+      !one.Contains("on the shelf now") && !one.Contains("takes back") && !one.Contains("0.0000"),
+      one);
+
+// ── a first import: nothing is credited back, so the two figures agree ──
+var first = MainWindow.ShortfallLines(
+    Plan(Row("NO II", "1/6", 3.43m)), [At("NO II", "1/6", 0m)], [], [], []);
+Check("FIRST - a first import still reports the bucket",
+      first.Count == 1 && first[0].StartsWith("# × 1/6"), first.FirstOrDefault());
+Check("FIRST - and reads the same way, with no credit to explain",
+      first[0].Contains("is short 3.4300 ct") && first[0].Contains("0.0000 ct can be deducted"),
+      first[0]);
+
+// ── every grade and size on the client's sheet, not just the one they asked about ──
+var many = MainWindow.ShortfallLines(
+    Plan(Row("NO 4", "+11", 15.77m), Row("NO 5", "1/6", 1.58m), Row("TOP-COL", "+11", 56.49m),
+         Row("GH", "-6.5", 2.00m), Row("NO 1 BB", "0.2", 1.00m)),
+    [At("NO 4", "+11", 14.09m), At("NO 5", "1/6", 0m), At("TOP-COL", "+11", 54.94m),
+     At("GH", "-6.5", 0m), At("NO 1 BB", "0.2", 0m)],
+    [], [], []);
+
+Console.WriteLine("   " + string.Join("\n   ", many));
+Console.WriteLine();
+
+Check("ALL - every bucket short is reported", many.Count == 5, $"{many.Count}");
+// GH VS is short 2.0000 ct, the largest of the five -- NOT TOP co, whose 56.4900 ct sale is the
+// biggest number on the list but is 1.5500 ct short. The order is by what will not come out,
+// because that is what the desk has to act on; a big sale that mostly moves is not the problem.
+Check("ALL - biggest SHORTFALL first, not biggest sale",
+      many[0].StartsWith("GH VS × -6.5") && many[^1].StartsWith("1BB × 1/5"),
+      $"{many[0].Split(':')[0]} … {many[^1].Split(':')[0]}");
+Check("ALL - every grade shows its mark, never its stored code",
+      many.Any(l => l.StartsWith("4 × +11")) && many.Any(l => l.StartsWith("5 × 1/6"))
+      && many.Any(l => l.StartsWith("GH VS × -6.5")) && many.Any(l => l.StartsWith("1BB × 1/5")),
+      string.Join(" | ", many.Select(l => l.Split(':')[0])));
+Check("ALL - and no line anywhere prints a raw stored code",
+      !many.Concat(lines).Any(l => l.Contains("NO ") || l.Contains("TOP-COL")
+                                   || l.StartsWith("GH ×") || l.Contains("0.2")),
+      string.Join(" | ", many.Select(l => l.Split(':')[0])));
+
+// Every line has to be a whole sentence a person can act on: bucket, shortfall, what will move.
+foreach (string l in many.Concat(lines).Concat(first))
+    Check("   reads as one sentence with exactly three figures",
+          l.Count(c => c == '·') == 0 && l.Contains("is short ") && l.Contains(" can be deducted"), l);
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

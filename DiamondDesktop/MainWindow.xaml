@@ -1977,7 +1977,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource SuccessBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="not due"
+                              ui:Drill.Hint="Shows only the invoices that are not yet due, in the table below"
+                              AutomationProperties.Name="Not due, click to filter the table"
+                              MouseLeftButtonUp="RecBand_Click">
                   <TextBlock Text="Not due" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -1993,7 +1997,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource WarningBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="1-30"
+                              ui:Drill.Hint="Shows only the invoices 1 to 30 days overdue, in the table below"
+                              AutomationProperties.Name="1 to 30 days, click to filter the table"
+                              MouseLeftButtonUp="RecBand_Click">
                   <TextBlock Text="1 – 30 days" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2009,7 +2017,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="31-60"
+                              ui:Drill.Hint="Shows only the invoices 31 to 60 days overdue, in the table below"
+                              AutomationProperties.Name="31 to 60 days, click to filter the table"
+                              MouseLeftButtonUp="RecBand_Click">
                   <TextBlock Text="31 – 60 days" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2025,7 +2037,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource WarningBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="61-90"
+                              ui:Drill.Hint="Shows only the invoices 61 to 90 days overdue, in the table below"
+                              AutomationProperties.Name="61 to 90 days, click to filter the table"
+                              MouseLeftButtonUp="RecBand_Click">
                   <TextBlock Text="61 – 90 days" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2041,7 +2057,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource DangerBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="90+"
+                              ui:Drill.Hint="Shows only the invoices over 90 days overdue, in the table below"
+                              AutomationProperties.Name="Over 90 days, click to filter the table"
+                              MouseLeftButtonUp="RecBand_Click">
                   <TextBlock Text="90+ days" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2131,7 +2151,11 @@
                 <Border DockPanel.Dock="Top" Background="{DynamicResource Surface2Brush}"
                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
                         CornerRadius="10" Padding="12,10" Margin="0,0,0,12">
-                  <StackPanel>
+                  <StackPanel
+                              ui:Drill.On="True" Tag="buyer"
+                              ui:Drill.Hint="Shows every unpaid invoice of this buyer's in the table below"
+                              AutomationProperties.Name="Total outstanding for this buyer, click to filter the table to them"
+                              MouseLeftButtonUp="RecBand_Click">
                     <TextBlock Text="TOTAL OUTSTANDING" Style="{StaticResource KpiLabel}"/>
                     <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                              MaxHeight="26" Margin="0,4,0,0">
@@ -2297,7 +2321,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource WarningBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                            ui:Drill.On="True"
+                            ui:Drill.Hint="Lists which buckets a sales entry is holding, and how much of each"
+                            MouseLeftButtonUp="ReservedCarats_Click"
+                            AutomationProperties.Name="Reserved carats">
                   <TextBlock Text="Reserved carats" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2314,7 +2342,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                            ui:Drill.On="True"
+                            ui:Drill.Hint="Lists where the value sits, dearest bucket first"
+                            MouseLeftButtonUp="StockValue_Click"
+                            AutomationProperties.Name="Stock value">
                   <TextBlock Text="Stock value" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2330,7 +2362,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource SuccessBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                            ui:Drill.On="True"
+                            ui:Drill.Hint="Lists every bucket holding a balance, largest first"
+                            MouseLeftButtonUp="BucketsInStock_Click"
+                            AutomationProperties.Name="Buckets in stock">
                   <TextBlock Text="Buckets in stock" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2346,7 +2382,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource DangerBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                            ui:Drill.On="True"
+                            ui:Drill.Hint="Lists which buckets are below zero, and by how much"
+                            MouseLeftButtonUp="NegativeBalances_Click"
+                            AutomationProperties.Name="Negative balances">
                   <TextBlock Text="Negative balances" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2391,13 +2431,27 @@
               <Border Grid.Column="1" Width="1" Margin="0,2,28,2"
                       Background="{DynamicResource BorderBrush}"/>
 
-              <StackPanel Grid.Column="2">
+              <!-- THE FIGURE OPENS THE LIST BEHIND IT. A total told the desk that carats had been
+                   rejected and nothing else: not which buckets, not off which invoices, not what
+                   became of them. Finding one meant selecting a row and pressing Show movements,
+                   bucket by bucket, which is only possible if you already know where to look.
+                   Clicking the number is where anyone would try first. -->
+              <StackPanel Grid.Column="2" x:Name="RejectionCard"
+                          ui:Drill.On="True"
+                          ui:Drill.Hint="Lists every rejection: what left, which bucket, which invoice, and what became of it"
+                          MouseLeftButtonUp="Rejections_Click"
+                          AutomationProperties.Name="Rejections">
                 <TextBlock Text="REJECTION" Style="{StaticResource KpiLabel}"/>
                 <TextBlock x:Name="StockBreakdownRejection" Style="{StaticResource KpiValue}"
                            Margin="0,4,0,0" Text="—"
                            Foreground="{DynamicResource WarningBrush}"/>
                 <TextBlock x:Name="StockBreakdownRejectionNote" Style="{StaticResource KpiCaption}"
                            Text="Carats rejected to date · already out of stock"/>
+                <!-- Said in words as well as by the cursor: a figure that happens to be clickable
+                     is a figure nobody clicks. -->
+                <TextBlock x:Name="RejectionCardHint" Style="{StaticResource KpiCaption}"
+                           Foreground="{DynamicResource AccentBrush}"
+                           Text="Click to see what was rejected"/>
               </StackPanel>
 
               <TextBlock Grid.Column="3" x:Name="StockBreakdownScope"
@@ -4037,7 +4091,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="sales"
+                              ui:Drill.Hint="Lists every invoice behind this figure, largest first"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W1 · Total sales">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE9D2;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4058,7 +4116,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="carats"
+                              ui:Drill.Hint="Lists every invoice behind this figure, heaviest first"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W2 · Carats sold">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xF158;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4078,7 +4140,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="rate"
+                              ui:Drill.Hint="Shows the amount and the weight it is blended from"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W3 · Blended rate / ct">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4098,7 +4164,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="broker"
+                              ui:Drill.Hint="Lists which invoices carry brokerage, and at what rate"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W14 · Broker cost">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE8C7;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4125,7 +4195,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="inventory"
+                              ui:Drill.Hint="Says what this figure is made of and where it is listed"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W11 · Inventory value">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4146,7 +4220,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="margin"
+                              ui:Drill.Hint="Lists the invoices that could not be costed"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W7 · Margin">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE1D3;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4167,7 +4245,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="outstanding"
+                              ui:Drill.Hint="Lists who owes it, most first"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W9 · Outstanding">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE825;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4188,7 +4270,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="confirmed"
+                              ui:Drill.Hint="Lists every invoice counted here"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="Confirmed sales">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4547,7 +4633,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="all"
+                              ui:Drill.Hint="Clears the action filter, showing every entry in the table below"
+                              AutomationProperties.Name="Events shown, click to filter the table"
+                              MouseLeftButtonUp="AuditCount_Click">
                   <TextBlock Text="Events shown" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4564,7 +4654,11 @@
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"
                         Background="{DynamicResource SuccessBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="INSERT"
+                              ui:Drill.Hint="Shows only the entries that created a record"
+                              AutomationProperties.Name="Inserts, click to filter the table"
+                              MouseLeftButtonUp="AuditCount_Click">
                   <TextBlock Text="Inserts" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4583,7 +4677,11 @@
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"
                         Background="{DynamicResource WarningBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="UPDATE"
+                              ui:Drill.Hint="Shows only the entries that amended a record"
+                              AutomationProperties.Name="Updates, click to filter the table"
+                              MouseLeftButtonUp="AuditCount_Click">
                   <TextBlock Text="Updates" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4600,7 +4698,11 @@
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"
                         Background="{DynamicResource DangerBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="DELETE"
+                              ui:Drill.Hint="Shows only the entries that removed a record"
+                              AutomationProperties.Name="Deletes, click to filter the table"
+                              MouseLeftButtonUp="AuditCount_Click">
                   <TextBlock Text="Deletes" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4960,7 +5062,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="all"
+                              ui:Drill.Hint="Clears the filters, showing every account in the table below"
+                              AutomationProperties.Name="Total accounts, click to filter the table"
+                              MouseLeftButtonUp="UserCount_Click">
                   <TextBlock Text="Total accounts" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4977,7 +5083,11 @@
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"
                         Background="{DynamicResource SuccessBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="active"
+                              ui:Drill.Hint="Shows only the accounts that can sign in"
+                              AutomationProperties.Name="Active accounts, click to filter the table"
+                              MouseLeftButtonUp="UserCount_Click">
                   <TextBlock Text="Active" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4993,7 +5103,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="owner"
+                              ui:Drill.Hint="Shows only the owners"
+                              AutomationProperties.Name="Owners, click to filter the table"
+                              MouseLeftButtonUp="UserCount_Click">
                   <TextBlock Text="Owners" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">

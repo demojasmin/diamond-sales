@@ -233,6 +233,17 @@ public static class Repo
             .Order(MovementIdColumn, Ordering.Descending));
 
     /// <summary>
+    /// Every rejection disposition: what became of the carats each REJECTION took out.
+    ///
+    /// Read whole rather than per movement. The table holds one short row per destination and there
+    /// are a few dozen of them at most -- one round trip beats a query per rejection when the
+    /// rejection list is opened, and the list needs all of them at once anyway.
+    /// </summary>
+    public static async Task<List<RejectionDisposition>> DispositionsAsync() =>
+        await AllPagesAsync(() => Db.Client.From<RejectionDisposition>()
+            .Order("disposition_id", Ordering.Ascending));
+
+    /// <summary>
     /// Every REJECTION movement, filtered in the DATABASE rather than after the fact.
     ///
     /// There is no stored rejection total and no view that offers one -- v_stock_position carries
