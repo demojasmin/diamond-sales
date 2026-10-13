@@ -1725,8 +1725,8 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
     string Short(string code) => DiamondDesktop.Data.GradeNames.Short(code);
 
     Check("MARK - a grade whose mark differs from its code uses the mark",
-        Short("NO II") == "#" && Short("NO 1 BB") == "1BB" && Short("TOP-COL") == "TOP co"
-        && Short("COL") == "color" && Short("NO DX") == "DX1",
+        Short("NO II") == "II" && Short("NO 1 BB") == "1BB" && Short("TOP-COL") == "TOP co"
+        && Short("NO DX") == "DX1",
         $"{Short("NO II")} {Short("NO 1 BB")} {Short("TOP-COL")}");
 
     Check("MARK - a grade the sheet prints as its own code is left alone",
@@ -1743,12 +1743,14 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
     // The PDF reader matches sheets on these same marks. Moving the map out of MainWindow must
     // not have cost it one of them.
     var map = DiamondDesktop.MainWindow.PdfGradeLabelMap(
-        new[] { "NO II", "NO 1 BB", "TOP-COL", "COL", "NO DX", "OW" }
-            .Select(c => new DiamondDesktop.Data.Grade { Code = c, DisplayName = c }));
+        new[] { "NO II", "NO 1 BB", "TOP-COL", "NO DX", "OW" }
+            .Select(c => new DiamondDesktop.Data.Grade { Code = c, DisplayName = c,
+                                                         // NO II's aliases after 0057 (FL, # and color merged)
+                                                         Aliases = c == "NO II" ? "#;II;FL;F L;FL1;COL;color" : null }));
 
     Check("MARK - and the PDF reader still resolves every one of them",
-        new[] { ("#", "NO II"), ("1BB", "NO 1 BB"), ("TOP co", "TOP-COL"), ("color", "COL"),
-                ("DX1", "NO DX"), ("OW", "OW") }
+        new[] { ("#", "NO II"), ("II", "NO II"), ("FL", "NO II"), ("color", "NO II"),
+                ("1BB", "NO 1 BB"), ("TOP co", "TOP-COL"), ("DX1", "NO DX"), ("OW", "OW") }
             .All(t => map.TryGetValue(t.Item1, out string? code) && code == t.Item2));
 }
 
@@ -1989,10 +1991,9 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
 {
     var types = DiamondDesktop.Catalogue.DocTypes;
 
-    Check("DOCTYPE - the desk can write all four kinds of invoice",
-        types.SequenceEqual(new[] { "BILL", "WITHOUT BILL", "EXPORT", "DOLLAR BILL" }),
+    Check("DOCTYPE - the desk can write all five kinds of invoice, R BILL beside DOLLAR BILL",
+        types.SequenceEqual(new[] { "BILL", "WITHOUT BILL", "EXPORT", "DOLLAR BILL", "R BILL" }),
         string.Join(" | ", types));
-
     // BILL is what a new invoice opens on and what the importer falls back to, so it must be the
     // one the picker lands on.
     Check("DOCTYPE - BILL stays the default", types[0] == "BILL", types[0]);
@@ -2108,6 +2109,207 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
             latch.Enable(signOut));
         Check("BUSY - and the last release enables it", latch.Enable(button) && latch.Idle);
     }
+}
+
+// ── 0055 · only SOLD carats leave stock; a rejection stays ─────────────────
+// The app's side of the rule: what the confirm dialog says leaves, what the sales-import preview
+// measures, and which edits re-state a line's hold. The database side is TEST_0055_ON_DEMO.sql.
+{
+    var t0055 = new Thread(() =>
+    {
+        var noii = new DiamondDesktop.Data.Grade { GradeId = 5, Code = "NO II" };
+        var s65  = new DiamondDesktop.Data.SizeBucket { SizeId = 3, Code = "+6.5" };
+        // The entry works its rejection out against the catalogue, so the two have to be in it --
+        // put back as they were afterwards, so no later section sees them.
+        var gradesBefore = DiamondDesktop.Catalogue.Grades.ToList();
+        var sizesBefore  = DiamondDesktop.Catalogue.AllSizes.ToList();
+        DiamondDesktop.Catalogue.Grades.Clear(); DiamondDesktop.Catalogue.AllSizes.Clear();
+        DiamondDesktop.Catalogue.Grades.Add(noii); DiamondDesktop.Catalogue.AllSizes.Add(s65);
+
+        // -- the confirm summary: 8 ct gross, 6 sold, 2 rejected --------------
+        var inv = new DiamondDesktop.InvoiceEntry { InvoiceDate = new DateTime(2026, 10, 9), TermsDays = 30 };
+        inv.Buyers.Add(new DiamondDesktop.PartyRef(11, "ABC EXPORTS", 30));
+        inv.SelectedBuyer = inv.Buyers[0];
+        inv.Lines.Clear();
+        var line = new DiamondDesktop.SaleLine { Grade = noii, Size = s65, GrossWeightCt = 8m, SelectionCt = 6m, PricePerCt = 1000m };
+        inv.Lines.Add(line);
+
+        var (facts, bullets) = DiamondDesktop.MainWindow.SaleSummary(inv, inv.RealLines);
+        string Fact(string label) => facts.FirstOrDefault(f => f.Label == label).Value ?? "<missing>";
+        Check("0055 - the confirm dialog says only the 6 ct SOLD leave stock",
+              Fact("Leaving stock") == "6.00 ct sold", Fact("Leaving stock"));
+        Check("0055 - and that the 2 ct rejected stay",
+              Fact("Rejected") == "2.00 ct · stays in stock", Fact("Rejected"));
+        Check("0055 - the line reads 6 out, 2 staying, never the 8 gross",
+              bullets.Count == 1 && bullets[0].Contains("6.00 ct out")
+              && bullets[0].Contains("2.00 rejected, stays in stock") && !bullets[0].Contains("8.00"),
+              bullets.FirstOrDefault());
+
+        // -- a line's hold follows its SELECTION, not its gross ---------------
+        int resent = 0;
+        inv.LineHoldChanged += _ => resent++;
+        line.GrossWeightCt = 9m;                  // more rejected: nothing more leaves stock
+        int afterGross = resent;
+        line.SelectionCt = 7m;                    // more sold: the hold must follow
+        Check("0055 - changing only the gross does not re-state the hold", afterGross == 0, $"{afterGross}");
+        Check("0055 - changing the selection does", resent == 1, $"{resent}");
+
+        // -- the sales-import preview measures the selection ------------------
+        static DiamondDesktop.ImportPlan Plan(decimal gross, decimal sold)
+        {
+            var p = new DiamondDesktop.ImportPlan();
+            p.Invoices.Add(new DiamondDesktop.PlannedInvoice("MIG-1", new DateOnly(2026, 8, 22), "SIYA IMPEX", null, 0m, 30, "W BILL",
+                [new DiamondDesktop.SaleRow(ExcelRow: 2, Sr: 1, Date: new DateOnly(2026, 8, 22), Buyer: "SIYA IMPEX", Broker: "",
+                             BrokerPct: 0m, TermsDays: 30, SizeCode: "+6.5", GradeCode: "NO II", GrossCt: gross,
+                             SelectionCt: sold, PricePerCt: 1000m, ExRate: 1m, Less1Pct: 0m, Less2Pct: 0m,
+                             DocType: "W BILL", ReceivedAmount: 0m)], 0m, 0m));
+            return p;
+        }
+        static DiamondDesktop.Data.VStockPosition At(decimal balance) => new() { GradeCode = "NO II", SizeCode = "+6.5", BalanceCt = balance };
+        static DiamondDesktop.Data.VStockMovement Moved(string type, decimal ct) =>
+            new() { GradeCode = "NO II", SizeCode = "+6.5", WeightCt = ct, RefType = "sales_line", RefId = 501, MovementType = type };
+
+        // 6 ct gross, 5 sold, against 5 on the shelf: fits, because only the 5 sold leave.
+        var fits = DiamondDesktop.MainWindow.ShortfallLines(Plan(6m, 5m), [At(5m)], [], [], []);
+        Check("0055 - a sheet line is judged on what it SELLS (5 of 6 fits in 5)", fits.Count == 0,
+              string.Join(" | ", fits));
+
+        // A re-import: the last run took 2 sold + wrote 3 rejected; the shelf reads 0.
+        // Only the 2 come back, so a 4 ct sale is short 2 -- the 3 rejected never left.
+        var reimport = DiamondDesktop.MainWindow.ShortfallLines(Plan(4m, 4m), [At(0m)],
+            [Moved("SALE", 2m), Moved("REJECTION", 3m)], [new DiamondDesktop.Data.VSalesLine { LineId = 501 }], [1L]);
+        Check("0055 - a re-import gives back the last run's SALE, never its REJECTION",
+              reimport.Count == 1 && reimport[0].Contains("is short 2.0000 ct"),
+              string.Join(" | ", reimport));
+
+        // -- the shared Deal Details row: one choice, every line, and new lines too ---------
+        var shared = new DiamondDesktop.InvoiceEntry { InvoiceDate = new DateTime(2026, 10, 12) };
+        var abc = new DiamondDesktop.PartyRef(11, "ABC EXPORTS", 30);
+        var jit = new DiamondDesktop.PartyRef(21, "JITESH SHAH", 0);
+        shared.Buyers.Add(abc); shared.Brokers.Add(jit);
+        shared.Lines.Clear();
+        shared.Lines.Add(new DiamondDesktop.SaleLine { Grade = noii, Size = s65, GrossWeightCt = 1m, SelectionCt = 1m });
+        shared.Lines.Add(new DiamondDesktop.SaleLine { Grade = noii, Size = s65, GrossWeightCt = 2m, SelectionCt = 2m });
+        shared.SelectedBuyer = abc; shared.SelectedBroker = jit; shared.TermsDays = 45; shared.DocType = "W BILL";
+        Check("SHARED DEAL - the buyer, broker, terms and type reach every line",
+              shared.Lines.All(l => l.DealBuyer == abc && l.DealBroker == jit && l.DealTermsDays == 45 && l.DealDocType == "W BILL"));
+        shared.Lines.Add(new DiamondDesktop.SaleLine());
+        Check("SHARED DEAL - and a line added afterwards inherits it",
+              shared.Lines[^1].DealBuyer == abc && shared.Lines[^1].DealTermsDays == 45);
+        Check("SHARED DEAL - so the entry is one invoice", shared.Lines.Select(l => l.DealKey).Distinct().Count() == 1);
+
+        // -- the Audit page names the bucket and prints carats with two decimals ------------
+        var m65 = new DiamondDesktop.Data.SizeBucket { SizeId = 2, Code = "-6.5" };
+        DiamondDesktop.Catalogue.AllSizes.Add(m65);
+        var noii5 = new DiamondDesktop.Data.Grade { GradeId = 5, Code = "NO II" };
+        if (!DiamondDesktop.Catalogue.Grades.Any(x => x.GradeId == 5)) DiamondDesktop.Catalogue.Grades.Add(noii5);
+        var adjRow = DiamondDesktop.AuditRow.From(new DiamondDesktop.Data.AuditLog
+        {
+            AuditedTable = "stock_movement", Action = "INSERT", RecordId = 12774,
+            NewValues = new Dictionary<string, object>
+            {
+                ["movement_type"] = "ADJUST", ["grade_id"] = 5L, ["size_id"] = 2L, ["weight_ct"] = -0.4m,
+                ["reason"] = "repair problem",
+            },
+        });
+        Check("AUDIT - an adjustment reads with its bucket, carats as the ledger prints them",
+              adjRow.What == "Stock adjusted · II × -6.5 · -0.4000 ct", adjRow.What);
+        Check("AUDIT - the detail panel shows the grade and sieve by name beside the id",
+              adjRow.Fields.First(f => f.Name == "grade_id").OnlyValue == "5 · II"
+              && adjRow.Fields.First(f => f.Name == "size_id").OnlyValue == "2 · -6.5",
+              $"{adjRow.Fields.First(f => f.Name == "grade_id").OnlyValue} / {adjRow.Fields.First(f => f.Name == "size_id").OnlyValue}");
+
+        // -- Stock report: FL, NO II and COL read as one "II" row; TOP-COL stays its own ---------
+        var order = new List<string> { "PREMIUM", "1MB", "NO 1 BB", "FL", "NO II", "EX 1", "TOP-COL", "COL", "LB 1" };
+        var rowsII = DiamondDesktop.MainWindow.ReportRows(order, editing: false);
+        Check("REPORT II - FL, NO II and COL become ONE row labelled II, where FL sorted",
+              rowsII.Select(r => r.Label).SequenceEqual(["PREMIUM", "1MB", "NO 1 BB", "II", "EX 1", "TOP-COL", "LB 1"]),
+              string.Join(", ", rowsII.Select(r => r.Label)));
+        Check("REPORT II - and that row holds exactly the three real grades",
+              rowsII.Single(r => r.Label == "II").Members.SequenceEqual(["FL", "NO II", "COL"]));
+        Check("REPORT II - TOP-COL is not part of it",
+              rowsII.Single(r => r.Label == "TOP-COL").Members.SequenceEqual(["TOP-COL"]));
+        Check("REPORT II - in Edit mode every grade is its own row again (a correction needs one grade)",
+              DiamondDesktop.MainWindow.ReportRows(order, editing: true).Count == order.Count);
+        var hidden = new List<string> { "NO II", "COL" };            // FL hidden as empty
+        var rowsHidden = DiamondDesktop.MainWindow.ReportRows(hidden, false, pool: order);
+        Check("REPORT II - an empty FL hidden from the report still appears in II's breakdown",
+              rowsHidden.Count == 1 && rowsHidden[0].Members.SequenceEqual(["FL", "NO II", "COL"]));
+        var tipII = DiamondDesktop.MainWindow.ReportGroupTip("II", ["FL", "NO II", "COL"],
+            g => g switch { "FL" => 58.38m, "NO II" => 266.21m, _ => 0m });
+        Check("REPORT II - hovering shows FL, II and Color separately, and their total",
+              tipII.Contains("FL: 58.38 ct") && tipII.Contains("II: 266.21 ct") && tipII.Contains("Color: 0.00 ct")
+              && tipII.Contains("Total: 324.59 ct"), tipII.Replace(Environment.NewLine, " | "));
+
+        // -- Stock page and Dashboard: the same "II" grouping, display only ---------------------
+        static DiamondDesktop.Data.VStockPosition P(string g, string z, decimal ct, decimal value) =>
+            new() { GradeCode = g, SizeCode = z, BalanceCt = ct, LedgerCt = ct, StockValue = value };
+        var stockRows = new List<DiamondDesktop.Data.VStockPosition>
+        {
+            P("1MB", "+6.5", 337.17m, 14_000_000m),
+            P("FL", "+6.5", 58.38m, 1_950_000m), P("NO II", "+6.5", 266.21m, 8_970_000m), P("COL", "+6.5", 10m, 240_000m),
+            P("TOP-COL", "+6.5", 5m, 140_000m),
+            P("NO II", "+11", 220.29m, 9_200_000m),            // alone in its sieve: stays NO II
+        };
+        var grouped = DiamondDesktop.MainWindow.GroupRomanTwo(stockRows);
+        var iiRow = grouped.FirstOrDefault(r => r.GradeCode == "II");
+        Check("STOCK II - FL, NO II and COL in one sieve become one II row, in FL's place",
+              grouped.Select(r => r.GradeCode + " " + r.SizeCode).SequenceEqual(["1MB +6.5", "II +6.5", "TOP-COL +6.5", "NO II +11"]),
+              string.Join(", ", grouped.Select(r => r.GradeCode + " " + r.SizeCode)));
+        Check("STOCK II - its carats and value are the members' sums",
+              iiRow is { BalanceCt: 334.59m, StockValue: 11_160_000m } && iiRow.Members!.Count == 3,
+              $"{iiRow?.BalanceCt} ct, {iiRow?.StockValue}");
+        Check("STOCK II - hovering its grade names FL, II and Color separately",
+              iiRow!.GradeName!.Contains("FL: 58.38 ct") && iiRow.GradeName.Contains("II: 266.21 ct")
+              && iiRow.GradeName.Contains("Color: 10.00 ct"), iiRow.GradeName.Replace(Environment.NewLine, " | "));
+        Check("STOCK II - the real rows are untouched", stockRows.Count == 6 && stockRows.All(r => r.Members is null));
+        var bars = DiamondDesktop.MainWindow.InventoryByGrade(stockRows);
+        var iiBar = bars.FirstOrDefault(b => b.Label == "II");
+        Check("DASHBOARD II - inventory by grade shows one II bar worth all three",
+              iiBar.Value == 11_160_000m + 9_200_000m && !bars.Any(b => b.Label is "FL" or "NO II" or "COL")
+              && bars.Any(b => b.Label == "TOP-COL"), string.Join(", ", bars.Select(b => $"{b.Label} {b.Value}")));
+        Check("DASHBOARD II - its second line names each grade's own value",
+              iiBar.Secondary is { } sec && sec.StartsWith("FL ") && sec.Contains("· II ") && sec.Contains("· Color "), iiBar.Secondary);
+
+        var hist = DiamondDesktop.MainWindow.StockHistoryRows(
+        [
+            new DiamondDesktop.Data.VStockMovement { MovementId = 1, MovementDate = new DateOnly(2026, 3, 9), GradeCode = "FL", MovementType = DiamondDesktop.Data.Movement.INTAKE, WeightCt = 10m, RefType = "stock_import", RefId = 7 },
+            new DiamondDesktop.Data.VStockMovement { MovementId = 2, MovementDate = new DateOnly(2026, 3, 10), GradeCode = "FL", MovementType = DiamondDesktop.Data.Movement.SALE, WeightCt = 2.5m, RefType = "sales_line", RefId = 9 },
+            new DiamondDesktop.Data.VStockMovement { MovementId = 3, MovementDate = new DateOnly(2026, 3, 10), GradeCode = "COL", MovementType = DiamondDesktop.Data.Movement.REJECTION, WeightCt = 0.4m },
+            new DiamondDesktop.Data.VStockMovement { MovementId = 4, MovementDate = new DateOnly(2026, 3, 11), GradeCode = "FL", MovementType = DiamondDesktop.Data.Movement.ADJUST, WeightCt = -0.4m, RefType = "manual", Reason = "repair loss" },
+        ], nameGrade: true);
+        Check("HISTORY - newest first, each with its kind and signed carats",
+              hist.Select(h => $"{h.Kind} {h.Qty}").SequenceEqual(
+                  ["Adjustment -0.4000", "Rejection 0.4000", "Sale -2.5000", "Purchase / intake +10.0000"]),
+              string.Join(", ", hist.Select(h => $"{h.Kind} {h.Qty}")));
+        var toned = DiamondDesktop.MainWindow.StockHistoryRows(
+            new[] { (Movement: "INTAKE", Ref: (string?)null), ("SALE", null), ("REJECTION", null), ("CONVERT_IN", null),
+                    ("CONVERT_OUT", null), ("ADJUST", "manual"), ("ADJUST", "rejection_hold") }
+            .Select((x, i) => new DiamondDesktop.Data.VStockMovement { MovementId = 100 - i, MovementDate = new DateOnly(2026, 10, 1),
+                                                                      MovementType = x.Item1, RefType = x.Item2, WeightCt = 1m }));
+        Check("HISTORY - each transaction type has its own colour, and a rejection hold is a rejection's",
+              toned.Select(h => $"{h.Kind}:{h.Tone}").SequenceEqual(
+                  ["Purchase / intake:intake", "Sale:sale", "Rejection:rejection", "Conversion in:conversion",
+                   "Conversion out:conversion", "Adjustment:adjust", "Rejection hold:rejection"]),
+              string.Join(", ", toned.Select(h => $"{h.Kind}:{h.Tone}")));
+
+        string? RateErr(decimal w, string? r) => DiamondDesktop.MainWindow.AdjustmentRateError(w, r);
+        Check("ADJUST - adding carats with no rate, a zero or a negative rate is refused",
+              RateErr(0.03m, "") is not null && RateErr(0.03m, null) is not null
+              && RateErr(0.03m, "0") is not null && RateErr(0.03m, "-5") is not null && RateErr(0.03m, "abc") is not null);
+        Check("ADJUST - adding carats with a rate goes ahead", RateErr(0.03m, "41731.92") is null);
+        Check("ADJUST - taking carats out needs no rate", RateErr(-0.03m, "") is null && RateErr(-0.40m, null) is null);
+
+        Check("HISTORY - the reason names the grade, the typed reason and the reference",
+              hist[0].Reason == "FL · repair loss · manual" && hist[3].Reason == "FL · stock_import #7", hist[0].Reason);
+
+        DiamondDesktop.Catalogue.Grades.Clear(); DiamondDesktop.Catalogue.AllSizes.Clear();
+        foreach (var g in gradesBefore) DiamondDesktop.Catalogue.Grades.Add(g);
+        foreach (var z in sizesBefore) DiamondDesktop.Catalogue.AllSizes.Add(z);
+    });
+    t0055.SetApartmentState(ApartmentState.STA);
+    t0055.Start();
+    t0055.Join();
 }
 
 Console.WriteLine();

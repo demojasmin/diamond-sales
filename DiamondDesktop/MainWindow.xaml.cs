@@ -181,6 +181,22 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         DataContext = _invoice;
 
+        // AN EMPTIED FILTER BOX CLEARS THAT FILTER. PickerSearch puts the last choice back when a
+        // picker is left empty -- right for a form, wrong for a filter: the box was blanked to see
+        // every line, and the filter quietly stayed on. Checked on the way out, before PickerSearch's
+        // own LostFocus runs, and its memory of the last pick is reset so nothing is put back.
+        void EmptyClears(ComboBox box, Action clear) =>
+            box.PreviewLostKeyboardFocus += (_, e) =>
+            {
+                if (e.NewFocus is DependencyObject next && box.IsAncestorOf(next)) return;   // still inside
+                if (!string.IsNullOrWhiteSpace(box.Text)) return;
+                PickerSearch.Reset(box);
+                box.SelectedItem = null;
+                clear();
+            };
+        EmptyClears(LineFilterBuyer, () => _invoice.FilterBuyer = null);
+        EmptyClears(LineFilterBroker, () => _invoice.FilterBroker = null);
+
         // The FIRST invoice needs watching too. _invoice is created at its field initialiser, so
         // the two places that call WatchHolds -- Clear, and opening a memo -- both run only after
         // one has already been replaced. Without this the screen you land on holds no stock at all,
@@ -556,6 +572,11 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         string rows = n == 1 ? "1 line" : $"{n} lines";
         if (SaveDraftLabel is not null) SaveDraftLabel.Text = $"Print memo · {rows}";
         if (PostLabel is not null) PostLabel.Text = $"Confirm sale · {rows}";
+
+        // The chip beside these buttons reads the ticks too ("Tick the lines to confirm — nothing is
+        // selected"), and it was only redrawn when a line's FIGURES changed -- so with every row
+        // ticked it still said nothing was selected. Redrawn with the buttons it describes.
+        RefreshActionStates();
     }
 
     /// <summary>
@@ -616,7 +637,17 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         Grid.BeginEdit(e);
     }
 
-    private void AddLine_Click(object sender, RoutedEventArgs e) => AddLine();
+    /// <summary>
+    /// Add sale: a pop-up holding one deal and an Add Line button. Each line it adds carries that
+    /// deal and goes on this entry; lines already here keep their own.
+    /// </summary>
+    private void AddLine_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new AddSaleDialog(_invoice, AddLine) { Owner = this };
+        dialog.ShowDialog();
+        if (dialog.Added > 0)
+            Say($"{dialog.Added} line(s) added for {dialog.BuyerName}", ok: true, popup: false);
+    }
 
     /// <summary>
     /// Scrolls a line into view, whichever control owns the offset.
@@ -649,10 +680,20 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if ((sender as FrameworkElement)?.Tag is int number) _invoice.Page = number - 1;
     }
 
-    private void AddLine()
+    private void AddLine() => AddLine(new SaleLine());
+
+    private void AddLine(SaleLine line)
     {
-        var line = new SaleLine();
+        // A line arriving with a deal (Add sale) keeps it: joining the entry stamps the entry's date
+        // on every new line, so the deal is put back on afterwards.
+        var deal = line.HasBuyer ? new SaleLine() : null;
+        deal?.TakeDealFrom(line);
         _invoice.Lines.Add(line);
+        if (deal is not null) line.TakeDealFrom(deal);
+
+        // A line that arrives already filled in (Add sale) holds its carats now, exactly as typing
+        // them into the grid would -- and is refused with "Insufficient stock" the same way.
+        if (line.Grade is not null && line.Size is not null) OnLineHoldChanged(line);
 
         // A row you have just created must be on screen. Two ways it would not be: the filters
         // exclude it -- a new row inherits the deal above it, which a date or type filter can still
@@ -882,8 +923,18 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// </summary>
     private bool _entryRestored;
 
+    /// The workspace this window's entry was typed in. Fixed at construction, because Db.Active is
+    /// not: the sign-in after an idle timeout can land on the OTHER project, and the window then
+    /// restarts -- saving on its way out. EntryStore names the file by Db.Active, so that save wrote
+    /// Demo's entry over Priya's file: Priya's own entry lost its holds for good, and the restart
+    /// re-held Demo's grade and size ids against Priya's catalogue, where they mean other buckets.
+    private readonly string _entryWorkspace = Db.Active.Ref;
+
     private void SaveEntry()
     {
+        // Another workspace's file is never this entry's to write. See _entryWorkspace.
+        if (Db.Active.Ref != _entryWorkspace) return;
+
         var e = _invoice;
         EntryStore.Save(new EntryStore.StoredEntry(
             e.ClientRef, e.InvoiceDate, e.Buyer, e.Broker, e.BrokerPct, e.TermsDays, e.DocType,
@@ -973,8 +1024,16 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         WatchHolds(leaving, _invoice);
         DataContext = _invoice;
 
-        // _held is empty, so every line is sent. See the summary: this is the repair pass, and the
-        // unique key is what makes it cost nothing when there was nothing to repair.
+        // Every restored line MAY be holding in the database from the last session, so it is marked
+        // as held before the repair pass. Without this a re-hold that failed (offline, or the shelf
+        // shrank meanwhile) left the old row in stock_reservation with nothing here knowing about it:
+        // removing the line skipped the release, and confirming it posted the SALE while the hold
+        // stayed -- the same carats out twice. (0,0,0) never equals a real bucket, so the pass below
+        // still sends every line, and it adds nothing to the held-carats chip.
+        foreach (var line in _invoice.Lines) _held[line.LineKey] = (0, 0, 0m);
+
+        // See the summary: this is the repair pass, and the unique key is what makes it cost
+        // nothing when there was nothing to repair.
         foreach (var line in _invoice.Lines) await HoldLineAsync(line);
 
         // No box: this fires while the window is still opening, and a modal over a half-drawn
@@ -1020,11 +1079,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             return;
         }
 
-        var want = (grade.GradeId, size.SizeId, line.GrossWeightCt);
+        // The SELECTION, not the gross: since 0055 only sold carats leave stock, so only they are
+        // spoken for. Holding the rejected part too would show the bucket short by carats that stay.
+        var want = (grade.GradeId, size.SizeId, line.SelectionCt);
         if (_held.TryGetValue(line.LineKey, out var have) && have == want) return;
 
         string? failure = await Repo.ReserveLineAsync(
-            _invoice.ClientRef, line.LineKey, grade.GradeId, size.SizeId, line.GrossWeightCt);
+            _invoice.ClientRef, line.LineKey, grade.GradeId, size.SizeId, line.SelectionCt);
 
         if (failure is not null)
         {
@@ -1052,7 +1113,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             // the text 0053 gives it, and everything else stays on the bar as before.
             bool shortfall = failure.Contains("Insufficient stock", StringComparison.OrdinalIgnoreCase);
 
-            // AND ONE AT A TIME. A line that fails to hold is not recorded in _held, so the next
+            // AND ONE AT A TIME. A line that fails to hold keeps whatever _held already had, so the next
             // change to that line asks again and is refused again; without the guard a few
             // keystrokes would queue a stack of identical dialogs to click through.
             if (shortfall && !_refusalShowing)
@@ -1068,7 +1129,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             return;
         }
 
-        if (line.GrossWeightCt <= 0) _held.Remove(line.LineKey);
+        if (line.SelectionCt <= 0) _held.Remove(line.LineKey);
         else _held[line.LineKey] = want;
 
         SaveEntry();
@@ -1617,7 +1678,6 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     public static (List<(string Label, string Value)> Facts, List<string> Lines) SaleSummary(
         InvoiceEntry invoice, IReadOnlyList<SaleLine> lines)
     {
-        decimal gross = lines.Sum(l => l.GrossWeightCt);
         decimal sold = lines.Sum(l => l.SelectionCt);
         decimal rejected = lines.Sum(l => l.RejectionCt);
 
@@ -1632,9 +1692,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             deals.Count == 1
                 ? ("Buyer", deals[0][0].DealBuyerName)
                 : ("Invoices", $"{deals.Count} · one per deal"),
-            ("Leaving stock", $"{gross:N2} ct"),
-            ("of which sold", $"{sold:N2} ct"),
-            ("of which rejected", $"{rejected:N2} ct"),
+            // 0055: only the sold carats leave stock; the rejected part is recorded and stays.
+            ("Leaving stock", $"{sold:N2} ct sold"),
+            ("Rejected", $"{rejected:N2} ct · stays in stock"),
             // The chosen lines' amount, not the entry's: confirming two of four must not headline
             // the four-row total.
             ("Amount", Money.Short(lines.Sum(l => l.Amount))),
@@ -1656,8 +1716,8 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
             foreach (var l in deal)
                 bullets.Add((deals.Count > 1 ? "    " : "")
-                    + $"{l.Grade?.ShortName ?? "?"} × {l.Size?.Code ?? "?"}  —  {l.GrossWeightCt:N2} ct out"
-                    + $"  ({l.SelectionCt:N2} sold, {l.RejectionCt:N2} rejected)"
+                    + $"{l.Grade?.ShortName ?? "?"} × {l.Size?.Code ?? "?"}  —  {l.SelectionCt:N2} ct out"
+                    + $"  ({l.RejectionCt:N2} rejected, stays in stock)"
                     + $"  @ {l.PricePerCt:N2}");
         }
 
@@ -1676,14 +1736,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         return AppDialog.Confirm(this,
             title: deals.Count == 1 ? "Confirm this sale" : $"Confirm {deals.Count} sales",
-            headline: $"{chosen.Sum(l => l.GrossWeightCt):N2} ct will leave stock",
+            headline: $"{chosen.Sum(l => l.SelectionCt):N2} ct will leave stock",
             subhead: deals.Count == 1
                 ? deals[0][0].DealBuyerName
                 : string.Join(", ", deals.Select(d => d[0].DealBuyerName).Distinct()),
             facts: facts,
-            emphasis: "The WHOLE parcel leaves the bucket it was counted in — what is sold and what "
-                    + "is rejected both. Nothing moves until you confirm, and the stock is taken in "
-                    + "the same transaction that posts the invoice."
+            emphasis: "Only what is SOLD leaves the bucket it was counted in. The rejected part is "
+                    + "recorded on the invoice and stays in stock. Nothing moves until you confirm, and "
+                    + "the stock is taken in the same transaction that posts the invoice."
                     // Said outright, because the screen behind the dialog still shows every row and
                     // the rows NOT going are the ones somebody will assume went.
                     + (n < _invoice.RealLines.Count
@@ -2498,6 +2558,17 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         { ShowDealProblem("Broker % must be between 0 and 100."); BrokerPctBox.Focus(); return; }
 
         line.TakeDealFrom(draft);
+
+        // The same deal goes to every line that has NO BUYER YET, on request: several lines typed
+        // for one buyer take it from the first save. A line already sold to someone keeps its own
+        // deal, so one entry can still bill several buyers.
+        int alsoFilled = 0;
+        foreach (var other in _invoice.Lines.Where(l => l != line && l.DealBuyer is null))
+        {
+            other.TakeDealFrom(draft);
+            if (!other.IsBlank) alsoFilled++;
+        }
+
         _invoice.Recalculate();          // the percentage is part of the deal, so amounts move with it
         RefreshActionStates();
 
@@ -2510,6 +2581,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // is the one consequence of a deal change that is not visible on the row itself.
         int deals = _invoice.Deals.Count;
         Say($"Line {n} saved · {line.DealBuyerName} · {line.DealTerms}"
+            + (alsoFilled > 0 ? $" · also applied to {alsoFilled} line(s) with no buyer" : "")
             + (deals > 1 ? $" — this entry now writes {deals} invoices" : ""), ok: true);
 
         FocusGrid();
@@ -3087,8 +3159,18 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private void ExportReceivables_Click(object sender, RoutedEventArgs e)
         => Say(Reports.ExportGrid(ReceivablesGrid, "receivables") ?? "", ok: true);
 
+    /// The export is DATA, so it stays per real grade: the table is swapped to its ungrouped rows
+    /// for the copy and put straight back, and the "II" grouping never reaches the file.
     private void ExportStock_Click(object sender, RoutedEventArgs e)
-        => Say(Reports.ExportGrid(StockGrid, "stock") ?? "", ok: true);
+    {
+        var shown = StockGrid.ItemsSource;
+        StockGrid.ItemsSource = _stockShownReal;
+        try { Say(Reports.ExportGrid(StockGrid, "stock") ?? "", ok: true); }
+        finally { StockGrid.ItemsSource = shown; }
+    }
+
+    /// The real rows behind the Stock table, before FL, NO II and COL are drawn as "II".
+    private List<VStockPosition> _stockShownReal = [];
 
     /// Adds a party this invoice needs but the picker no longer offers, and hands it straight back.
     private static PartyRef Retired(ObservableCollection<PartyRef> into, PartyRef party)
@@ -3315,7 +3397,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         //
         // Before the swap, because DropEntryAsync releases against _invoice.ClientRef and the memo
         // about to be opened carries a different one.
-        if (_invoice.InvoiceId is null) await DropEntryAsync();
+        //
+        // EVERY entry, an opened memo included. This read `if (_invoice.InvoiceId is null)`, and a
+        // memo on screen holds too: a line edited on it is reserved under the memo's own fresh
+        // client_ref and saved to the entry file. Opening the next memo then overwrote that file
+        // and skipped the release, stranding those carats with nothing on any screen to return them.
+        await DropEntryAsync();
 
         await OpenInvoiceAsync(inv);
     }
@@ -3546,6 +3633,41 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             ? label
             : "";
 
+    /// <summary>
+    /// The Stock page's rows with FL, NO II and COL drawn as one "II" row per sieve, where the first
+    /// of them stood. Display only: the figures are their sums, the grade's tooltip lists each
+    /// member's carats, and the real rows travel with it (Members) so Show movements can load them.
+    /// A sieve with only one of the three keeps that grade's own row. TOP-COL is never a member.
+    /// </summary>
+    public static List<VStockPosition> GroupRomanTwo(IReadOnlyList<VStockPosition> rows)
+    {
+        var bySize = rows.Where(r => ReportRomanTwo.Contains(r.GradeCode))
+                         .GroupBy(r => r.SizeCode)
+                         .Where(g => g.Count() > 1)
+                         .ToDictionary(g => g.Key, g => g.OrderBy(r => ReportRomanTwo.ToList().IndexOf(r.GradeCode)).ToList());
+
+        var result = new List<VStockPosition>();
+        var placed = new HashSet<string>();
+        foreach (var r in rows)
+        {
+            if (!bySize.TryGetValue(r.SizeCode, out var members) || !members.Contains(r)) { result.Add(r); continue; }
+            if (!placed.Add(r.SizeCode)) continue;
+
+            decimal balance = members.Sum(m => m.BalanceCt), value = members.Sum(m => m.StockValue);
+            result.Add(new VStockPosition
+            {
+                GradeId = 0, GradeCode = "II", SizeId = r.SizeId, SizeCode = r.SizeCode,
+                BalanceCt = balance, LedgerCt = members.Sum(m => m.LedgerCt), ReservedCt = members.Sum(m => m.ReservedCt),
+                StockValue = value, AvgCost = balance > 0 ? Math.Round(value / balance, 2) : null,
+                OldestIntake = members.Min(m => m.OldestIntake), AgeDays = members.Max(m => m.AgeDays),
+                GradeName = ReportGroupTip($"II × {SizeNames.Short(r.SizeCode)}", members.Select(m => m.GradeCode).ToList(),
+                                           g => members.First(m => m.GradeCode == g).BalanceCt),
+                Members = members,
+            });
+        }
+        return result;
+    }
+
     private void ApplyStockFilter()
     {
         // IsChecked="True" in the markup raises Checked while InitializeComponent is still parsing,
@@ -3599,7 +3721,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             StockSearchClear.Visibility = string.IsNullOrEmpty(StockSearch?.Text)
                 ? Visibility.Collapsed : Visibility.Visible;
 
-        StockGrid.ItemsSource = show;
+        // FL, NO II and COL as one "II" row per sieve, display only. Every figure on this page
+        // below (tiles, totals, reserved, rejection) is still summed from the real rows.
+        _stockShownReal = show;
+        StockGrid.ItemsSource = GroupRomanTwo(show);
         // MATCHED as well as SHOW, for the reserved carats alone. A bucket emptied to exactly zero
         // while a sales entry still holds carats in it is dropped by "hide empty" -- and its
         // reservation went with it, so the tile read 0.0000 where the header said 1.0000, and
@@ -3626,8 +3751,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// The breakdown card: carats held, and carats rejected to date.
     ///
     /// The two are NOT parts of one whole. Held comes from v_stock_position; rejected is the sum
-    /// of REJECTION rows in v_stock_movement, and those carats left stock when the rejection was
-    /// recorded. Subtracting one from the other, or showing them as a split of the same bar, would
+    /// of REJECTION rows in v_stock_movement, which since 0055 are a record and move no stock (a
+    /// rejection from before 0055 is held out separately, as an ADJUST). Subtracting one from the
+    /// other, or showing them as a split of the same bar, would
     /// deduct the same carats twice.
     ///
     /// Filtered by grade and size against the buckets currently on screen, so picking a grade
@@ -3706,7 +3832,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         StockBreakdownRejection.Text = $"{ct:N4} ct";
         StockBreakdownRejectionNote.Text = rejected.Count == 0
             ? "Nothing rejected from these buckets"
-            : $"{Plural(rejected.Count, "rejection")} to date · already out of stock";
+            : $"{Plural(rejected.Count, "rejection")} to date · a record, not a deduction";
 
         // Where they came from, because a rejection off an invoice line and one entered by hand
         // are different acts and the split is the first thing anyone asks about.
@@ -4022,9 +4148,16 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         if (StockGrid.SelectedItem is not VStockPosition row) { Field(StockGrid, "Select a grade × size row"); return; }
 
+        // A combined "II" row has no ledger of its own: it shows its members' together, newest first.
+        var buckets = row.Members ?? [row];
         List<VStockMovement>? rows;
         using (Busy(ShowMovements, Loading, ShowMovements, RefreshCatalogue))
-            rows = await Read(() => Repo.MovementsAsync(row.GradeCode, row.SizeCode));
+            rows = await Read(async () =>
+            {
+                var all = new List<VStockMovement>();
+                foreach (var b in buckets) all.AddRange(await Repo.MovementsAsync(b.GradeCode, b.SizeCode));
+                return all.OrderByDescending(m => m.MovementId).ToList();
+            });
 
         MovementList.ItemsSource = rows;
         if (rows is null) return;                       // Read already reported the failure
@@ -4527,26 +4660,42 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (grade is null || size is null) { Field(AdjGrade, PickGradeSize); return; }
         if (!decimal.TryParse(AdjWeight.Text, out decimal weight) || weight == 0)
         { Field(AdjWeight, "Adjust by a non-zero weight"); return; }
+        if (AdjustmentRateError(weight, AdjRate.Text) is { } noRate) { Field(AdjRate, noRate); return; }
         if (string.IsNullOrWhiteSpace(AdjReason.Text))
         { Field(AdjReason, "An adjustment needs a reason"); return; }
 
         // Signed on purpose (docs/12 §7) — TooLarge tests the magnitude, so a big correction
         // downwards is checked the same as a big one upwards.
         if (Bounds.TooLarge(weight, WeightField) is { } tooHeavy) { Say(tooHeavy); AdjWeight.Focus(); return; }
+        decimal? rate = weight > 0m ? decimal.Parse(AdjRate.Text) : null;
+        if (rate is { } r && Bounds.TooLarge(r, "Rate") is { } tooDear) { Say(tooDear); AdjRate.Focus(); return; }
         if (!ConfirmLarge(weight, 0)) return;
 
         WriteResult result;
         using (Busy((Button)sender, "Adjusting…"))
-            result = await Repo.AdjustAsync(grade.GradeId, size.SizeId, weight, AdjReason.Text.Trim());
+            result = await Repo.AdjustAsync(grade.GradeId, size.SizeId, weight, AdjReason.Text.Trim(),
+                                            pricePerCt: rate);
 
         if (!result.Ok) { Say(result.Failure!); return; }
 
         AdjWeight.Text = "";
+        AdjRate.Text = "";
         AdjReason.Text = "";
         CountOp(OpKpiAdjust, ref _opAdjustments);
         RefreshLedgerIfShowing(grade, size);
         Announce("Adjustment recorded — it stays visible in the ledger forever", result.Warning);
     }
+
+    /// <summary>
+    /// Why an adjustment cannot go ahead for want of a rate, or null. Adding carats needs what they
+    /// are worth: with no rate they counted as free stones and dragged the bucket's average cost
+    /// down (Priya's four "Repair Loss" rows, 12 Oct). Taking carats out needs none.
+    /// </summary>
+    public static string? AdjustmentRateError(decimal weight, string? rateText) =>
+        weight > 0m && !(decimal.TryParse(rateText, out decimal rate) && rate > 0m)
+            ? $"Enter the rate those {weight:N4} ct are worth. Adding carats with no rate would drag "
+              + "this bucket's average cost towards zero."
+            : null;
 
     // ── Master data ─────────────────────────────────────────────────────────
 
@@ -6420,11 +6569,30 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         "ageing" => (Group(await Read(Repo.ReceivablesAsync, veil: false) ?? [], r => r.AgeBucket, r => r.Outstanding), true),
 
-        "inventory" => (Group(await FilteredStockAsync(), s => s.GradeCode, s => s.StockValue), true),
+        "inventory" => (InventoryByGrade(await FilteredStockAsync()), true),
         "inventory-aging" => (Group(await FilteredStockAsync(), s => AgeBand(s.AgeDays), s => s.BalanceCt), false),
 
         _ => (new List<(string Label, decimal Value, string? Secondary)>(), true),
     };
+
+    /// <summary>
+    /// W11's bars: inventory value per grade, with FL, NO II and COL drawn as one "II" bar whose
+    /// second line names each member's own value. Display only -- the stock rows are untouched.
+    /// </summary>
+    public static List<(string Label, decimal Value, string? Secondary)> InventoryByGrade(IEnumerable<VStockPosition> stock)
+    {
+        static string Name(string code) => code switch { "NO II" => "II", "COL" => "Color", _ => code };
+        var rows = stock.ToList();
+        bool group = rows.Select(r => r.GradeCode).Distinct().Count(ReportRomanTwo.Contains) > 1;
+        return rows.GroupBy(r => group && ReportRomanTwo.Contains(r.GradeCode) ? "II" : r.GradeCode)
+                   .Select(g => (g.Key, g.Sum(r => r.StockValue),
+                                 (string?)(g.Key == "II" && group
+                                     ? string.Join(" · ", ReportRomanTwo.Where(m => g.Any(r => r.GradeCode == m))
+                                           .Select(m => $"{Name(m)} {Money.Short(g.Where(r => r.GradeCode == m).Sum(r => r.StockValue))}"))
+                                     : $"{g.Count()} row(s)")))
+                   .OrderByDescending(b => Math.Abs(b.Item2))
+                   .ToList();
+    }
 
     /// Stock narrowed to the grade on the filter bar, if one is chosen.
     private async Task<List<VStockPosition>> FilteredStockAsync()
@@ -7237,7 +7405,15 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // a sheet importing 21.35 ct under -6.5 landed in a report that did not draw that column
         // -- carats on the screen's own figures, invisible, with a tick-box the reader had to
         // know to look for. A report that hides imported stock by default is not a report.
-        if (_reportSizeBoxes.Count == 0) BuildReportSizeBoxes();
+        // And again whenever the catalogue's sieves no longer match the boxes: built once, they kept
+        // offering 14+, +18 and +23 after those sizes were deleted and Refresh had reloaded the rest.
+        bool stale = !_reportSizeBoxes.Select(b => (string)b.Tag).ToHashSet()
+                                      .SetEquals(Catalogue.AllSizes.Select(z => z.Code));
+        if (_reportSizeBoxes.Count == 0 || stale)
+        {
+            _reportSizeBoxes.Clear();
+            BuildReportSizeBoxes();
+        }
 
         // Which buckets carry a manual correction, and who made it. Failing to read these must not
         // stop the report drawing -- the figures are the point, the markers are the annotation.
@@ -7272,6 +7448,19 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// With no sheet recorded and no stock anywhere, everything is ticked -- a report opening on
     /// no columns at all reads as broken rather than as "there is nothing here".
     /// </summary>
+    /// <summary>
+    /// A sieve's column position: where the last imported sheet printed it, then catalogue order
+    /// for anything the sheet did not carry. By SizeId alone 1/6 landed after 1/5 and 1/4, because
+    /// it was added to the catalogue later; the client's sheet prints it straight after +11.
+    /// </summary>
+    private long ReportSizeRank(string code)
+    {
+        int onSheet = (_reportSheetSizes ?? []).FindIndex(s => string.Equals(s, code, StringComparison.OrdinalIgnoreCase));
+        return onSheet >= 0
+            ? onSheet
+            : 1000 + (Catalogue.AllSizes.FirstOrDefault(z => z.Code == code)?.SizeId ?? 100_000);
+    }
+
     private bool ReportSizeOnByDefault(string code) =>
         ReportSizeTicked(code, _reportSheetSizes ?? [],
                          [.. _reportRows.Where(r => r.LedgerCt != 0).Select(r => r.SizeCode)]);
@@ -7346,7 +7535,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         _reportAllSizes.Click += ReportAllSizes_Click;
         panel.Add(_reportAllSizes);
 
-        foreach (string code in Catalogue.AllSizes.Select(size => size.Code))
+        foreach (string code in Catalogue.AllSizes.OrderBy(size => ReportSizeRank(size.Code)).Select(size => size.Code))
         {
             var box = ReportBox(new CheckBox
             {
@@ -7447,6 +7636,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// </summary>
     private void ReportSheet_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
+        // The history pop-up is a logical child of this sheet, so its wheel routes through here.
+        // Leave it alone, so the pop-up's own list scrolls.
+        if (HistoryPopup.IsOpen && HistoryPopup.Child.IsMouseOver) return;
+
         // Shift is the usual convention for sideways, and sideways is the one thing this pane
         // actually does. Twenty-four columns is a long way to drag a scrollbar.
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
@@ -7477,7 +7670,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         var sizes = _reportSizeBoxes.Where(b => b.IsChecked == true)
             .Select(b => (string)b.Tag)
-            .OrderBy(code => Catalogue.AllSizes.FirstOrDefault(z => z.Code == code)?.SizeId ?? long.MaxValue)
+            .OrderBy(ReportSizeRank)
             .ToList();
 
         // The printed sheet's order first, then anything else the catalogue holds.
@@ -7526,6 +7719,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         decimal SheetRate(string grade, string size) =>
             _reportSheetRates?.GetValueOrDefault((grade, size)) ?? 0m;
 
+        var everyGrade = grades;      // before "hide empty": a combined row still names all its members
         if (ReportHideEmpty.IsChecked == true)
             grades = grades.Where(g => sizes.Any(s => Weight(g, s) != 0m)).ToList();
 
@@ -7570,19 +7764,35 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             ReportTable.Children.Add(Place(ReportCell("", false, TextAlignment.Center, rule), row, c));
         }
 
-        // ── one row per grade ────────────────────────────────────────────────
-        foreach (string grade in grades)
+        // ── one row per grade, with FL, NO II and COL shown together as "II" ───
+        //
+        // DISPLAY ONLY, on request. The three stay three grades everywhere else -- their stock,
+        // sales, ledger and every calculation -- and the totals below are still summed over the real
+        // grades. In Edit mode they are drawn apart again, because a correction has to land on one
+        // real grade. See ReportRows.
+        foreach (var (label, members) in ReportRows(grades, ReportEditing, everyGrade))
         {
+            string grade = members[0];
+            bool combined = members.Count > 1;
+            decimal MemberSum(string size) => members.Sum(m => Weight(m, size));
+
             row++; AddRow();
-            ReportTable.Children.Add(
-                Place(ReportCell(GradeLabel(grade), false, TextAlignment.Right, CellRule,
-                                 figure: false), row, 0));
+            var nameCell = ReportCell(combined ? label : GradeLabel(grade), false, TextAlignment.Right,
+                                      CellRule, figure: false);
+            if (combined) nameCell.ToolTip = ReportGroupTip(label, members, m => sizes.Sum(z => Weight(m, z)));
+            ReportTable.Children.Add(Place(nameCell, row, 0));
 
             for (int i = 0; i < sizes.Count; i++)
             {
                 string sizeCode = sizes[i];
-                decimal w = Weight(grade, sizeCode);
-                decimal r = Rate(grade, sizeCode);
+                decimal w = combined ? MemberSum(sizeCode) : Weight(grade, sizeCode);
+                // A combined rate is weighted by carats, as the subtotal row's is; with no carats it
+                // falls back to the members' printed rates, again as the subtotal does.
+                decimal r = !combined ? Rate(grade, sizeCode)
+                          : w != 0m ? Math.Round(members.Sum(m => Weight(m, sizeCode) * Rate(m, sizeCode)) / w, 0)
+                          : decimal.TryParse(SubtotalRate(0m, 0m, members.Select(m => Rate(m, sizeCode)), false),
+                                             System.Globalization.NumberStyles.Number,
+                                             System.Globalization.CultureInfo.CurrentCulture, out decimal avg) ? avg : 0m;
 
                 // Blank by default: a zero reads as "measured and found to be nothing" rather than
                 // "nothing here", and 27 grades by 11 sizes is 297 cells to bury 67 real figures in.
@@ -7594,10 +7804,18 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
                 // A bucket someone has corrected by hand is marked and explained, so a reader can
                 // tell a figure the ledger derived from one a person typed.
-                var ids = _reportRows.FirstOrDefault(x => x.GradeCode == grade && x.SizeCode == sizeCode);
-                if (ids is not null && ReportAdjustmentNote(ids.GradeId, ids.SizeId) is { } note)
+                // A combined cell names each grade's carats in it, and carries any member's note.
+                string? note = string.Join(Environment.NewLine + Environment.NewLine, members
+                    .Select(m => _reportRows.FirstOrDefault(x => x.GradeCode == m && x.SizeCode == sizeCode))
+                    .Where(x => x is not null)
+                    .Select(x => ReportAdjustmentNote(x!.GradeId, x.SizeId))
+                    .Where(n => n is not null));
+                if (combined)
+                    weightCell.ToolTip = ReportGroupTip($"{label} × {SizeLabel(sizeCode)}", members, m => Weight(m, sizeCode))
+                                         + (note is { Length: > 0 } ? Environment.NewLine + Environment.NewLine + note : "");
+                if (note is { Length: > 0 })
                 {
-                    weightCell.ToolTip = note;
+                    if (!combined) weightCell.ToolTip = note;
                     if (weightCell.Child is TextBlock marked)
                     {
                         marked.SetResourceReference(TextBlock.ForegroundProperty, "WarningBrush");
@@ -7629,16 +7847,233 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                                                         capturedRate);
                     }
                 }
+                else
+                {
+                    // Read only: a click shows the bucket's ledger. A combined "II" cell shows its
+                    // members' ledgers together, as Show movements does on the Stock page.
+                    var capturedMembers = members;
+                    foreach (var cell in new[] { weightCell, rateCell })
+                    {
+                        cell.Background = Brushes.Transparent;   // a blank cell must still take the click
+                        cell.Cursor = System.Windows.Input.Cursors.Hand;
+                        cell.MouseLeftButtonUp += async (s, _) =>
+                            await ShowStockHistoryAsync((FrameworkElement)s, capturedMembers, sizeCode,
+                                                        combined ? $"{label} × {SizeLabel(sizeCode)}"
+                                                                 : GradeNames.Bucket(grade, sizeCode));
+                    }
+                }
 
                 ReportTable.Children.Add(Place(weightCell, row, 1 + i * 2));
                 ReportTable.Children.Add(Place(rateCell, row, 2 + i * 2));
             }
 
-            ReportTable.Children.Add(
-                Place(ReportCell(GradeLabel(grade), false, TextAlignment.Left, CellRule), row, columns - 1));
+            var endCell = ReportCell(combined ? label : GradeLabel(grade), false, TextAlignment.Left, CellRule);
+            if (combined) endCell.ToolTip = nameCell.ToolTip;
+            ReportTable.Children.Add(Place(endCell, row, columns - 1));
         }
 
+        // ── one soft colour per size, behind its Weight/Rate pair ───────────────
+        //
+        // Drawn UNDER the cells (inserted first), header to last grade row, so -2 and -6.5 read as
+        // separate columns at a glance. Display only: no cell, figure or click changes, and the
+        // totals outside the ruled box stay plain as the sheet prints them. Edit mode's own
+        // highlight still covers the cells it marks.
+        int boxRows = ReportTable.RowDefinitions.Count;
+        for (int i = 0; i < sizes.Count; i++)
+        {
+            var band = new System.Windows.Shapes.Rectangle { IsHitTestVisible = false };
+            band.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, ReportBandKey(i));
+            System.Windows.Controls.Grid.SetRow(band, 0);
+            System.Windows.Controls.Grid.SetRowSpan(band, boxRows);
+            System.Windows.Controls.Grid.SetColumn(band, 1 + i * 2);
+            System.Windows.Controls.Grid.SetColumnSpan(band, 2);
+            ReportTable.Children.Insert(0, band);
+
+            // The size's own colour once more over its header, so each size reads as one labelled
+            // block: the header a step deeper than the figures under it, in the same hue.
+            var head = new System.Windows.Shapes.Rectangle { IsHitTestVisible = false };
+            head.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, ReportBandKey(i));
+            System.Windows.Controls.Grid.SetRow(head, 0);
+            System.Windows.Controls.Grid.SetColumn(head, 1 + i * 2);
+            System.Windows.Controls.Grid.SetColumnSpan(head, 2);
+            ReportTable.Children.Insert(0, head);
+        }
+
+        // ── banding: every other grade row, and every other column, a shade darker ──
+        //
+        // Laid over the size colours and still under the cells, so a row or a column can be
+        // followed across the sheet. Rows start at the first grade (row 2, under the header and
+        // the blank band); columns are each size's RATE column, from the blank band down, so the
+        // size name in the header stays one clean span. Where the two cross it is darker again.
+        void Stripe(int r, int rowSpan, int c, int columnSpan)
+        {
+            var shade = new System.Windows.Shapes.Rectangle { IsHitTestVisible = false };
+            shade.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, "ReportStripeBrush");
+            System.Windows.Controls.Grid.SetRow(shade, r);
+            System.Windows.Controls.Grid.SetRowSpan(shade, rowSpan);
+            System.Windows.Controls.Grid.SetColumn(shade, c);
+            System.Windows.Controls.Grid.SetColumnSpan(shade, columnSpan);
+            ReportTable.Children.Insert(2 * sizes.Count, shade);  // above the size colours, below every cell
+        }
+        for (int r = 2; r < boxRows; r++)
+            if (ReportRowShaded(r - 2)) Stripe(r, 1, 0, columns);
+        for (int i = 0; i < sizes.Count; i++)
+            Stripe(1, boxRows - 1, 2 + i * 2, 1);
+
+        // The left-hand Grade column, a step darker the full height of the box, so the grade
+        // names stand out from the figures beside them.
+        var labels = new System.Windows.Shapes.Rectangle { IsHitTestVisible = false };
+        labels.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, "ReportLabelBrush");
+        System.Windows.Controls.Grid.SetRow(labels, 0);
+        System.Windows.Controls.Grid.SetRowSpan(labels, boxRows);
+        System.Windows.Controls.Grid.SetColumn(labels, 0);
+        ReportTable.Children.Insert(2 * sizes.Count, labels);
+
+        // And the Size header row, the same step darker, over every size's own colour.
+        var sizeRow = new System.Windows.Shapes.Rectangle { IsHitTestVisible = false };
+        sizeRow.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, "ReportLabelBrush");
+        System.Windows.Controls.Grid.SetRow(sizeRow, 0);
+        System.Windows.Controls.Grid.SetColumn(sizeRow, 1);
+        System.Windows.Controls.Grid.SetColumnSpan(sizeRow, sizes.Count * 2);
+        ReportTable.Children.Insert(2 * sizes.Count, sizeRow);
+
         DrawStockReportTotals(sizes, grades, Weight, Rate);
+    }
+
+    /// <summary>The theme brush that tints the i-th size shown on the Stock report; eight, cycled.</summary>
+    public static string ReportBandKey(int sizeIndex) => $"ReportBand{sizeIndex % 8}";
+
+    /// <summary>Whether the n-th grade row (0 = first) carries the darker band: every second one.</summary>
+    public static bool ReportRowShaded(int gradeRow) => gradeRow % 2 == 1;
+
+    private void CloseHistory_Click(object sender, RoutedEventArgs e) => HistoryPopup.IsOpen = false;
+
+    /// <summary>
+    /// One line of the Stock report's history pop-up. Tone picks its colour, one per transaction
+    /// type: "intake" green, "sale" blue, "rejection" red (the whole row, light), "conversion"
+    /// purple, "adjust" amber -- the amber the report already marks a hand-corrected figure with.
+    /// </summary>
+    public sealed record StockHistoryRow(DateOnly Date, string Kind, string Qty, string Reason, string Tone = "");
+
+    /// <summary>
+    /// The pop-up opened by clicking a Stock report figure: every ledger entry of the bucket, newest
+    /// first. Read through Repo.MovementsAsync, the same read as Show movements; nothing is written.
+    /// </summary>
+    private async Task ShowStockHistoryAsync(FrameworkElement cell, List<string> grades, string sizeCode,
+                                             string title)
+    {
+        HistoryPopup.PlacementTarget = cell;
+        HistoryTitle.Text = $"Stock history · {title}";
+        HistoryHint.Text = "Loading…";
+        HistoryGrid.ItemsSource = null;
+        HistoryPopup.IsOpen = true;
+
+        // No page veil: the pop-up is already open and says "Loading…" itself, and veiling the
+        // whole report for one bucket's ledger made every click look like the page reloading.
+        var rows = await Read(async () =>
+        {
+            var all = new List<VStockMovement>();
+            foreach (var g in grades) all.AddRange(await Repo.MovementsAsync(g, sizeCode));
+            return all;
+        }, veil: false);
+        if (rows is null) { HistoryHint.Text = "Could not load the history."; return; }
+        // A quicker click on another cell may have re-pointed the pop-up while this one loaded.
+        if (!ReferenceEquals(HistoryPopup.PlacementTarget, cell)) return;
+
+        HistoryGrid.ItemsSource = StockHistoryRows(rows, nameGrade: grades.Count > 1);
+        HistoryHint.Text = rows.Count == 0
+            ? "Nothing has been taken in, sold or adjusted here."
+            : $"{rows.Count} entr{(rows.Count == 1 ? "y" : "ies")}. Rejections are a record, not a deduction.";
+    }
+
+    /// <summary>
+    /// Ledger rows as the pop-up reads them. The sign is the one v_stock_position applies: intake and
+    /// conversion in add, sale and conversion out take away, an adjustment carries its own sign, and
+    /// a rejection moves nothing (0055) so it is shown unsigned. PURE, so a probe can check it.
+    /// </summary>
+    public static List<StockHistoryRow> StockHistoryRows(IEnumerable<VStockMovement> moves,
+                                                           bool nameGrade = false) =>
+        moves.OrderByDescending(m => m.MovementDate).ThenByDescending(m => m.MovementId)
+             .Select(m =>
+             {
+                 string kind = m.MovementType switch
+                 {
+                     Movement.INTAKE      => "Purchase / intake",
+                     Movement.SALE        => "Sale",
+                     Movement.REJECTION   => "Rejection",
+                     Movement.CONVERT_IN  => "Conversion in",
+                     Movement.CONVERT_OUT => "Conversion out",
+                     Movement.ADJUST      => m.RefType == "rejection_hold" ? "Rejection hold" : "Adjustment",
+                     _                    => m.MovementType,
+                 };
+                 decimal signed = m.MovementType switch
+                 {
+                     Movement.SALE or Movement.CONVERT_OUT => -m.WeightCt,
+                     _                                     => m.WeightCt,
+                 };
+                 string qty = m.MovementType == Movement.REJECTION
+                     ? m.WeightCt.ToString("N4")
+                     : signed.ToString("+#,0.0000;-#,0.0000;0.0000");
+
+                 var why = new List<string>();
+                 // A combined "II" cell mixes grades, so each line names its own.
+                 if (nameGrade) why.Add(GradeLabel(m.GradeCode));
+                 if (!string.IsNullOrWhiteSpace(m.Reason)) why.Add(m.Reason!);
+                 if (m.CounterpartyGradeCode is { Length: > 0 } other)
+                     why.Add(m.MovementType == Movement.CONVERT_IN ? $"from {GradeLabel(other)}" : $"to {GradeLabel(other)}");
+                 if (m.RefType is { Length: > 0 } rt) why.Add(m.RefId is long id ? $"{rt} #{id}" : rt);
+                 string tone = m.MovementType switch
+                 {
+                     Movement.INTAKE                             => "intake",
+                     Movement.SALE                               => "sale",
+                     Movement.REJECTION                          => "rejection",
+                     Movement.CONVERT_IN or Movement.CONVERT_OUT => "conversion",
+                     Movement.ADJUST                             => m.RefType == "rejection_hold" ? "rejection" : "adjust",
+                     _                                           => "",
+                 };
+                 return new StockHistoryRow(m.MovementDate, kind, qty, string.Join(" · ", why), tone);
+             })
+             .ToList();
+
+    /// <summary>
+    /// The Stock report's rows: one per grade, except FL, NO II and COL, which the office reads as
+    /// one Roman "II" and which are drawn as one row at the place the first of them sorts. Only
+    /// the members actually on the report are grouped, and a group of one is just that grade.
+    /// In Edit mode nothing is grouped -- a correction belongs to a single real grade. TOP-COL is
+    /// not a member and stays its own row.
+    /// </summary>
+    public static readonly IReadOnlyList<string> ReportRomanTwo = ["FL", "NO II", "COL"];
+
+    public static List<(string Label, List<string> Members)> ReportRows(IReadOnlyList<string> grades, bool editing,
+                                                                         IReadOnlyList<string>? pool = null)
+    {
+        var rows = new List<(string, List<string>)>();
+        // Members from the whole catalogue (pool), so "hide grades with no stock" cannot drop an
+        // empty FL from II's breakdown; placement from the rows actually shown (grades).
+        var group = editing ? [] : (pool ?? grades).Where(ReportRomanTwo.Contains)
+                                                   .OrderBy(g => ReportRomanTwo.ToList().IndexOf(g)).ToList();
+        bool placed = false;
+        foreach (string g in grades)
+        {
+            if (group.Count > 1 && group.Contains(g))
+            {
+                if (!placed) { rows.Add(("II", group)); placed = true; }
+                continue;
+            }
+            rows.Add((g, [g]));
+        }
+        return rows;
+    }
+
+    /// The hover text for a combined row or cell: each member's own carats, as the screen names
+    /// the grade (FL, II, Color), and their sum.
+    public static string ReportGroupTip(string heading, IReadOnlyList<string> members, Func<string, decimal> carats)
+    {
+        static string Name(string code) => code switch { "NO II" => "II", "COL" => "Color", _ => code };
+        var lines = members.Select(m => $"{Name(m)}: {carats(m):N2} ct").ToList();
+        return $"{heading} combines {string.Join(", ", members.Select(Name))}" + Environment.NewLine
+             + string.Join(Environment.NewLine, lines) + Environment.NewLine
+             + $"Total: {members.Sum(carats):N2} ct";
     }
 
     private static UIElement Place(UIElement element, int row, int column)
@@ -8108,7 +8543,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         }
 
         ImportStatus.Text = "";
-        if (result is null) { Say("Import failed — nothing further was written"); return; }
+        // Read() has already put the database's own reason on the status bar; this line used to
+        // overwrite it with a generic one, leaving "Grade 1MB does not use size -2" unseen.
+        if (result is null) { Say($"Import failed — nothing was written. {_lastFailure}"); return; }
 
         var notes = ImportNotes(plan, result);
 
@@ -9134,8 +9571,8 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// are filled oldest first and the shortfall lands on whichever is last. Naming a line here
     /// would name one that is only short because of the order it happens to sit in.
     ///
-    /// GROSS, matching what the import actually deducts: a SALE for the selection and a REJECTION
-    /// for the rest, both of which leave the bucket.
+    /// SELECTION, matching what the import actually deducts since 0055: a SALE for the selection.
+    /// The REJECTION it also writes is a record and leaves the bucket alone.
     ///
     /// It changes nothing about what is imported or how much is deducted. It only means the figure
     /// is known in time to act on.
@@ -9160,7 +9597,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         var importedLineIds = importedLines.Select(l => l.LineId).ToHashSet();
         var invoiceIds = importedInvoiceIds.ToHashSet();
 
+        // Not the REJECTION rows: since 0055 they never took anything out, so there is nothing of
+        // theirs to give back, and crediting them would make the shelf look larger than it is.
         var back = salesMovements
+            .Where(m => m.MovementType != Movement.REJECTION)
             .Where(m => m.RefId is { } id
                         && (m.RefType == "sales_line" ? importedLineIds.Contains(id)
                                                       : invoiceIds.Contains(id)))
@@ -9178,7 +9618,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             {
                 g.Key.GradeCode,
                 g.Key.SizeCode,
-                Wants = g.Sum(l => l.GrossCt),
+                Wants = g.Sum(l => l.SelectionCt),
                 Has = have.GetValueOrDefault(g.Key, 0m),
             })
             .Where(b => b.Wants - b.Has > 0.00005m)

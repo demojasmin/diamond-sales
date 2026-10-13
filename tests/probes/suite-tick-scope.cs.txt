@@ -612,7 +612,7 @@ var t = new Thread(() =>
     Check("SUMMARY - the sign-off counts the ticked rows only",
           bullets.Count == 1, $"{bullets.Count} bullet(s)");
     Check("SUMMARY - and the carats leaving are theirs",
-          Fact("Leaving stock") == "1.00 ct", Fact("Leaving stock"));
+          Fact("Leaving stock") == "1.00 ct sold", Fact("Leaving stock"));
     // Unchanged: four rows over two deals, each deal headed by its own bullet, so six.
     Check("SUMMARY - the whole-entry overload is unchanged",
           MainWindow.SaleSummary(sum).Lines.Count == 6,

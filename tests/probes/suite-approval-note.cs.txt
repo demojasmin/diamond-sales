@@ -155,8 +155,8 @@ var t = new Thread(() =>
     Check("NOTE - every column heading", text.Contains("PARTICULARS") && text.Contains("WEIGHT")
                                          && text.Contains("RATE per") && text.Contains("REMARKS"));
     Check("NOTE - prints each line's grade and size",
-          text.Contains("NO II") && text.Contains("-6.5")
-          && text.Contains("NO 1 BB") && text.Contains("+6.5"));
+          // As the sheet prints them (GradeNames.Short): NO II is "II", NO 1 BB is "1BB".
+          text.Contains("II   -6.5") && text.Contains("1BB   +6.5"));
     Check("NOTE - prints the weights", text.Contains("2.30") && text.Contains("12.50"));
     Check("NOTE - prints the rate per carat", text.Contains("63,000.00") && text.Contains("36,000.00"));
     Check("NOTE - prints the per-line remark, which no screen shows", text.Contains("sorted parcel"));
@@ -210,7 +210,7 @@ var t = new Thread(() =>
         ("the buyer",   "QUEST DIAMOND"),
         ("the broker",  "R K BROKER"),
         ("the date",    "2026"),
-        ("a grade",     "NO II"),
+        ("a grade",     "II   -6.5"),
         ("a weight",    "2.30"),
         ("a rate",      "63,000.00"),
         ("a remark",    "sorted parcel"),

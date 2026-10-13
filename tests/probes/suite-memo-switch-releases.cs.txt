@@ -1,0 +1,135 @@
+// Opening a memo releases what the memo on screen was holding.
+//
+// A line edited on an opened memo is held under that memo's own client_ref. Edit memo released the
+// entry being replaced only when it was UNSAVED (InvoiceId null), so opening a second memo stranded
+// the first one's holds with nothing on any screen to return them.
+//
+// DEMO ONLY. Refuses to run unless the active workspace is Demo. Writes one 0.01 ct hold on a Demo
+// memo's bucket and always releases it. The entry file is redirected to a temp file, so neither
+// real entry file on this PC is read or written.
+using System.IO;
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+using InvProbe;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+const string DemoRef = "nzcvjaixgqoliyrotstz";
+string tempEntry = Path.Combine(Path.GetTempPath(), $"solitaire-entry-memo-probe-{Guid.NewGuid():N}.json");
+Environment.SetEnvironmentVariable("SOLITAIREDESK_ENTRY", tempEntry);
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
+
+    void Settle() { var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f); }
+    bool Until(Func<bool> done, int seconds = 30)
+    {
+        var stop = DateTime.UtcNow.AddSeconds(seconds);
+        while (!done() && DateTime.UtcNow < stop) { Settle(); Thread.Sleep(50); }
+        return done();
+    }
+    T Await<T>(Task<T> task) { Until(() => task.IsCompleted, 60); return task.GetAwaiter().GetResult(); }
+    void AwaitTask(Task task) { Until(() => task.IsCompleted, 60); task.GetAwaiter().GetResult(); }
+
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+
+    // Any dialog (a memo that cannot be rebuilt, a refusal) is closed rather than left blocking.
+    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+        new RoutedEventHandler((o, _) => { if (o is Window w && w is not MainWindow)
+                                           { Console.WriteLine($"      (closed dialog: {w.Title})"); w.Close(); } }));
+
+    Db.Use(Db.Workspaces.Single(w => w.Ref == DemoRef));
+    if (Db.Active.Ref != DemoRef) { Check("SETUP - Demo is the active workspace", false, Db.Active.Ref); return; }
+
+    AwaitTask(ProbeEnv.SignInAsync());
+    AwaitTask(ProbeEnv.LoadProfileAsync());
+    Check("SETUP - signed in to Demo", Db.Active.Ref == DemoRef && Db.CurrentUser is not null,
+          $"{Db.Active.Name} · {Db.CurrentUser?.FullName ?? "<no profile>"}");
+    if (Db.Active.Ref != DemoRef || Db.CurrentUser is null) return;
+
+    var flags = BindingFlags.NonPublic | BindingFlags.Instance;
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1280, Height = 800 };
+    win.Show();
+    Check("SETUP - catalogue loaded", Until(() => Catalogue.Grades.Count > 0 && Catalogue.AllSizes.Count > 0));
+
+    InvoiceEntry Entry() => (InvoiceEntry)typeof(MainWindow).GetField("_invoice", flags)!.GetValue(win)!;
+    var held = (System.Collections.IDictionary)typeof(MainWindow).GetField("_held", flags)!.GetValue(win)!;
+    decimal Reserved(long g, long s) => Await(Repo.StockAsync()).Single(p => p.GradeId == g && p.SizeId == s).ReservedCt;
+
+    Guid? memoRef = null;
+    try
+    {
+        var stock = Await(Repo.StockAsync());
+        var drafts = Await(Repo.InvoicesAsync()).Where(i => i.Status == InvoiceStatus.DRAFT).ToList();
+        Check("SETUP - Demo has two memos to switch between", drafts.Count >= 2, $"{drafts.Count} draft(s)");
+        if (drafts.Count < 2) return;
+
+        // ── open memo A, and hold 0.01 ct on one of its lines ─────────────────
+        VInvoice? a = null; SaleLine? line = null;
+        foreach (var d in drafts)
+        {
+            AwaitTask((Task)typeof(MainWindow).GetMethod("OpenInvoiceAsync", flags)!.Invoke(win, [d])!);
+            Until(() => Entry().InvoiceId == d.InvoiceId, 10);
+            line = Entry().RealLines.FirstOrDefault(l => l.Grade is not null && l.Size is not null
+                && stock.Any(p => p.GradeId == l.Grade.GradeId && p.SizeId == l.Size.SizeId && p.BalanceCt >= 0.01m));
+            if (line is not null) { a = d; break; }
+        }
+        Check("SETUP - a memo with a line whose bucket has stock", a is not null);
+        if (a is null || line is null) return;
+        var b = drafts.First(d => d.InvoiceId != a.InvoiceId);
+
+        long g = line.Grade!.GradeId, s = line.Size!.SizeId;
+        decimal before = Reserved(g, s);
+        memoRef = Entry().ClientRef;
+
+        // An edit on the opened memo holds. Since 0055 it is the SELECTION that is held, so that is
+        // what is changed, and a bigger gross alongside it proves the rejected part is NOT held.
+        line.GrossWeightCt = Math.Max(line.GrossWeightCt, 0.05m);
+        line.SelectionCt = 0.01m;
+        Check("HOLD - editing a line on the opened memo holds its SELECTION (0.01), not its gross",
+              Until(() => held.Contains(line.LineKey), 20) && Reserved(g, s) == before + 0.01m,
+              $"{a.InvoiceNo ?? "#" + a.InvoiceId} · {line.Grade.Code} x {line.Size.Code} · reserved {before} -> {Reserved(g, s)}");
+
+        // ── open memo B through Edit memo, exactly as the button does ─────────
+        var grid = (DataGrid)win.FindName("InvoiceGrid");
+        grid.ItemsSource = new List<VInvoice> { b };
+        grid.SelectedItem = b;
+        typeof(MainWindow).GetMethod("EditDraft_Click", flags)!.Invoke(win, [win, new RoutedEventArgs()]);
+        Check("SWITCH - memo B is on screen", Until(() => Entry().InvoiceId == b.InvoiceId, 30),
+              $"on screen: {Entry().InvoiceId}");
+        Until(() => Reserved(g, s) == before, 15);
+
+        Check("RELEASE - opening memo B gave memo A's hold back",
+              Reserved(g, s) == before, $"reserved {before} expected, {Reserved(g, s)} now");
+    }
+    catch (Exception e) { Check("no exception", false, e.ToString()); }
+    finally
+    {
+        // Whatever happened, the test's own hold does not outlive it.
+        if (memoRef is { } r) Await(Repo.ReleaseEntryAsync(r));
+        win.Close();
+        Environment.SetEnvironmentVariable("SOLITAIREDESK_ENTRY", null);
+        if (File.Exists(tempEntry)) File.Delete(tempEntry);
+    }
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start(); t.Join();
+Console.WriteLine(fail == 0 ? "ALL PASS" : $"{fail} FAILED");

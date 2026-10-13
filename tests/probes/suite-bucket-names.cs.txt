@@ -20,7 +20,7 @@ void Check(string n, bool ok, string? d = null)
 Check("MARK - the stored code becomes the mark the sheet prints",
       GradeNames.Bucket("NO DX", "-6.5") == "DX1 × -6.5", GradeNames.Bucket("NO DX", "-6.5"));
 Check("MARK - and every other grade the client's sheet spells differently",
-      GradeNames.Bucket("NO II", "1/6") == "# × 1/6"
+      GradeNames.Bucket("NO II", "1/6") == "II × 1/6"
       && GradeNames.Bucket("NO 1 BB", "+11") == "1BB × +11"
       && GradeNames.Bucket("GH", "-6.5") == "GH VS × -6.5",
       GradeNames.Bucket("NO II", "1/6"));

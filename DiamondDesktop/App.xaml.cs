@@ -25,6 +25,8 @@ public partial class App : Application
         base.OnStartup(e);
         UseThreeLetterDayNames();
         StopTheWheelChangingPickers();
+        DoubleClickSelectsAll();
+        DoubleClickSelectsAllInGrids();
 
         // Without this, any unhandled exception closes the app with no window, no message and no
         // log — from the user's side it just vanishes, which is indistinguishable from the sign-in
@@ -152,6 +154,51 @@ public partial class App : Application
             typeof(System.Windows.Controls.ComboBox),
             UIElement.PreviewMouseWheelEvent,
             new System.Windows.Input.MouseWheelEventHandler(WheelGoesToThePage));
+
+    /// <summary>
+    /// Double-clicking any text field selects ALL of it, on request, so a value can be replaced in
+    /// one go. WPF's default selects one word, which in "3.43" is just "43". Every TextBox in the
+    /// app -- forms, grid cells, the text part of searchable pickers and date pickers -- is one.
+    /// </summary>
+    private static void DoubleClickSelectsAll() =>
+        EventManager.RegisterClassHandler(
+            typeof(System.Windows.Controls.TextBox),
+            System.Windows.Controls.Control.PreviewMouseDoubleClickEvent,
+            new System.Windows.Input.MouseButtonEventHandler((sender, e) =>
+            {
+                if (sender is not System.Windows.Controls.TextBox box || e.ChangedButton != System.Windows.Input.MouseButton.Left) return;
+                box.Focus();
+                box.SelectAll();
+                e.Handled = true;
+            }));
+
+    /// <summary>
+    /// The same for a grid cell that is not in edit mode yet: the double-click opens its editor,
+    /// and the editor's TextBox only exists after the click, so it is selected once it appears.
+    /// </summary>
+    private static void DoubleClickSelectsAllInGrids() =>
+        EventManager.RegisterClassHandler(
+            typeof(System.Windows.Controls.DataGridCell),
+            System.Windows.Controls.Control.MouseDoubleClickEvent,
+            new System.Windows.Input.MouseButtonEventHandler((sender, e) =>
+            {
+                if (sender is not System.Windows.Controls.DataGridCell cell || cell.IsReadOnly) return;
+                cell.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, new Action(() =>
+                {
+                    if (FindTextBox(cell) is { } box) { box.Focus(); box.SelectAll(); }
+                }));
+            }), handledEventsToo: true);
+
+    private static System.Windows.Controls.TextBox? FindTextBox(DependencyObject root)
+    {
+        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            if (child is System.Windows.Controls.TextBox box) return box;
+            if (FindTextBox(child) is { } deeper) return deeper;
+        }
+        return null;
+    }
 
     /// <summary>
     /// Marks the wheel handled so the picker ignores it, then re-raises it at the parent so the

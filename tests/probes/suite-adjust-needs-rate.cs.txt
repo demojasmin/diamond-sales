@@ -1,0 +1,120 @@
+// 0059 + the Intake page's Adjust box: a stock increase always carries a cost.
+//
+// DEMO ONLY (refuses any other workspace). Writes +0.01 ct and takes it back out again on one Demo
+// bucket, through the Adjust box and through the database functions, and measures the bucket's
+// carats, average cost and value at each step. Run AFTER 0059 is applied on Demo.
+using System.IO;
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+using InvProbe;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var ws = Db.Workspaces.First(w => w.Name.Equals("Demo", StringComparison.OrdinalIgnoreCase));
+if (ws.Ref != "nzcvjaixgqoliyrotstz") { Console.WriteLine("Not Demo."); return 2; }
+Db.Use(ws);
+Environment.SetEnvironmentVariable("SOLITAIRE_SESSION",
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SolitaireDesk", $"session-{ws.Ref}.dat"));
+Environment.SetEnvironmentVariable("SOLITAIREDESK_ENTRY", Path.Combine(Path.GetTempPath(), $"adjust-probe-{Guid.NewGuid():N}.json"));
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    void Settle() { var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f); }
+    T Wait<T>(Task<T> task) { while (!task.IsCompleted) { Settle(); Thread.Sleep(20); } return task.GetAwaiter().GetResult(); }
+    void WaitTask(Task task) { while (!task.IsCompleted) { Settle(); Thread.Sleep(20); } task.GetAwaiter().GetResult(); }
+
+    WaitTask(ProbeEnv.SignInAsync());
+    WaitTask(ProbeEnv.LoadProfileAsync());
+
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+    // Any confirmation dialog closes itself (answering no) -- nothing here should need one.
+    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+        new RoutedEventHandler((o, _) => { if (o is Window w && w is not MainWindow) w.Close(); }));
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1300, Height = 860 };
+    win.Show();
+    for (int i = 0; i < 200 && Catalogue.Grades.Count == 0; i++) { Settle(); Thread.Sleep(50); }
+    T Named<T>(string n) where T : class => (T)win.FindName(n)!;
+
+    // The bucket: the largest holding with a cost, so a 0.01 ct test is noise on it.
+    var b = Wait(Repo.StockAsync()).Where(r => r.BalanceCt > 1m && r.AvgCost is > 0m)
+                                   .OrderByDescending(r => r.BalanceCt).First();
+    VStockPosition Pos() => Wait(Repo.StockAsync()).First(r => r.GradeId == b.GradeId && r.SizeId == b.SizeId);
+    string bucket = GradeNames.Bucket(b.GradeCode, b.SizeCode);
+    var p0 = Pos();
+    Console.WriteLine($"Bucket {bucket}: {p0.LedgerCt:N4} ct, avg {p0.AvgCost:N4}, value {p0.StockValue:N2}");
+
+    // ── 1 · the Adjust box ─────────────────────────────────────────────────────────────────
+    var grade = Catalogue.Grades.First(g => g.GradeId == b.GradeId);
+    Named<ComboBox>("AdjGrade").SelectedItem = grade; Settle();
+    var size = Named<ComboBox>("AdjSize").Items.OfType<SizeBucket>().First(z => z.SizeId == b.SizeId);
+    Named<ComboBox>("AdjSize").SelectedItem = size; Settle();
+    var click = typeof(MainWindow).GetMethod("Adjust_Click", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    var button = Named<Button>("AdjustButton");
+    void Press() { click.Invoke(win, [button, new RoutedEventArgs()]); for (int i = 0; i < 60; i++) { Settle(); Thread.Sleep(50); } }
+
+    Named<TextBox>("AdjWeight").Text = "0.01"; Named<TextBox>("AdjRate").Text = ""; Named<TextBox>("AdjReason").Text = "0059 probe";
+    Press();
+    var p1 = Pos();
+    Check("BOX - adding 0.01 ct with no rate is refused, nothing written", p1.LedgerCt == p0.LedgerCt, $"{p0.LedgerCt:N4} → {p1.LedgerCt:N4}");
+    Check("BOX - and the rate box is what it points at", Named<TextBox>("AdjWeight").Text == "0.01");
+
+    decimal rate = Math.Round(p0.AvgCost!.Value, 2);
+    Named<TextBox>("AdjRate").Text = rate.ToString("0.##");
+    Press();
+    var p2 = Pos();
+    Check("BOX - adding 0.01 ct WITH a rate is recorded", p2.LedgerCt == p0.LedgerCt + 0.01m, $"{p0.LedgerCt:N4} → {p2.LedgerCt:N4}");
+    Check("BOX - at that rate the average cost does not move (within 1 paisa)", Math.Abs(p2.AvgCost!.Value - p0.AvgCost!.Value) < 0.01m,
+          $"{p0.AvgCost:N4} → {p2.AvgCost:N4}");
+    Check("BOX - the value grows by 0.01 ct at that rate (within 1 rupee)", Math.Abs(p2.StockValue - p0.StockValue - 0.01m * rate) < 1m,
+          $"{p0.StockValue:N2} → {p2.StockValue:N2}");
+    Check("BOX - the boxes clear after it is recorded", Named<TextBox>("AdjWeight").Text == "" && Named<TextBox>("AdjRate").Text == "");
+
+    Named<TextBox>("AdjWeight").Text = "-0.01"; Named<TextBox>("AdjRate").Text = ""; Named<TextBox>("AdjReason").Text = "0059 probe (take back)";
+    Press();
+    var p3 = Pos();
+    Check("BOX - taking 0.01 ct out needs no rate", p3.LedgerCt == p0.LedgerCt, $"{p2.LedgerCt:N4} → {p3.LedgerCt:N4}");
+    Check("BOX - and the average cost is unchanged by the round trip", Math.Abs(p3.AvgCost!.Value - p0.AvgCost!.Value) < 0.01m,
+          $"{p0.AvgCost:N4} → {p3.AvgCost:N4}");
+
+    // ── 2 · the database, for any client that calls adjust_stock directly (an older app) ────
+    var direct = Wait(Repo.AdjustAsync(b.GradeId, b.SizeId, 0.01m, "0059 probe (direct, no rate)"));
+    var p4 = Pos();
+    Check("DB - adjust_stock refuses an increase with no rate", !direct.Ok && p4.LedgerCt == p0.LedgerCt, direct.Failure);
+    var noRate = Wait(Repo.AdjustAsync(b.GradeId, b.SizeId, 0.01m, "0059 probe (zero rate)", pricePerCt: 0m));
+    Check("DB - adjust_stock_at_cost refuses a zero rate", !noRate.Ok && Pos().LedgerCt == p0.LedgerCt, noRate.Failure);
+    var outOk = Wait(Repo.AdjustAsync(b.GradeId, b.SizeId, -0.01m, "0059 probe (direct removal)"));
+    var p5 = Pos();
+    Check("DB - a removal still goes through adjust_stock", outOk.Ok && p5.LedgerCt == p0.LedgerCt - 0.01m, outOk.Failure);
+    var putBack = Wait(Repo.AdjustAsync(b.GradeId, b.SizeId, 0.01m, "0059 probe (put back)", pricePerCt: rate));
+    var p6 = Pos();
+    Check("DB - and is put back at cost", putBack.Ok && p6.LedgerCt == p0.LedgerCt, putBack.Failure);
+    Check("END - the bucket is where it started: carats, average cost, value",
+          p6.LedgerCt == p0.LedgerCt && Math.Abs(p6.AvgCost!.Value - p0.AvgCost!.Value) < 0.01m && Math.Abs(p6.StockValue - p0.StockValue) < 1m,
+          $"{p6.LedgerCt:N4} ct, avg {p6.AvgCost:N4}, value {p6.StockValue:N2}");
+
+    win.Close();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start(); t.Join();
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

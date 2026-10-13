@@ -64,7 +64,7 @@ Check("SHORT - the arithmetic is NOT spelled out on the line",
 var first = MainWindow.ShortfallLines(
     Plan(Row("NO II", "1/6", 3.43m)), [At("NO II", "1/6", 0m)], [], [], []);
 Check("FIRST - a first import still reports the bucket",
-      first.Count == 1 && first[0].StartsWith("# × 1/6"), first.FirstOrDefault());
+      first.Count == 1 && first[0].StartsWith("II × 1/6"), first.FirstOrDefault());
 Check("FIRST - and reads the same way, with no credit to explain",
       first[0].Contains("is short 3.4300 ct") && first[0].Contains("0.0000 ct can be deducted"),
       first[0]);

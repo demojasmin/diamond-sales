@@ -74,6 +74,10 @@ public sealed class IdleTimeout
         _expired = true;
         _timer.Stop();
 
+        // Who was signed in, read before signing out clears it: the sign-in box opens with that
+        // email filled in, so coming back after a break is a password and nothing else.
+        string? email = Db.Client.Auth.CurrentUser?.Email;
+
         await Db.SignOutAsync();
 
         MessageBox.Show(_owner,
@@ -90,6 +94,7 @@ public sealed class IdleTimeout
         string showing = Db.Active.Ref;
 
         var login = new LoginWindow { Owner = _owner };
+        if (!string.IsNullOrWhiteSpace(email)) login.UserBox.Text = email;
         if (login.ShowDialog() == true && Db.CurrentUser is not null)
         {
             // A DIFFERENT database. The window behind is full of the previous one's figures, and so

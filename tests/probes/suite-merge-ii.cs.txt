@@ -1,0 +1,86 @@
+// 0057: FL, # and color are one grade, II. Run on DEMO, twice:
+//
+//   BEFORE the migration: saves Demo's stock position to %TEMP%\merge-ii-before.json and stops.
+//   AFTER it:             compares against that file, and checks the catalogue and the importers.
+//
+// READ ONLY. Refuses any workspace but Demo.
+using System.IO;
+using System.Text.Json;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+using InvProbe;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var ws = Db.Workspaces.First(w => w.Name.Equals("Demo", StringComparison.OrdinalIgnoreCase));
+Db.Use(ws);
+Environment.SetEnvironmentVariable("SOLITAIRE_SESSION",
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                 "SolitaireDesk", $"session-{ws.Ref}.dat"));
+await ProbeEnv.SignInAsync();
+
+var stock = await Repo.StockAsync();
+var grades = await Repo.GradesAsync();
+string snap = Path.Combine(Path.GetTempPath(), "merge-ii-before.json");
+string[] three = ["FL", "NO II", "COL"];
+
+if (grades.Any(g => g.Code is "FL" or "COL"))
+{
+    var before = new
+    {
+        Total = stock.Sum(r => r.LedgerCt), Available = stock.Sum(r => r.BalanceCt), Value = stock.Sum(r => r.StockValue),
+        II = stock.Where(r => three.Contains(r.GradeCode)).GroupBy(r => r.SizeCode)
+                  .ToDictionary(g => g.Key, g => g.Sum(r => r.LedgerCt)),
+        Rows = stock.Count,
+    };
+    File.WriteAllText(snap, JsonSerializer.Serialize(before));
+    Console.WriteLine($"BEFORE saved to {snap}: {before.Total:N4} ct on shelf, {before.II.Values.Sum():N4} ct in FL + # + color.");
+    Console.WriteLine("Apply 0057 on Demo, then run this again.");
+    return 0;
+}
+
+if (!File.Exists(snap)) { Console.WriteLine("No BEFORE snapshot. Run this before applying 0057."); return 2; }
+using var doc = JsonDocument.Parse(File.ReadAllText(snap));
+var b = doc.RootElement;
+
+Check("CATALOGUE - FL and COL are gone", !grades.Any(g => g.Code is "FL" or "COL"));
+var ii = grades.FirstOrDefault(g => g.Code == "NO II");
+Check("CATALOGUE - NO II is shown as II", ii?.ShortName == "II", ii?.ShortName);
+Check("CATALOGUE - II sorts where FL did", ii is not null && grades.Where(g => g.SortOrder < ii.SortOrder)
+      .All(g => g.Code is not "NO II"), $"sort {ii?.SortOrder}");
+
+Check("STOCK - shelf carats unchanged", stock.Sum(r => r.LedgerCt) == b.GetProperty("Total").GetDecimal(),
+      $"{b.GetProperty("Total").GetDecimal():N4} -> {stock.Sum(r => r.LedgerCt):N4}");
+Check("STOCK - available carats unchanged", stock.Sum(r => r.BalanceCt) == b.GetProperty("Available").GetDecimal(),
+      $"{b.GetProperty("Available").GetDecimal():N4} -> {stock.Sum(r => r.BalanceCt):N4}");
+Check("STOCK - stock value unchanged", stock.Sum(r => r.StockValue) == b.GetProperty("Value").GetDecimal(),
+      $"{b.GetProperty("Value").GetDecimal():N2} -> {stock.Sum(r => r.StockValue):N2}");
+foreach (var size in b.GetProperty("II").EnumerateObject())
+{
+    decimal now = stock.Where(r => r.GradeCode == "NO II" && r.SizeCode == size.Name).Sum(r => r.LedgerCt);
+    Check($"STOCK - II × {size.Name} holds what FL + # + color held", now == size.Value.GetDecimal(),
+          $"{size.Value.GetDecimal():N4} -> {now:N4}");
+}
+Check("STOCK - no II row is doubled up", stock.Where(r => r.GradeCode == "NO II").GroupBy(r => r.SizeCode).All(g => g.Count() == 1));
+Check("STOCK - the page draws II as one plain row, not a group",
+      MainWindow.GroupRomanTwo(stock).All(r => r.Members is null));
+
+// Every way a sheet or a sales file may still spell one of the three lands on II.
+var excel = SaleFileImport.AliasMap(grades.Select(g => (g.Code, g.Aliases)));
+var pdf = MainWindow.PdfGradeLabelMap(grades);
+foreach (string spelling in new[] { "FL", "fl", "#", "II", "NO II", "color", "Color", "COL", "colour" })
+{
+    bool viaExcel = SaleFileImport.ResolveGrade(excel, spelling, out string code) && code == "NO II";
+    Check($"IMPORT - \"{spelling}\" resolves to II (Excel stock and sales)", viaExcel, code);
+}
+foreach (string spelling in new[] { "FL", "#", "color", "II" })
+    Check($"IMPORT - \"{spelling}\" resolves to II (PDF sheet)",
+          pdf.TryGetValue(PdfStockFile.Normalise(spelling), out string? c) && c == "NO II", c);
+Check("IMPORT - TOP co still resolves to TOP-COL, not II",
+      SaleFileImport.ResolveGrade(excel, "TOP co", out string top) && top == "TOP-COL", top);
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

@@ -91,11 +91,12 @@ Check("receipts imported", invs.Count(i => i.Received > 0) == plan.ReceiptCount,
 
 // ── 4 · THE STOCK ───────────────────────────────────────────────────────────
 Console.WriteLine("\n── 4 · THE STOCK ───────────────────────────────────────────────");
-decimal Took(long id) => moves.Where(m => m.RefId == id).Sum(m => m.WeightCt);
-var short_ = db.Where(l => Math.Abs(l.GrossWeightCt - Took(l.LineId)) > 0.00005m).ToList();
-Check("EVERY line deducted its full gross weight", short_.Count == 0,
+// 0055: only the SALE leaves stock; the REJECTION row is a record of the rest.
+decimal Took(long id) => moves.Where(m => m.RefId == id && m.MovementType == "SALE").Sum(m => m.WeightCt);
+var short_ = db.Where(l => Math.Abs(l.SelectionCt - Took(l.LineId)) > 0.00005m).ToList();
+Check("EVERY line took its full selection out of stock", short_.Count == 0,
       short_.Count == 0 ? null : string.Join("; ", short_.Take(4)
-          .Select(l => $"{l.InvoiceNo} short {l.GrossWeightCt - Took(l.LineId):N4}")));
+          .Select(l => $"{l.InvoiceNo} short {l.SelectionCt - Took(l.LineId):N4}")));
 
 var badPair = db.Where(l =>
         moves.Where(m => m.RefId == l.LineId && m.MovementType == "SALE").Sum(m => m.WeightCt) != l.SelectionCt
@@ -108,8 +109,8 @@ Check("no line wrote a movement twice",
       moves.Where(m => db.Any(l => l.LineId == m.RefId))
            .GroupBy(m => (m.RefId, m.MovementType)).All(g => g.Count() == 1));
 
-Console.WriteLine($"   sheet gross {db.Sum(l => l.GrossWeightCt):N4} ct = ledger out {db.Sum(l => Took(l.LineId)):N4} ct");
-Check("carats out equal carats invoiced", db.Sum(l => l.GrossWeightCt) == db.Sum(l => Took(l.LineId)));
+Console.WriteLine($"   sheet sold {db.Sum(l => l.SelectionCt):N4} ct = ledger out {db.Sum(l => Took(l.LineId)):N4} ct");
+Check("carats out equal carats sold", db.Sum(l => l.SelectionCt) == db.Sum(l => Took(l.LineId)));
 
 // ── 5 · THE POSITION ────────────────────────────────────────────────────────
 Console.WriteLine("\n── 5 · THE POSITION ────────────────────────────────────────────");

@@ -1,0 +1,207 @@
+<Window x:Class="DiamondDesktop.AddSaleDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="clr-namespace:DiamondDesktop"
+        Title="Add sale" Width="1180" Height="620" MinWidth="900" MinHeight="460"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Icon="{StaticResource AppIcon}"
+        ShowInTaskbar="False" WindowStyle="SingleBorderWindow"
+        Background="{DynamicResource BgBrush}"
+        TextElement.Foreground="{DynamicResource TextBrush}"
+        TextElement.FontFamily="{StaticResource UiFont}"
+        TextElement.FontSize="13.5" TextOptions.TextFormattingMode="Ideal">
+
+  <!-- THE SAME LOOK AS THE MAIN SCREEN. MainWindow gets its field and grid styles from implicit
+       styles in its own Resources, which another window does not inherit. The same ones here, from
+       the same application-level keys, plus copies of MainWindow's grid-only keys. -->
+  <Window.Resources>
+    <Style TargetType="DataGrid" BasedOn="{StaticResource AppDataGrid}"/>
+    <Style TargetType="Button" BasedOn="{StaticResource AppButton}"/>
+    <Style TargetType="TextBox" BasedOn="{StaticResource AppTextBox}"/>
+    <Style TargetType="ComboBox" BasedOn="{StaticResource AppComboBox}"/>
+    <Style TargetType="ComboBoxItem" BasedOn="{StaticResource FieldComboBoxItem}"/>
+    <Style x:Key="Field" TargetType="TextBlock" BasedOn="{StaticResource KpiLabel}">
+      <Setter Property="Margin" Value="0,0,0,5"/>
+    </Style>
+    <Style x:Key="Num" TargetType="TextBlock" BasedOn="{StaticResource NumericCellText}">
+      <Setter Property="HorizontalAlignment" Value="Left"/>
+      <Setter Property="TextAlignment" Value="Left"/>
+      <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    </Style>
+    <Style x:Key="NumEdit" TargetType="TextBox" BasedOn="{StaticResource CellNumericTextBox}">
+      <Setter Property="ui:NumericInput.IsNumeric" Value="True"/>
+      <Setter Property="Padding" Value="3,0,3,0"/>
+      <Setter Property="HorizontalContentAlignment" Value="Left"/>
+      <Setter Property="TextAlignment" Value="Left"/>
+    </Style>
+    <Style x:Key="ComboCell" TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
+      <Setter Property="Padding" Value="4,0"/>
+    </Style>
+  </Window.Resources>
+
+  <DockPanel>
+    <Border DockPanel.Dock="Bottom" Background="{DynamicResource SurfaceBrush}"
+            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="22,14">
+      <DockPanel>
+        <TextBlock x:Name="AddedText" VerticalAlignment="Center" Foreground="{DynamicResource TextMutedBrush}"
+                   Text="0 line(s) ready"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+          <Button x:Name="CancelButton" Content="Cancel" Margin="0,0,10,0" IsCancel="True"
+                  Style="{StaticResource SecondaryAction}" Click="Cancel_Click" VerticalAlignment="Center"/>
+          <Button x:Name="SaveButton" Content="Add to invoice" Style="{StaticResource PrimaryAction}"
+                  Click="Save_Click" VerticalAlignment="Center"
+                  AutomationProperties.Name="Add these lines to the invoice"/>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+
+    <DockPanel Margin="22,20,22,14">
+      <StackPanel DockPanel.Dock="Top">
+        <TextBlock Text="Add sale" Style="{StaticResource CardTitle}"/>
+        <TextBlock Text="Choose the deal, type the lines in the table, then press Add to invoice. Every line uses these deal details."
+                   Style="{StaticResource CardSubtitle}" Margin="0,4,0,16" TextWrapping="Wrap"/>
+
+        <!-- DEAL DETAILS -->
+        <TextBlock Text="DEAL DETAILS" Style="{StaticResource KpiLabel}" FontWeight="SemiBold" Margin="0,0,0,8"/>
+        <Grid x:Name="DealFields">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="150"/><ColumnDefinition Width="10"/>
+            <ColumnDefinition Width="2*"/><ColumnDefinition Width="10"/>
+            <ColumnDefinition Width="2*"/><ColumnDefinition Width="10"/>
+            <ColumnDefinition Width="90"/><ColumnDefinition Width="10"/>
+            <ColumnDefinition Width="90"/><ColumnDefinition Width="10"/>
+            <ColumnDefinition Width="120"/><ColumnDefinition Width="10"/>
+            <ColumnDefinition Width="110"/>
+          </Grid.ColumnDefinitions>
+          <StackPanel Grid.Column="0">
+            <TextBlock Text="DATE" Style="{StaticResource Field}"/>
+            <DatePicker x:Name="DealDate" Height="34" SelectedDate="{Binding DealDate}"
+                        Style="{StaticResource AppDatePicker}" AutomationProperties.Name="Date"/>
+          </StackPanel>
+          <StackPanel Grid.Column="2">
+            <TextBlock Text="BUYER" Style="{StaticResource Field}"/>
+            <ComboBox x:Name="BuyerBox" Height="34" DisplayMemberPath="Name" ui:FieldHint.Text="Select buyer"
+                      SelectedItem="{Binding DealBuyer}" ui:PickerSearch.On="True"
+                      SelectionChanged="Buyer_Changed" AutomationProperties.Name="Buyer" AutomationProperties.HelpText="Required"/>
+          </StackPanel>
+          <StackPanel Grid.Column="4">
+            <TextBlock Text="BROKER" Style="{StaticResource Field}"/>
+            <ComboBox x:Name="BrokerBox" Height="34" DisplayMemberPath="Name" ui:FieldHint.Text="Select broker"
+                      SelectedItem="{Binding DealBroker}" ui:PickerSearch.On="True"
+                      SelectionChanged="Broker_Changed" AutomationProperties.Name="Broker"/>
+          </StackPanel>
+          <StackPanel Grid.Column="6">
+            <TextBlock Text="BROKER %" Style="{StaticResource Field}"/>
+            <TextBox x:Name="PctBox" Height="34" Style="{StaticResource AppNumericTextBox}"
+                     Text="{Binding DealBrokerPct, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Broker percent"/>
+          </StackPanel>
+          <StackPanel Grid.Column="8">
+            <TextBlock Text="TERMS (DAYS)" Style="{StaticResource Field}"/>
+            <TextBox x:Name="TermsBox" Height="34" Style="{StaticResource AppNumericTextBox}"
+                     Text="{Binding DealTermsDays, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Terms in days"/>
+          </StackPanel>
+          <StackPanel Grid.Column="10">
+            <TextBlock Text="TYPE" Style="{StaticResource Field}"/>
+            <ComboBox x:Name="TypeBox" Height="34" SelectedItem="{Binding DealDocType}" AutomationProperties.Name="Document type"/>
+          </StackPanel>
+          <StackPanel Grid.Column="12">
+            <TextBlock Text="DUE DATE" Style="{StaticResource Field}"/>
+            <TextBlock x:Name="DueText" Height="34" Padding="0,8,0,0" FontWeight="SemiBold"
+                       Text="{Binding DealDueDate, StringFormat=dd-MM-yyyy, Mode=OneWay}"
+                       ToolTip="Follows from the date and the terms"/>
+          </StackPanel>
+        </Grid>
+
+        <!-- LINES heading, with Add Line where the main card keeps it -->
+        <DockPanel Margin="0,20,0,8">
+          <Button x:Name="AddLineButton" DockPanel.Dock="Right" Click="AddLine_Click"
+                  Style="{StaticResource DashButton}" AutomationProperties.Name="Add line">
+            <StackPanel Orientation="Horizontal">
+              <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconAdd}"/>
+              <TextBlock Text="Add Line" Margin="7,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+          </Button>
+          <TextBlock Text="LINES" Style="{StaticResource KpiLabel}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+        </DockPanel>
+      </StackPanel>
+
+      <Border x:Name="ErrorBox" DockPanel.Dock="Bottom" Visibility="Collapsed" Margin="0,12,0,0"
+              Background="{DynamicResource DangerSoftBrush}" BorderBrush="{DynamicResource DangerBorderBrush}"
+              BorderThickness="1" CornerRadius="{StaticResource RadiusField}" Padding="12,9">
+        <TextBlock x:Name="ErrorText" TextWrapping="Wrap" Foreground="{DynamicResource TextBrush}"/>
+      </Border>
+
+      <!-- THE LINES, in the same table the Invoice lines card uses -->
+      <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+              CornerRadius="{StaticResource RadiusControl}" ClipToBounds="True">
+        <DataGrid x:Name="LinesGrid" IsReadOnly="False"
+                  CanUserAddRows="False" CanUserDeleteRows="False" SelectionUnit="Cell"
+                  CanUserSortColumns="False" ColumnHeaderHeight="40" AutoGenerateColumns="False"
+                  HeadersVisibility="Column" GridLinesVisibility="None"
+                  ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                  BorderThickness="0" Background="Transparent">
+          <DataGrid.CellStyle>
+            <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
+              <EventSetter Event="PreviewMouseLeftButtonDown" Handler="Cell_Down"/>
+            </Style>
+          </DataGrid.CellStyle>
+          <DataGrid.Columns>
+            <DataGridTemplateColumn Header="Size" Width="96*" MinWidth="96" CellStyle="{StaticResource ComboCell}">
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate>
+                  <ComboBox ItemsSource="{Binding AllowedSizes}" SelectedItem="{Binding Size, UpdateSourceTrigger=PropertyChanged}"
+                            ItemTemplate="{StaticResource SizeCodeTemplate}" ItemContainerStyle="{StaticResource SizeItemContainer}"
+                            Style="{StaticResource CellComboBox}" ui:FieldHint.Text="Size" AutomationProperties.Name="Size"/>
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
+            <DataGridTemplateColumn Header="Grade" Width="120*" MinWidth="112" CellStyle="{StaticResource ComboCell}">
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate>
+                  <ComboBox ItemsSource="{Binding Source={x:Static ui:Catalogue.SellableGrades}}"
+                            SelectedItem="{Binding Grade, UpdateSourceTrigger=PropertyChanged}"
+                            ItemTemplate="{StaticResource GradeNameTemplate}" ItemContainerStyle="{StaticResource GradeItemContainer}"
+                            Style="{StaticResource CellComboBox}" ui:FieldHint.Text="Grade" AutomationProperties.Name="Grade"/>
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
+            <DataGridTextColumn Header="Weight ct" Width="80*" MinWidth="84" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                Binding="{Binding GrossWeightCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
+            <DataGridTextColumn Header="Selection" Width="88*" MinWidth="84" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                Binding="{Binding SelectionCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
+            <DataGridTextColumn Header="Rejection" Width="88*" MinWidth="84" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
+                                Binding="{Binding RejectionCt, StringFormat=N2, Mode=OneWay}" Foreground="{DynamicResource AccentBrush}"/>
+            <DataGridTextColumn Header="Price/ct" Width="110*" MinWidth="80" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                Binding="{Binding PricePerCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
+            <DataGridTextColumn Header="Ex Rate" Width="66*" MinWidth="72" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                Binding="{Binding ExRate, UpdateSourceTrigger=LostFocus}"/>
+            <DataGridTextColumn Header="Less 1" Width="60*" MinWidth="60" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                Binding="{Binding Less1Pct, UpdateSourceTrigger=LostFocus}"/>
+            <DataGridTextColumn Header="Less 2" Width="60*" MinWidth="60" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+                                Binding="{Binding Less2Pct, UpdateSourceTrigger=LostFocus}"/>
+            <DataGridTextColumn Header="Amount" Width="110*" MinWidth="92" IsReadOnly="True" HeaderStyle="{StaticResource AppNumericHeader}"
+                                Binding="{Binding Amount, StringFormat=N2, Mode=OneWay}" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"
+                                ElementStyle="{StaticResource Num}"/>
+            <DataGridTextColumn Header="Remark" Width="160*" MinWidth="120"
+                                Binding="{Binding Remark, UpdateSourceTrigger=LostFocus}"/>
+            <!-- The same remove button the Invoice lines table uses, in a column wide enough to hold
+                 it whole: at 44px with the ghost style's padding the icon was clipped. -->
+            <DataGridTemplateColumn Header="" Width="56" MinWidth="56" CanUserResize="False">
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate>
+                  <Button Tag="{Binding}" Click="RemoveLine_Click" Style="{StaticResource DashButton}"
+                          Height="26" Width="28" MinWidth="0" Padding="0" Margin="2,0"
+                          HorizontalAlignment="Center" VerticalAlignment="Center"
+                          Foreground="{DynamicResource DangerBrush}"
+                          ToolTip="Remove this line" AutomationProperties.Name="Remove line">
+                    <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconRemove}"/>
+                  </Button>
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
+          </DataGrid.Columns>
+        </DataGrid>
+      </Border>
+    </DockPanel>
+  </DockPanel>
+</Window>

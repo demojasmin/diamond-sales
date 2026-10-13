@@ -74,7 +74,7 @@ public static class GradeNames
 {
     public static readonly Dictionary<string, string> Marks = new(StringComparer.Ordinal)
     {
-        ["NO II"] = "#",
+        ["NO II"] = "II",          // FL, # and color, one grade since 0057
         ["NO 1 BB"] = "1BB",
         ["EX 1"] = "EX1",
         ["NO 2"] = "2",
@@ -85,7 +85,6 @@ public static class GradeNames
         ["NO 6"] = "6",
         ["NO 7"] = "7",
         ["TOP-COL"] = "TOP co",
-        ["COL"] = "color",
         ["GH"] = "GH VS",
     };
 
@@ -554,6 +553,10 @@ public class VStockPosition : BaseModel
 
     /// Likewise the sieve: "1/5", not the 0.2 the catalogue stores it under.
     public string SizeShort => SizeNames.Short(SizeCode);
+
+    /// DISPLAY ONLY. Set on a row the Stock page draws for several real grades at once (FL, NO II
+    /// and COL shown as "II"); null on every row that came from the database.
+    [Newtonsoft.Json.JsonIgnore] public IReadOnlyList<VStockPosition>? Members { get; set; }
 }
 
 /// <summary>

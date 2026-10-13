@@ -1,4 +1,4 @@
-// The PDF reader against every layout we hold, plus the ones it must refuse.
+﻿// The PDF reader against every layout we hold, plus the ones it must refuse.
 //
 // No database. The catalogue is built here so the suite runs anywhere and cannot
 // be broken by someone editing a grade in Supabase.
@@ -13,16 +13,17 @@ void Check(string n, bool ok, string? d = null)
     if (!ok) fail++;
 }
 
+// As after 0057: FL, # and color are one grade (NO II, shown as II) and their spellings its aliases.
 var grades = new (string Code, string? Aliases)[]
 {
     ("NO 1","NO1;NO 1;1"), ("NO 1 BB","1BB;1 BB;NO1BB;NO 1BB"), ("NO 2","NO2;2;NO-2"),
-    ("NO 2 BB","2BB;2 BB;NO2BB"), ("NO II","II;NOII;NO2SPOT"), ("NO DX","DX;NODX;DELUXE;NO-DX"),
+    ("NO 2 BB","2BB;2 BB;NO2BB"), ("NO II","II;NOII;NO2SPOT;#;FL;F L;FL1;COL;COLOUR;COLOR;C;color"), ("NO DX","DX;NODX;DELUXE;NO-DX"),
     ("EX 1","EX1;EXTRA 1;E1;Ex1"), ("NO 3","NO3;3;NO-3"), ("NO 4","NO4;4;NO-4"),
     ("NO 5","NO5;5;NO-5"), ("NO 6","NO6;6;NO-6"), ("NO 7","NO7;7;NO-7"),
-    ("TOP-COL","TOPCOL;TOP COL;TC;T COLOR"), ("COL","COLOUR;COLOR;C"), ("OW","OFFWHITE;OFF WHITE;O/W"),
+    ("TOP-COL","TOPCOL;TOP COL;TC;T COLOR"), ("OW","OFFWHITE;OFF WHITE;O/W"),
     ("LC 1","LC1;L C 1;LC-1"), ("LC 2","LC2;L C 2;LC-2"), ("LC 3","LC3;L C 3;LC-3"),
     ("GH","GHOST;GH-VVS;GHVVS"), ("LB 1","LB1;L B 1;LB-1"), ("LB 2","LB2;L B 2;LB-2"),
-    ("+14","14;PLUS14;P14"), ("EXTRA","EXTRA ASSORT;XTRA;ASSORT"), ("FL","F L;FL1"),
+    ("+14","14;PLUS14;P14"), ("EXTRA","EXTRA ASSORT;XTRA;ASSORT"),
     ("1MB","1 MB;NO1MB;NO 1 MB"), ("-2 MB",",-2 MB;-2MB;,-2MB"), ("MIX", null),
     // Seeded by 0039. A row the sheet prints no grade name against imports under this rather
     // than refusing the file -- kalpesh.pdf's two unnamed rows carry 0.00, so nothing lands

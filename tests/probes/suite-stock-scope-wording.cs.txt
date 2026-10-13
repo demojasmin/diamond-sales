@@ -56,8 +56,8 @@ Check("LINE - and the scope is on the figure",
 
 foreach (var (g, sz, mark) in new[]
 {
-    ("NO II", "1/6", "# × 1/6"), ("NO 1 BB", "0.2", "1BB × 1/5"), ("TOP-COL", "+11", "TOP co × +11"),
-    ("GH", "-6.5", "GH VS × -6.5"), ("EX 1", "+11", "EX1 × +11"), ("COL", "+23", "color × +23"),
+    ("NO II", "1/6", "II × 1/6"), ("NO 1 BB", "0.2", "1BB × 1/5"), ("TOP-COL", "+11", "TOP co × +11"),
+    ("GH", "-6.5", "GH VS × -6.5"), ("EX 1", "+11", "EX1 × +11"), ("NO DX", "+23", "DX1 × +23"),
     ("Unknown Grade", "0.25", "Unknown Grade × 1/4"),
 })
 {

@@ -1,0 +1,124 @@
+// The Intake page's Adjust box, typed into KEY BY KEY as a person would: does a loss (−) take carats
+// out and a gain (+) put them in? And what the installed 1.6.0 box -- the same box without
+// NumericInput.AllowNegative -- does with the same keys.
+//
+// DEMO ONLY (refuses any other workspace). Moves 0.01 ct on one Demo bucket and returns it.
+using System.IO;
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+using InvProbe;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var ws = Db.Workspaces.First(w => w.Name.Equals("Demo", StringComparison.OrdinalIgnoreCase));
+if (ws.Ref != "nzcvjaixgqoliyrotstz") { Console.WriteLine("Not Demo."); return 2; }
+Db.Use(ws);
+Environment.SetEnvironmentVariable("SOLITAIRE_SESSION",
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SolitaireDesk", $"session-{ws.Ref}.dat"));
+Environment.SetEnvironmentVariable("SOLITAIREDESK_ENTRY", Path.Combine(Path.GetTempPath(), $"adjust-probe-{Guid.NewGuid():N}.json"));
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    void Settle() { var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f); }
+    T Wait<T>(Task<T> task) { while (!task.IsCompleted) { Settle(); Thread.Sleep(20); } return task.GetAwaiter().GetResult(); }
+    void WaitTask(Task task) { while (!task.IsCompleted) { Settle(); Thread.Sleep(20); } task.GetAwaiter().GetResult(); }
+
+    WaitTask(ProbeEnv.SignInAsync());
+    WaitTask(ProbeEnv.LoadProfileAsync());
+
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+        new RoutedEventHandler((o, _) => { if (o is Window w && w is not MainWindow) w.Close(); }));
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1300, Height = 860 };
+    win.Show();
+    for (int i = 0; i < 200 && Catalogue.Grades.Count == 0; i++) { Settle(); Thread.Sleep(50); }
+    T Named<T>(string n) where T : class => (T)win.FindName(n)!;
+
+    var b = Wait(Repo.StockAsync()).Where(r => r.BalanceCt > 1m && r.AvgCost is > 0m)
+                                   .OrderByDescending(r => r.BalanceCt).First();
+    VStockPosition Pos() => Wait(Repo.StockAsync()).First(r => r.GradeId == b.GradeId && r.SizeId == b.SizeId);
+    var p0 = Pos();
+    Console.WriteLine($"Bucket {GradeNames.Bucket(b.GradeCode, b.SizeCode)}: {p0.LedgerCt:N4} ct, avg {p0.AvgCost:N4}");
+
+    Named<ComboBox>("AdjGrade").SelectedItem = Catalogue.Grades.First(g => g.GradeId == b.GradeId); Settle();
+    Named<ComboBox>("AdjSize").SelectedItem = Named<ComboBox>("AdjSize").Items.OfType<SizeBucket>().First(z => z.SizeId == b.SizeId); Settle();
+    var weight = Named<TextBox>("AdjWeight");
+    var rateBox = Named<TextBox>("AdjRate");
+    var reason = Named<TextBox>("AdjReason");
+    var click = typeof(MainWindow).GetMethod("Adjust_Click", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    void Press() { click.Invoke(win, [Named<Button>("AdjustButton"), new RoutedEventArgs()]); for (int i = 0; i < 60; i++) { Settle(); Thread.Sleep(50); } }
+
+    // One key at a time, through the box's own input filter: what is refused never reaches the text.
+    string TypeInto(TextBox box, string keys)
+    {
+        box.Text = ""; box.Focus(); box.CaretIndex = 0;
+        foreach (char c in keys)
+        {
+            var e = new TextCompositionEventArgs(Keyboard.PrimaryDevice,
+                        new TextComposition(InputManager.Current, box, c.ToString())) { RoutedEvent = UIElement.PreviewTextInputEvent };
+            box.RaiseEvent(e);
+            if (!e.Handled) { int at = box.CaretIndex; box.Text = box.Text.Insert(at, c.ToString()); box.CaretIndex = at + 1; }
+        }
+        return box.Text;
+    }
+
+    // ── 1 · LOSS (−) in this build ──────────────────────────────────────────────────────────
+    string typed = TypeInto(weight, "-0.01");
+    Check("LOSS - typing -0.01 keeps the minus", typed == "-0.01", $"box reads \"{typed}\"");
+    rateBox.Text = ""; reason.Text = "probe: loss";
+    Press();
+    var p1 = Pos();
+    Check("LOSS - it takes 0.01 ct OUT of stock", p1.LedgerCt == p0.LedgerCt - 0.01m, $"{p0.LedgerCt:N4} → {p1.LedgerCt:N4}");
+    Check("LOSS - and needs no rate; average cost unmoved", Math.Abs(p1.AvgCost!.Value - p0.AvgCost!.Value) < 0.01m, $"{p0.AvgCost:N4} → {p1.AvgCost:N4}");
+
+    // ── 2 · GAIN (+) in this build ──────────────────────────────────────────────────────────
+    typed = TypeInto(weight, "0.01");
+    rateBox.Text = ""; reason.Text = "probe: gain";
+    Press();
+    var p2 = Pos();
+    Check("GAIN - with no rate it is refused, nothing written", p2.LedgerCt == p1.LedgerCt, $"{p1.LedgerCt:N4} → {p2.LedgerCt:N4}");
+    TypeInto(weight, "0.01");
+    rateBox.Text = Math.Round(p0.AvgCost!.Value, 2).ToString("0.##"); reason.Text = "probe: gain";
+    Press();
+    var p3 = Pos();
+    Check("GAIN - with a rate it puts 0.01 ct IN", p3.LedgerCt == p1.LedgerCt + 0.01m, $"{p1.LedgerCt:N4} → {p3.LedgerCt:N4}");
+    Check("GAIN - average cost unmoved at that rate", Math.Abs(p3.AvgCost!.Value - p0.AvgCost!.Value) < 0.01m, $"{p0.AvgCost:N4} → {p3.AvgCost:N4}");
+    Check("BOTH - the bucket is back where it started", p3.LedgerCt == p0.LedgerCt, $"{p0.LedgerCt:N4} → {p3.LedgerCt:N4}");
+
+    // ── 3 · the installed 1.6.0 box: the same box WITHOUT AllowNegative ─────────────────────
+    NumericInput.SetAllowNegative(weight, false);
+    typed = TypeInto(weight, "-0.01");
+    Check("1.6.0 - typing -0.01 SILENTLY DROPS the minus (the root cause)", typed == "0.01", $"box reads \"{typed}\"");
+    rateBox.Text = ""; reason.Text = "probe: what 1.6.0 would save";
+    Press();
+    var p4 = Pos();
+    Check("1.6.0 - this build's rate rule now stops that +0.01 being saved", p4.LedgerCt == p0.LedgerCt, $"{p0.LedgerCt:N4} → {p4.LedgerCt:N4}");
+    NumericInput.SetAllowNegative(weight, true);
+
+    win.Close();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start(); t.Join();
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

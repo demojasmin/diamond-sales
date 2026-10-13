@@ -252,7 +252,7 @@ public static class Repo
     /// migration lands and this table is measured in thousands.
     ///
     /// Both origins are included: a rejection taken off an invoice line (ref_type sales_line) and
-    /// one recorded by hand on Intake and movements. Both are carats that left stock as rejected.
+    /// one recorded by hand on Intake and movements. Since 0055 both are records: neither moves stock.
     /// </summary>
     public static async Task<List<VStockMovement>> RejectionsAsync() =>
         await AllPagesAsync(() => Db.Client.From<VStockMovement>()
@@ -811,9 +811,9 @@ public static class Repo
         catch (Exception e) { return Wrote(e); }
     }
 
-    /// Through record_rejection rather than a direct insert: a bare insert asked nothing about the
-    /// balance, in the client or the schema, so rejecting 500 ct out of a bucket holding 10 posted
-    /// silently and left it at -490. The RPC applies the same guard conversion and posting use.
+    /// Through record_rejection rather than a direct insert, so the movement and its dispositions
+    /// land in one transaction. Since 0055 a rejection moves no stock, so the RPC no longer checks
+    /// the balance.
     /// <summary>
     /// Records a rejection and, in the same transaction, the dispositions describing where the
     /// rejected carats went. The dispositions used to be typed on screen and thrown away — the app

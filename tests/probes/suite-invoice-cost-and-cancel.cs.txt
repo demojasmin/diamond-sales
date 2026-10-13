@@ -1,0 +1,199 @@
+// 0058 on DEMO: invoice cost on selection, and a cancellation that returns stones at cost.
+//
+//   dotnet run -c Release -- before    (BEFORE applying 0058)
+//   dotnet run -c Release -- after     (AFTER applying it)
+//
+// Each run posts two small invoices on Demo -- one in rupees, one priced in dollars -- and cancels
+// them, measuring the bucket's average cost and value before posting and after cancelling. "before"
+// also saves every invoice's figures, the Dashboard margin and the stock totals to
+// %TEMP%\invoice-0058-before.json; "after" checks each against the new rule.
+//
+// Writes on DEMO only (two invoices per run, posted then cancelled). Refuses any other workspace.
+using System.IO;
+using System.Net.Http;
+using System.Text.Json;
+using DiamondDesktop.Data;
+using InvProbe;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+string phase = args.FirstOrDefault() ?? "";
+if (phase is not ("before" or "after")) { Console.WriteLine("Say 'before' or 'after'."); return 2; }
+
+var ws = Db.Workspaces.First(w => w.Name.Equals("Demo", StringComparison.OrdinalIgnoreCase));
+Db.Use(ws);
+Environment.SetEnvironmentVariable("SOLITAIRE_SESSION",
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                 "SolitaireDesk", $"session-{ws.Ref}.dat"));
+await ProbeEnv.SignInAsync();
+await ProbeEnv.LoadProfileAsync();
+if (ws.Ref != "nzcvjaixgqoliyrotstz") { Console.WriteLine("Not Demo."); return 2; }
+
+using var http = new HttpClient();
+http.DefaultRequestHeaders.Add("apikey", ws.AnonKey);
+http.DefaultRequestHeaders.Add("Authorization", "Bearer " + Db.Client.Auth.CurrentSession!.AccessToken);
+async Task<List<JsonElement>> Get(string q)
+{
+    var all = new List<JsonElement>();
+    for (int from = 0; ; from += 1000)
+    {
+        string body = await http.GetStringAsync($"{ws.Url}/rest/v1/{q}&limit=1000&offset={from}");
+        var page = JsonDocument.Parse(body).RootElement.EnumerateArray().Select(e => e.Clone()).ToList();
+        all.AddRange(page);
+        if (page.Count < 1000) return all;
+    }
+}
+static decimal? Dec(JsonElement e, string p) =>
+    e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDecimal() : null;
+
+string snapPath = Path.Combine(Path.GetTempPath(), "invoice-0058-before.json");
+var today = DateOnly.FromDateTime(DateTime.Today);
+var allTime = (From: new DateOnly(2000, 1, 1), To: new DateOnly(2100, 1, 1));
+
+// ── the figures every invoice reports, and what they ought to be under each rule ──────────────
+var invoices = await Get("v_invoice?select=invoice_id,invoice_no,status,amount_total,cost_total,margin,outstanding,received&order=invoice_id");
+var lines = await Get("sales_line?select=line_id,invoice_id,gross_weight_ct,selection_ct,rejection_ct,cost_per_ct&order=line_id");
+var linesBy = lines.GroupBy(l => l.GetProperty("invoice_id").GetInt64()).ToDictionary(g => g.Key, g => g.ToList());
+decimal? Expected(long id, string weight)
+{
+    var ls = linesBy.GetValueOrDefault(id) ?? [];
+    if (ls.Count == 0 || ls.Any(l => Dec(l, "cost_per_ct") is null)) return null;
+    return Math.Round(ls.Sum(l => Dec(l, "cost_per_ct")!.Value * Dec(l, weight)!.Value), 2);
+}
+var margin = await Repo.MarginAsync(allTime.From, allTime.To);
+var stock = await Repo.StockAsync();
+
+// ── a sale and its cancellation, measured on the bucket it came out of ─────────────────────────
+var buyer = (await Get("buyer?select=buyer_id&active=eq.true&order=buyer_id")).First().GetProperty("buyer_id").GetInt64();
+var currencies = await Get("currency?select=currency_id,code&order=currency_id");
+long Cur(string code) => currencies.FirstOrDefault(c => c.GetProperty("code").GetString() == code) is { ValueKind: JsonValueKind.Object } c
+    ? c.GetProperty("currency_id").GetInt64() : currencies[0].GetProperty("currency_id").GetInt64();
+var buckets = stock.Where(r => r.BalanceCt >= 5m && r.AvgCost is > 0m).OrderByDescending(r => r.BalanceCt).Take(2).ToList();
+if (buckets.Count < 2) { Console.WriteLine("Demo has no two buckets with 5 ct and a cost to test on."); return 2; }
+
+async Task<(decimal AvgBefore, decimal AvgAfter, decimal ValueBefore, decimal ValueAfter, decimal LedgerBefore,
+            decimal LedgerAfter, decimal CancelPrice, decimal? Cost, decimal SalePrice, decimal? Margin)>
+    SellAndCancel(VStockPosition b, string currency, decimal price, decimal exRate)
+{
+    VStockPosition Pos(List<VStockPosition> all) => all.First(r => r.GradeId == b.GradeId && r.SizeId == b.SizeId);
+    var p0 = Pos(await Repo.StockAsync());
+    var draft = new DraftInvoice(null, Guid.NewGuid(), today, buyer, null, 0m, 30, "BILL", Cur(currency),
+        [new DraftLine(b.GradeId, b.SizeId, 1.5m, 1.0m, price, exRate, 0m, 0m, $"0058 probe ({phase})")]);
+    long id = await Repo.SaveDraftAsync(draft);
+    var posted = await Repo.PostAsync(id);
+    if (!posted.Ok) throw new InvalidOperationException("Post refused: " + posted.Message);
+    var inv = (await Get($"v_invoice?select=margin&invoice_id=eq.{id}")).Single();
+    var line = (await Get($"sales_line?select=cost_per_ct&invoice_id=eq.{id}")).Single();
+    string? refused = await Repo.CancelAsync(id, "0058 probe");
+    if (refused is not null) throw new InvalidOperationException("Cancel refused: " + refused);
+    var p2 = Pos(await Repo.StockAsync());
+    var back = (await Get($"stock_movement?select=price_per_ct&ref_type=eq.cancel&ref_id=eq.{id}")).Single();
+    return (p0.AvgCost ?? 0, p2.AvgCost ?? 0, p0.StockValue, p2.StockValue, p0.LedgerCt, p2.LedgerCt,
+            Dec(back, "price_per_ct") ?? 0, Dec(line, "cost_per_ct"), price, Dec(inv, "margin"));
+}
+
+Console.WriteLine($"── cancellation, {phase} 0058 ──");
+var rupee  = await SellAndCancel(buckets[0], "INR", Math.Round((buckets[0].AvgCost ?? 0) * 1.2m, 0), 1m);
+var dollar = await SellAndCancel(buckets[1], "USD", 285m, 95.66m);
+foreach (var (name, r, b) in new[] { ("rupee sale", rupee, buckets[0]), ("dollar sale ($285 × 95.66)", dollar, buckets[1]) })
+    Console.WriteLine($"  {name,-27} {GradeNames.Bucket(b.GradeCode, b.SizeCode)}: cost {r.Cost:N2}, back at {r.CancelPrice:N2}; "
+                    + $"avg {r.AvgBefore:N2} → {r.AvgAfter:N2}; value {r.ValueBefore:N2} → {r.ValueAfter:N2}");
+
+if (phase == "before")
+{
+    var stockNow = await Repo.StockAsync();
+    File.WriteAllText(snapPath, JsonSerializer.Serialize(new
+    {
+        Invoices = invoices.Select(i => new
+        {
+            Id = i.GetProperty("invoice_id").GetInt64(), No = i.GetProperty("invoice_no").GetString(),
+            Amount = Dec(i, "amount_total"), Cost = Dec(i, "cost_total"), Margin = Dec(i, "margin"),
+            Outstanding = Dec(i, "outstanding"),
+        }),
+        Dashboard = new { margin.RevenueTotal, margin.CostTotal, margin.MarginTotal },
+        // Taken AFTER this run's own two cancellations, so "after" compares like with like.
+        Ledger = stockNow.Sum(r => r.LedgerCt), Value = stockNow.Sum(r => r.StockValue),
+        RupeeAvgMove = rupee.AvgAfter - rupee.AvgBefore, DollarAvgMove = dollar.AvgAfter - dollar.AvgBefore,
+        RupeeValueMove = rupee.ValueAfter - rupee.ValueBefore, DollarValueMove = dollar.ValueAfter - dollar.ValueBefore,
+    }));
+    Check("BEFORE - the old rule charges gross: every costed invoice's cost is cost × gross",
+          invoices.Where(i => Dec(i, "cost_total") is not null)
+                  .All(i => Dec(i, "cost_total") == Expected(i.GetProperty("invoice_id").GetInt64(), "gross_weight_ct")));
+    Console.WriteLine($"\nBEFORE saved to {snapPath}. Dashboard margin {margin.MarginTotal:N2}. Apply 0058 on Demo, then run 'after'.");
+    return fail == 0 ? 0 : 1;
+}
+
+// ── AFTER ──────────────────────────────────────────────────────────────────────────────────────
+if (!File.Exists(snapPath)) { Console.WriteLine("No BEFORE snapshot. Run 'before' first."); return 2; }
+var snap = JsonDocument.Parse(File.ReadAllText(snapPath)).RootElement;
+var old = snap.GetProperty("Invoices").EnumerateArray().ToDictionary(i => i.GetProperty("Id").GetInt64());
+decimal? D(JsonElement e, string p) => e.GetProperty(p).ValueKind == JsonValueKind.Number ? e.GetProperty(p).GetDecimal() : null;
+
+Console.WriteLine("\n── invoice profit ──");
+int changed = 0, same = 0;
+foreach (var i in invoices)
+{
+    long id = i.GetProperty("invoice_id").GetInt64();
+    if (!old.TryGetValue(id, out var o)) continue;             // this run's own probe invoices
+    string no = i.GetProperty("invoice_no").GetString() ?? id.ToString();
+    decimal? cost = Dec(i, "cost_total"), amount = Dec(i, "amount_total"), m = Dec(i, "margin");
+    bool hasRej = (linesBy.GetValueOrDefault(id) ?? []).Any(l => Dec(l, "rejection_ct") > 0);
+
+    if (D(o, "Cost") is not null || cost is not null)
+    {
+        decimal? want = Expected(id, "selection_ct");
+        bool ok = cost == want
+               && (m is null ? i.GetProperty("status").GetString() == "CANCELLED" : m == Math.Round(amount!.Value - cost!.Value, 2))
+               && (hasRej || (cost == D(o, "Cost") && m == D(o, "Margin")));
+        if (!ok || hasRej && m != D(o, "Margin"))
+            Console.WriteLine($"  {no,-16} cost {D(o, "Cost"),14:N2} → {cost,14:N2}   margin {D(o, "Margin"),14:N2} → {m,14:N2}{(hasRej ? "  (has rejection)" : "")}");
+        Check($"PROFIT - {no}: cost = cost × selection, margin = amount − cost", ok, $"cost {cost:N2}, expected {want:N2}");
+        if (cost != D(o, "Cost")) changed++; else same++;
+    }
+    Check($"PROFIT - {no}: amount and outstanding unchanged",
+          amount == D(o, "Amount") && Dec(i, "outstanding") == D(o, "Outstanding"));
+}
+Console.WriteLine($"  {changed} invoice(s) re-costed (each has rejected carats), {same} unchanged.");
+
+Console.WriteLine("\n── Dashboard margin ──");
+var dash = snap.GetProperty("Dashboard");
+decimal sumMargins = invoices.Where(i => i.GetProperty("status").GetString() == "POSTED"
+                                       && !(i.GetProperty("invoice_no").GetString() ?? "").StartsWith("MIG-")
+                                       && Dec(i, "margin") is not null).Sum(i => Dec(i, "margin")!.Value);
+Console.WriteLine($"  revenue {dash.GetProperty("RevenueTotal").GetDecimal():N2} → {margin.RevenueTotal:N2}");
+Console.WriteLine($"  cost    {dash.GetProperty("CostTotal").GetDecimal():N2} → {margin.CostTotal:N2}");
+Console.WriteLine($"  margin  {dash.GetProperty("MarginTotal").GetDecimal():N2} → {margin.MarginTotal:N2}");
+Check("DASHBOARD - revenue unchanged", margin.RevenueTotal == dash.GetProperty("RevenueTotal").GetDecimal());
+Check("DASHBOARD - margin is the sum of the invoices' margins", margin.MarginTotal == Math.Round(sumMargins, 2),
+      $"{margin.MarginTotal:N2} vs {sumMargins:N2}");
+
+Console.WriteLine("\n── stock valuation ──");
+decimal ledgerNow = stock.Sum(r => r.LedgerCt), valueNow = stock.Sum(r => r.StockValue);
+// The "before" run's own two cancellations moved value under the OLD rule; this run's own moved it
+// under the new one. Take both out and what is left must be identical: 0058 touches no stock row.
+decimal valueExpected = snap.GetProperty("Value").GetDecimal();
+Check("STOCK - carats on the shelf unchanged by 0058", ledgerNow == snap.GetProperty("Ledger").GetDecimal(),
+      $"{snap.GetProperty("Ledger").GetDecimal():N4} → {ledgerNow:N4}");
+Check("STOCK - value unchanged by 0058 (no stock row was rewritten)", valueNow == valueExpected,
+      $"{valueExpected:N2} → {valueNow:N2}");
+
+Console.WriteLine("\n── cancellation, compared ──");
+Console.WriteLine($"  rupee sale:  avg moved {snap.GetProperty("RupeeAvgMove").GetDecimal():N2} before 0058, {rupee.AvgAfter - rupee.AvgBefore:N2} after");
+Console.WriteLine($"  dollar sale: avg moved {snap.GetProperty("DollarAvgMove").GetDecimal():N2} before 0058, {dollar.AvgAfter - dollar.AvgBefore:N2} after");
+foreach (var (name, r) in new[] { ("rupee", rupee), ("dollar", dollar) })
+{
+    Check($"CANCEL - {name}: the stones come back at their cost, not the selling price",
+          r.CancelPrice == r.Cost && r.CancelPrice != r.SalePrice, $"cost {r.Cost:N2}, back at {r.CancelPrice:N2}, sold at {r.SalePrice:N2}");
+    Check($"CANCEL - {name}: every carat is back on the shelf", r.LedgerAfter == r.LedgerBefore,
+          $"{r.LedgerBefore:N4} → {r.LedgerAfter:N4}");
+    Check($"CANCEL - {name}: average cost is where it was (within 1 paisa)", Math.Abs(r.AvgAfter - r.AvgBefore) < 0.01m,
+          $"{r.AvgBefore:N4} → {r.AvgAfter:N4}");
+    Check($"CANCEL - {name}: stock value is where it was (within 1 rupee)", Math.Abs(r.ValueAfter - r.ValueBefore) < 1m,
+          $"{r.ValueBefore:N2} → {r.ValueAfter:N2}");
+}
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

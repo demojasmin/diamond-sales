@@ -25,6 +25,7 @@ public partial class LoginWindow : Window
             // A session persisted from last run is still valid — skip straight in.
             if (Db.CurrentUser is not null) DialogResult = true;
             else if (UserBox.Text.Length == 0) UserBox.Focus();
+            else PasswordBox.Focus();             // the email is known (idle sign-in): only the password is wanted
         };
     }
 
@@ -49,6 +50,12 @@ public partial class LoginWindow : Window
         {
             string email = UserBox.Text.Trim();
             string password = PasswordBox.Password;
+
+            // Said here, before anything goes to a server. A blank email used to be tried against
+            // every project, logged as a failed attempt for "", and answered "Wrong email or
+            // password" -- which reads as a typo, not as an empty box.
+            if (email.Length == 0) { Status.Text = "Enter your email."; UserBox.Focus(); return; }
+            if (password.Length == 0) { Status.Text = "Enter your password."; PasswordBox.Focus(); return; }
 
             // Where we started. This window is also shown AFTER an idle timeout, over a MainWindow
             // that is still displaying one workspace's data -- so if nothing accepts the

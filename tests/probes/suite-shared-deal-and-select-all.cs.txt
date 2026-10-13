@@ -1,0 +1,281 @@
+// The shared Deal Details card sits above the lines table, double-click selects all text, and an
+// emptied Buyer/Broker filter box shows every line again. OFFLINE: no line names a grade, so nothing
+// is reserved, and the entry file is redirected to a temp file by the caller (SOLITAIREDESK_ENTRY).
+using System.Reflection;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var t = new Thread(() =>
+{
+    SynchronizationContext.SetSynchronizationContext(
+        new System.Windows.Threading.DispatcherSynchronizationContext(System.Windows.Threading.Dispatcher.CurrentDispatcher));
+    void Settle() { var f = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => f.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(f); }
+
+    var app = new Application();
+    foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+        "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+        "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+        new RoutedEventHandler((o, _) => { if (o is Window w && w is not MainWindow) w.Close(); }));
+
+    // The app-wide handlers App.OnStartup installs.
+    foreach (var name in new[] { "DoubleClickSelectsAll", "DoubleClickSelectsAllInGrids" })
+        typeof(App).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, null);
+
+    var win = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual,
+        Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 1300, Height = 860 };
+    win.Show();
+    for (int i = 0; i < 6; i++) Settle();
+    T Named<T>(string n) where T : class => (T)win.FindName(n)!;
+    static IEnumerable<T> FindAll<T>(DependencyObject? d) where T : DependencyObject
+    {
+        if (d is null) yield break;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+        { var c = VisualTreeHelper.GetChild(d, i); if (c is T h) yield return h; foreach (var x in FindAll<T>(c)) yield return x; }
+    }
+    static T? FindParent<T>(DependencyObject d) where T : DependencyObject
+    { for (var p = VisualTreeHelper.GetParent(d); p is not null; p = VisualTreeHelper.GetParent(p)) if (p is T t) return t; return null; }
+
+    // ── 1 · Add sale: a pop-up with the deal, and Add Line adds lines carrying it ──
+    var entry0 = (InvoiceEntry)win.DataContext;
+    var abc = new PartyRef(11, "ABC EXPORTS", 30); var bhm = new PartyRef(12, "BHOOMI DIAM", 0);
+    var amit = new PartyRef(21, "AMIT BHAI", 0);
+    entry0.Buyers.Add(abc); entry0.Buyers.Add(bhm); entry0.Brokers.Add(amit);
+    entry0.Lines.Clear();
+    var other = new SaleLine { DealBuyer = bhm, DealTermsDays = 7, GrossWeightCt = 1m, Remark = "keep" };
+    entry0.Lines.Add(other);
+
+    var addBtn = Named<Button>("AddLineButton");
+    Check("ADD SALE - the button reads 'Add sale'",
+          ((addBtn.Content as StackPanel)?.Children.OfType<TextBlock>().FirstOrDefault()?.Text) == "Add sale");
+
+    var addLine = typeof(MainWindow).GetMethod("AddLine", BindingFlags.NonPublic | BindingFlags.Instance, [typeof(SaleLine)])!;
+    var dlg = new AddSaleDialog(entry0, l => addLine.Invoke(win, [l]))
+              { Owner = win, WindowStartupLocation = WindowStartupLocation.Manual, Left = -4000, Top = -4000, ShowInTaskbar = false };
+    dlg.Show(); Settle();
+    // Shown non-modally here, so the dialog's own "DialogResult = true" (which closes a modal
+    // window) throws once its work is done. Everything before it has already happened.
+    void Invoke(string m)
+    {
+        try { typeof(AddSaleDialog).GetMethod(m, BindingFlags.NonPublic | BindingFlags.Instance)!
+                  .Invoke(dlg, [dlg, new RoutedEventArgs()]); }
+        catch (TargetInvocationException x) when (x.InnerException is InvalidOperationException) { }
+    }
+    var table = (DataGrid)dlg.FindName("LinesGrid");
+    var rows = (System.Collections.ObjectModel.ObservableCollection<SaleLine>)table.ItemsSource;
+
+    Check("ADD SALE - the pop-up has a lines table with the Invoice lines columns",
+          table.Columns.Select(c => c.Header as string).Take(11).SequenceEqual(
+              ["Size", "Grade", "Weight ct", "Selection", "Rejection", "Price/ct", "Ex Rate", "Less 1", "Less 2", "Amount", "Remark"]),
+          string.Join(", ", table.Columns.Select(c => c.Header as string)));
+    Check("ADD SALE - and opens with one row to type into", rows.Count == 1);
+
+    var g1bb = new Grade { GradeId = 3, Code = "NO 1 BB" }; var s65 = new SizeBucket { SizeId = 3, Code = "+6.5" };
+    if (!Catalogue.SellableGrades.Contains(g1bb)) Catalogue.SellableGrades.Add(g1bb);
+    if (!Catalogue.ActiveSizes.Contains(s65)) Catalogue.ActiveSizes.Add(s65);
+    void Fill(SaleLine r, decimal gross, decimal sel, decimal price)
+    { r.Grade = g1bb; r.Size = s65; r.GrossWeightCt = gross; r.SelectionCt = sel; r.PricePerCt = price; r.Remark = "from pop-up"; }
+
+    Fill(rows[0], 2m, 1.5m, 1000m);
+    Invoke("Save_Click"); Settle();
+    Check("ADD SALE - Add to invoice without a buyer is refused, nothing added", entry0.Lines.Count == 1 && dlg.Added == 0,
+          ((TextBlock)dlg.FindName("ErrorText")).Text);
+
+    ((ComboBox)dlg.FindName("BuyerBox")).SelectedItem = abc;
+    ((ComboBox)dlg.FindName("BrokerBox")).SelectedItem = amit;
+    ((TextBox)dlg.FindName("PctBox")).Text = "1";
+    ((ComboBox)dlg.FindName("TypeBox")).SelectedItem = "W BILL";
+    ((DatePicker)dlg.FindName("DealDate")).SelectedDate = new DateTime(2026, 9, 3);
+    Settle();
+    Check("ADD SALE - picking the buyer fills its usual terms", ((TextBox)dlg.FindName("TermsBox")).Text == "30",
+          ((TextBox)dlg.FindName("TermsBox")).Text);
+    Check("ADD SALE - the table works out rejection and amount as the main one does",
+          rows[0].RejectionCt == 0.5m && rows[0].Amount > 0, $"rej {rows[0].RejectionCt}, amount {rows[0].Amount}");
+
+    Invoke("AddLine_Click"); Settle();
+    Check("ADD SALE - Add Line adds a row to the pop-up's table", rows.Count == 2);
+    rows[1].Grade = g1bb;                       // half filled: a grade, nothing else
+    Invoke("Save_Click"); Settle();
+    Check("ADD SALE - a half-filled row is refused, naming the line", dlg.Added == 0 && ((TextBlock)dlg.FindName("ErrorText")).Text.StartsWith("Line 2"),
+          ((TextBlock)dlg.FindName("ErrorText")).Text);
+    Fill(rows[1], 3m, 3m, 2000m);
+    Invoke("Save_Click"); Settle();
+
+    var added = entry0.Lines.Skip(1).ToList();
+    Check("ADD SALE - Add to invoice puts every row on the Invoice lines table", dlg.Added == 2 && added.Count == 2, $"{added.Count}");
+    Check("ADD SALE - every added line carries the pop-up's buyer, broker, %, terms, type and date",
+          added.All(l => l.DealBuyer == abc && l.DealBroker == amit && l.DealBrokerPct == 1m && l.DealTermsDays == 30
+                         && l.DealDocType == "W BILL" && l.DealDate == new DateTime(2026, 9, 3)),
+          string.Join(" | ", added.Select(l => l.DealSummary + " " + l.DealDate.ToString("dd-MM-yyyy"))));
+    Check("ADD SALE - each line carries the size, grade, weight, selection, price and remark typed in the table",
+          added[0].Grade == g1bb && added[0].Size == s65 && added[0].GrossWeightCt == 2m && added[0].SelectionCt == 1.5m
+          && added[0].PricePerCt == 1000m && added[0].Remark == "from pop-up" && added[1].GrossWeightCt == 3m && added[1].PricePerCt == 2000m,
+          string.Join(" | ", added.Select(l => $"{l.Grade?.Code} {l.Size?.Code} {l.GrossWeightCt}/{l.SelectionCt}@{l.PricePerCt}")));
+    Check("ADD SALE - the table shows the same due date the pop-up showed",
+          added.All(l => l.DealDueDate.ToString("dd-MM-yyyy") == ((TextBlock)dlg.FindName("DueText")).Text),
+          ((TextBlock)dlg.FindName("DueText")).Text);
+    Check("ADD SALE - a line already on the entry keeps its own buyer and terms",
+          other.DealBuyer == bhm && other.DealTermsDays == 7, other.DealSummary);
+    Check("ADD SALE - the added lines are visible in the table",
+          added.All(l => entry0.VisibleLines.Contains(l)));
+    Check("ADD SALE - the pop-up's pickers use the app's own drop-down style, not the plain Windows one",
+          new[] { "BuyerBox", "BrokerBox", "TypeBox" }.All(n => ((ComboBox)dlg.FindName(n)).Style == (Style)Application.Current.FindResource("AppComboBox")
+                     || ((ComboBox)dlg.FindName(n)).Style?.BasedOn == (Style)Application.Current.FindResource("AppComboBox")));
+    Check("ADD SALE - the inline shared card is gone from the screen", win.FindName("SharedDealCard") is null);
+
+    // ── the pop-up's remove button is whole, not clipped ──
+    var dlg2 = new AddSaleDialog(entry0, _ => { })
+               { Owner = win, WindowStartupLocation = WindowStartupLocation.Manual, Left = -4000, Top = -4000, ShowInTaskbar = false };
+    dlg2.Show(); for (int i = 0; i < 4; i++) Settle();
+    var grid2 = (DataGrid)dlg2.FindName("LinesGrid");
+    var removeCol = grid2.Columns[^1];
+    var removeBtn = FindAll<Button>(grid2).FirstOrDefault(b => (b.ToolTip as string) == "Remove this line");
+    Check("REMOVE - each pop-up row has its remove button", removeBtn is not null);
+    if (removeBtn is not null)
+    {
+        var cell = FindParent<DataGridCell>(removeBtn)!;
+        var at = removeBtn.TranslatePoint(new Point(0, 0), cell);
+        Check("REMOVE - and it fits inside its cell, not cut off",
+              at.X >= 0 && at.Y >= 0 && at.X + removeBtn.ActualWidth <= cell.ActualWidth + 0.5
+              && at.Y + removeBtn.ActualHeight <= cell.ActualHeight + 0.5,
+              $"button {removeBtn.ActualWidth:N0}x{removeBtn.ActualHeight:N0} at {at.X:N0},{at.Y:N0} in a {cell.ActualWidth:N0}x{cell.ActualHeight:N0} cell");
+    }
+    dlg2.Close();
+
+    // ── the filter bar says what it is, and each box says "All ..." ──
+    string Hint(string n) => FieldHint.GetText((DependencyObject)win.FindName(n));
+    Check("FILTERS - the bar is titled 'Filter lines'",
+          FindAll<TextBlock>(win).Any(t => t.Text == "FILTER LINES" && t.IsVisible));
+    Check("FILTERS - the boxes read 'All buyers', 'All brokers', 'All types'",
+          Hint("LineFilterBuyer") == "All buyers" && Hint("LineFilterBroker") == "All brokers" && Hint("LineFilterType") == "All types",
+          $"{Hint("LineFilterBuyer")} / {Hint("LineFilterBroker")} / {Hint("LineFilterType")}");
+    var fb = Named<ComboBox>("LineFilterBuyer"); var fr = Named<ComboBox>("LineFilterBroker"); var ft = Named<ComboBox>("LineFilterType");
+    var clr = Named<Button>("LineFilterClear");
+    double clrRight = clr.TranslatePoint(new Point(clr.ActualWidth, 0), win).X;
+    Check("FILTERS - every filter and Clear is visible on one row, nothing cut off",
+          new FrameworkElement[] { Named<DatePicker>("LineFilterDate"), fb, fr, ft, clr }.All(e => e.IsVisible && e.ActualWidth > 60)
+          && clrRight <= win.ActualWidth,
+          $"buyer {fb.ActualWidth:N0}, broker {fr.ActualWidth:N0}, type {ft.ActualWidth:N0}, Clear ends {clrRight:N0} of {win.ActualWidth:N0}");
+
+    var bar = FindParent<Border>(clr)!;
+    Check("FILTERS - the bar is one compact row", bar.ActualHeight <= 60, $"{bar.ActualHeight:N0}px tall");
+    var allDates = FindAll<TextBlock>(win).First(t => t.Text == "All dates");
+    Check("FILTERS - the empty date box reads 'All dates'", allDates.IsVisible);
+    ((InvoiceEntry)win.DataContext).FilterDate = new DateTime(2026, 9, 3); Settle();
+    Check("FILTERS - and the hint goes once a date is picked", !allDates.IsVisible);
+    ((InvoiceEntry)win.DataContext).ClearFilters(); Settle();
+
+    // ── ticking every line clears "nothing is selected" from the chip ──
+    var en = (InvoiceEntry)win.DataContext;
+    var bA = new PartyRef(31, "TICK BUYER", 0);
+    en.Lines.Clear();
+    en.Lines.Add(new SaleLine { DealBuyer = bA, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 10m, Remark = "t1" });
+    en.Lines.Add(new SaleLine { DealBuyer = bA, GrossWeightCt = 1m, SelectionCt = 1m, PricePerCt = 10m, Remark = "t2" });
+    Settle();
+    var chipText = Named<TextBlock>("BlockChipText");
+    var tick = typeof(MainWindow).GetMethod("TickCountChanged", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    foreach (var l in en.Lines) l.Selected = false;
+    tick.Invoke(win, null); Settle();
+    bool saidNothing = chipText.Text.Contains("nothing is selected");
+    foreach (var l in en.Lines) l.Selected = true;
+    tick.Invoke(win, null); Settle();
+    Check("TICKS - with nothing ticked the chip says so", saidNothing, chipText.Text);
+    Check("TICKS - with every line ticked it no longer says 'nothing is selected'",
+          !chipText.Text.Contains("nothing is selected"), chipText.Text);
+
+    // ── the stock adjustment box takes a minus sign (a repair loss is -0.40) ──
+    var adj = Named<TextBox>("AdjWeight");
+    var acceptable = typeof(NumericInput).GetMethod("IsAcceptable", BindingFlags.NonPublic | BindingFlags.Static)!;
+    bool takesMinus = (bool)acceptable.Invoke(null, ["-0.40", NumericInput.GetAllowNegative(adj)])!
+                   && (bool)acceptable.Invoke(null, ["-", NumericInput.GetAllowNegative(adj)])!;
+    Check("ADJUST - the adjustment weight box accepts a minus sign, so a loss can be typed", takesMinus);
+    Check("ADJUST - other number boxes still refuse it (a sale weight is never negative)",
+          !(bool)acceptable.Invoke(null, ["-1", NumericInput.GetAllowNegative(Named<TextBox>("IntakeWeight"))])!);
+
+    // ── a long "What happened" grows its Audit row instead of being cut ──
+    var auditGrid = Named<DataGrid>("AuditGrid");
+    var tabs = Named<TabControl>("Tabs");
+    tabs.SelectedItem = tabs.Items.Cast<TabItem>().First(ti => (ti.Header as string) == "Audit"); Settle();
+    var longRow = AuditRow.From(new DiamondDesktop.Data.AuditLog
+    {
+        AuditedTable = "stock_reservation", Action = "DELETE", RecordId = 166,
+        OldValues = new Dictionary<string, object> { ["grade_id"] = 5L, ["size_id"] = 2L, ["weight_ct"] = 1m },
+    });
+    var shortRow = AuditRow.From(new DiamondDesktop.Data.AuditLog
+    { AuditedTable = "receipt", Action = "INSERT", RecordId = 1, NewValues = new Dictionary<string, object> { ["amount"] = 1m } });
+    auditGrid.ItemsSource = new List<AuditRow> { longRow, shortRow };
+    for (int i = 0; i < 4; i++) Settle();
+    var rowsShown = FindAll<DataGridRow>(auditGrid).ToList();
+    var whatCells = FindAll<TextBlock>(rowsShown.FirstOrDefault() ?? (DependencyObject)auditGrid).Where(tb => tb.Text == longRow.What).ToList();
+    double need = whatCells.FirstOrDefault()?.ActualHeight ?? 0;
+    Check("AUDIT ROWS - a row is as tall as its sentence, so nothing is cut",
+          rowsShown.Count == 2 && rowsShown[0].ActualHeight + 0.5 >= need + 14,
+          $"row {rowsShown.FirstOrDefault()?.ActualHeight:N0}px for {need:N0}px of text · '{longRow.What}'");
+    Check("AUDIT ROWS - and a one-line row keeps the old 42px",
+          rowsShown.Count == 2 && Math.Abs(rowsShown[1].ActualHeight - 42) < 1, $"{rowsShown.LastOrDefault()?.ActualHeight:N0}px");
+
+    // ── sign-in refuses a blank email before going anywhere ──
+    var login = new LoginWindow();
+    var userBox = (TextBox)login.FindName("UserBox"); var passBox = (PasswordBox)login.FindName("PasswordBox");
+    var status = (TextBlock)login.FindName("Status");
+    var signIn = typeof(LoginWindow).GetMethod("SignIn_Click", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    userBox.Text = ""; passBox.Password = "x";
+    signIn.Invoke(login, [login, new RoutedEventArgs()]); Settle();
+    Check("LOGIN - a blank email is refused with 'Enter your email.', no server asked",
+          status.Text == "Enter your email.", status.Text);
+    userBox.Text = "someone@example.com"; passBox.Password = "";
+    signIn.Invoke(login, [login, new RoutedEventArgs()]); Settle();
+    Check("LOGIN - a blank password is refused with 'Enter your password.'",
+          status.Text == "Enter your password.", status.Text);
+    login.Close();
+
+    // ── 2 · double-click selects all ──
+    var pct = new TextBox();          // any TextBox: the handler is app-wide
+    var host = new Window { Content = pct, Left = -4000, Top = -4000, ShowInTaskbar = false, Width = 200, Height = 80 }; host.Show(); Settle();
+    pct.Text = "3.43";
+    pct.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = Control.PreviewMouseDoubleClickEvent });
+    Check("SELECT ALL - double-clicking a field selects all of its text, not one word",
+          pct.SelectionStart == 0 && pct.SelectionLength == pct.Text.Length, $"'{pct.SelectedText}' of '{pct.Text}'");
+
+    // ── 3 · an emptied filter box shows every line again ──
+    host.Close();
+    var entry = (InvoiceEntry)win.DataContext;
+    var a = new PartyRef(1, "AAA", 0); var b = new PartyRef(2, "BBB", 0);
+    entry.Buyers.Add(a); entry.Buyers.Add(b);
+    entry.Lines.Clear();
+    entry.Lines.Add(new SaleLine { DealBuyer = a, GrossWeightCt = 1m, Remark = "x" });
+    entry.Lines.Add(new SaleLine { DealBuyer = b, GrossWeightCt = 1m, Remark = "y" });
+    var filter = Named<ComboBox>("LineFilterBuyer");
+    filter.SelectedItem = a; Settle();
+    Check("FILTER - choosing a buyer shows only that buyer's lines", entry.FilterBuyer == a && entry.FilteredLines.Count == 1,
+          $"{entry.FilteredLines.Count} shown");
+    filter.Text = "";
+    filter.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, 0, filter, pct)
+                      { RoutedEvent = Keyboard.PreviewLostKeyboardFocusEvent });
+    filter.RaiseEvent(new RoutedEventArgs(UIElement.LostFocusEvent));
+    Settle();
+    Check("FILTER - emptying the box and leaving it clears the filter", entry.FilterBuyer is null, entry.FilterBuyer?.Name);
+    Check("FILTER - so every line shows again", entry.FilteredLines.Count == 2, $"{entry.FilteredLines.Count} shown");
+    filter.SelectedItem = b; Settle();
+    entry.ClearFilters();
+    Check("FILTER - the Clear button still shows everything", entry.FilteredLines.Count == 2);
+
+    win.Close();
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start(); t.Join();
+Console.WriteLine(fail == 0 ? "ALL PASS" : $"{fail} FAILED");
