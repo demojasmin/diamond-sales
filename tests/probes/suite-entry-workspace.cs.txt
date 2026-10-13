@@ -1,0 +1,79 @@
+// The Sales entry is saved only into the workspace it was typed in.
+//
+// The idle-timeout sign-in can land on the OTHER project and restart the window, which saves on its
+// way out. EntryStore names the file by Db.Active, so that save wrote Demo's entry over Priya's file.
+//
+// OFFLINE. Db.Use switches the active workspace without connecting, the window is never shown, and
+// no line names a grade -- so nothing here reaches either database. The two entry files ARE real,
+// so both are backed up first and put back byte for byte at the end, whatever happens.
+using System.IO;
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Threading;
+using System.Windows;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+const string DemoRef = "nzcvjaixgqoliyrotstz", PriyaRef = "obgclifsluxrgpluaqxs";
+var demo  = Db.Workspaces.Single(w => w.Ref == DemoRef);
+var priya = Db.Workspaces.Single(w => w.Ref == PriyaRef);
+
+string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SolitaireDesk");
+string demoFile = Path.Combine(dir, $"entry-{DemoRef}.json"), priyaFile = Path.Combine(dir, $"entry-{PriyaRef}.json");
+byte[]? demoBefore  = File.Exists(demoFile)  ? File.ReadAllBytes(demoFile)  : null;
+byte[]? priyaBefore = File.Exists(priyaFile) ? File.ReadAllBytes(priyaFile) : null;
+string Hash(string p) => File.Exists(p) ? Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(p))) : "<none>";
+string priyaHash = Hash(priyaFile);
+
+var t = new Thread(() =>
+{
+    try
+    {
+        var app = new Application();
+        foreach (string d in new[]{"Themes/LightTheme.xaml","Themes/Typography.xaml","Styles/Buttons.xaml",
+            "Styles/Inputs.xaml","Styles/Widgets.xaml","Styles/DataGridStyles.xaml","Styles/AppOverrides.xaml",
+            "Styles/Components.xaml","Styles/Dashboard.xaml","Styles/Audit.xaml","Styles/Catalogue.xaml"})
+            app.Resources.MergedDictionaries.Add(new ResourceDictionary
+            { Source = new Uri($"pack://application:,,,/DiamondDesktop;component/{d}") });
+        Db.Use(demo);
+        Check("SETUP - the window is opened on Demo", Db.Active.Ref == DemoRef, Db.Active.Ref);
+
+        var win = new MainWindow();
+        var flags = BindingFlags.NonPublic | BindingFlags.Instance;
+        typeof(MainWindow).GetField("_entryRestored", flags)!.SetValue(win, true);
+        var save = typeof(MainWindow).GetMethod("SaveEntry", flags)!;
+        var entry = (InvoiceEntry)typeof(MainWindow).GetField("_invoice", flags)!.GetValue(win)!;
+
+        // A real line, so the save writes a file rather than deleting one. No grade: nothing to hold.
+        entry.Lines.Add(new SaleLine { GrossWeightCt = 1.2345m, Remark = "workspace probe" });
+
+        save.Invoke(win, null);
+        string demoText = File.Exists(demoFile) ? File.ReadAllText(demoFile) : "";
+        Check("SAVE - on its own workspace the entry is written to Demo's file",
+              demoText.Contains(entry.ClientRef.ToString()), entry.ClientRef.ToString());
+
+        // What the idle sign-in does: the active workspace moves under the open window.
+        Db.Use(priya);
+        save.Invoke(win, null);                  // what Closing does on the way to the restart
+        Check("SWITCH - after landing on Priya, saving does NOT touch Priya's file",
+              Hash(priyaFile) == priyaHash, $"{priyaHash} -> {Hash(priyaFile)}");
+        Check("SWITCH - and Priya's file still holds no Demo entry",
+              !File.Exists(priyaFile) || !File.ReadAllText(priyaFile).Contains(entry.ClientRef.ToString()));
+    }
+    catch (Exception e) { Check("no exception", false, e.ToString()); }
+    finally
+    {
+        Db.Use(demo);
+        // Put both files back exactly as they were found.
+        if (demoBefore is null) File.Delete(demoFile); else File.WriteAllBytes(demoFile, demoBefore);
+        if (priyaBefore is null) File.Delete(priyaFile); else File.WriteAllBytes(priyaFile, priyaBefore);
+        Check("RESTORE - Priya's entry file is byte-identical to before the run", Hash(priyaFile) == priyaHash);
+    }
+});
+t.SetApartmentState(ApartmentState.STA);
+t.Start(); t.Join();
+Console.WriteLine(fail == 0 ? "ALL PASS" : $"{fail} FAILED");

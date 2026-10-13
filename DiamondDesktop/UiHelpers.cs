@@ -470,19 +470,32 @@ public sealed class AuditRow
             string? before(string f) => Fields.FirstOrDefault(x => x.Name == f)?.Before is { Length: > 0 } v ? v : null;
             bool changed(string f) => Fields.FirstOrDefault(x => x.Name == f)?.Changed == true;
 
-            string ct(string? w) => w is null ? "" : $" · {w} ct";
+            // Four decimals, as the Bucket ledger prints carats (-0.4000 ct): the history stores what
+            // the database wrote, which can drop trailing zeros (-0.40 arrived as -0.4).
+            string ct(string? w) => w is null ? ""
+                : decimal.TryParse(w, System.Globalization.NumberStyles.Number,
+                                   System.Globalization.CultureInfo.InvariantCulture, out decimal d)
+                    ? $" · {d:N4} ct" : $" · {w} ct";
+
+            // WHICH bucket, by name. The row stores ids only (grade_id 5, size_id 2), which said
+            // nothing to anyone reading it.
+            string bucket()
+            {
+                string? g = after("grade_id") ?? before("grade_id"), z = after("size_id") ?? before("size_id");
+                return GradeLabel(g) is { } gn && SizeLabel(z) is { } zn ? $" · {gn} × {zn}" : "";
+            }
 
             return (Entity, Action) switch
             {
                 // A reservation IS the sales entry, seen from the database. It is the only act on
                 // this list that moves a bucket without touching the ledger.
                 ("stock_reservation", "INSERT") =>
-                    $"Stock reserved by a sales entry{ct(after("weight_ct"))}",
+                    $"Stock reserved by a sales entry{bucket()}{ct(after("weight_ct"))}",
                 ("stock_reservation", "UPDATE") =>
-                    $"Reservation corrected{ct(after("weight_ct"))}"
+                    $"Reservation corrected{bucket()}{ct(after("weight_ct"))}"
                     + (before("weight_ct") is { } was ? $" (was {was})" : ""),
                 ("stock_reservation", "DELETE") =>
-                    $"Reservation released{ct(before("weight_ct"))} — confirmed, returned or cleared",
+                    $"Reservation released{bucket()}{ct(before("weight_ct"))} — confirmed, returned or cleared",
 
                 // Status is the field that turns a memo into a sale and a sale into a cancellation.
                 ("sales_invoice", "INSERT") => "Memo created",
@@ -496,26 +509,26 @@ public sealed class AuditRow
                 ("sales_invoice", "UPDATE") => Summary is { Length: > 0 } s ? $"Invoice edited · {s}" : "Invoice edited",
                 ("sales_invoice", "DELETE") => "Invoice removed",
 
-                ("sales_line", "INSERT") => $"Invoice line added{ct(after("gross_weight_ct"))}",
+                ("sales_line", "INSERT") => $"Invoice line added{bucket()}{ct(after("gross_weight_ct"))}",
                 ("sales_line", "UPDATE") => Fields.Any(f => f.Changed)
                     ? $"Invoice line changed · {Summary}"
                     : "Invoice line rewritten, no figure changed",
-                ("sales_line", "DELETE") => $"Invoice line removed{ct(before("gross_weight_ct"))}",
+                ("sales_line", "DELETE") => $"Invoice line removed{bucket()}{ct(before("gross_weight_ct"))}",
 
                 // The ledger itself. movement_type is what makes one of these a sale and another
                 // an intake, so it leads.
                 ("stock_movement", "INSERT") => (after("movement_type") ?? "Movement") switch
                 {
-                    "INTAKE"      => $"Stock taken in{ct(after("weight_ct"))}",
-                    "SALE"        => $"Stock sold{ct(after("weight_ct"))}",
-                    "REJECTION"   => $"Rejection out of stock{ct(after("weight_ct"))}",
-                    "ADJUST"      => $"Stock adjusted{ct(after("weight_ct"))}",
-                    "CONVERT_IN"  => $"Converted in{ct(after("weight_ct"))}",
-                    "CONVERT_OUT" => $"Converted out{ct(after("weight_ct"))}",
+                    "INTAKE"      => $"Stock taken in{bucket()}{ct(after("weight_ct"))}",
+                    "SALE"        => $"Stock sold{bucket()}{ct(after("weight_ct"))}",
+                    "REJECTION"   => $"Rejection recorded{bucket()}{ct(after("weight_ct"))}",
+                    "ADJUST"      => $"Stock adjusted{bucket()}{ct(after("weight_ct"))}",
+                    "CONVERT_IN"  => $"Converted in{bucket()}{ct(after("weight_ct"))}",
+                    "CONVERT_OUT" => $"Converted out{bucket()}{ct(after("weight_ct"))}",
                     var t         => $"{t}{ct(after("weight_ct"))}",
                 },
                 ("stock_movement", "DELETE") =>
-                    $"Stock movement removed{ct(before("weight_ct"))} — an invoice was corrected",
+                    $"Stock movement removed{bucket()}{ct(before("weight_ct"))} — an invoice was corrected",
 
                 ("receipt", "INSERT") => "Payment received",
                 ("receipt", "DELETE") => "Payment removed",
@@ -552,8 +565,8 @@ public sealed class AuditRow
 
         var fields = names.Select(n => new AuditField(
             n,
-            before.TryGetValue(n, out var b) ? Text(b) : "",
-            after.TryGetValue(n, out var a) ? Text(a) : "")).ToList();
+            before.TryGetValue(n, out var b) ? Readable(n, Text(b)) : "",
+            after.TryGetValue(n, out var a) ? Readable(n, Text(a)) : "")).ToList();
 
         var changed = fields.Where(f => f.Changed).Select(f => f.Name).ToList();
         string summary = log.Action switch
@@ -599,6 +612,25 @@ public sealed class AuditRow
 
     /// Values arrive as JSON tokens, so ToString on a null is not the same as an absent key.
     private static string Text(object? value) => value?.ToString() ?? "";
+
+    /// A grade or sieve id as the screen names it ("#", "-6.5"), or null when it is not one the
+    /// catalogue holds -- a deactivated grade then keeps showing its bare id rather than nothing.
+    internal static string? GradeLabel(string? id) =>
+        long.TryParse(id?.Split()[0], out long g) && Catalogue.Grades.FirstOrDefault(x => x.GradeId == g) is { } grade
+            ? grade.ShortName : null;
+
+    internal static string? SizeLabel(string? id) =>
+        long.TryParse(id?.Split()[0], out long z) && Catalogue.AllSizes.FirstOrDefault(x => x.SizeId == z) is { } size
+            ? size.ShortName : null;
+
+    /// The detail panel's value for one field: an id that names a grade or sieve carries the name
+    /// beside it ("5 · #"), so the panel can be read without the catalogue open next to it.
+    private static string Readable(string field, string raw) => field switch
+    {
+        "grade_id" or "to_grade_id" or "counterparty_grade_id" when GradeLabel(raw) is { } g => $"{raw} · {g}",
+        "size_id" when SizeLabel(raw) is { } z => $"{raw} · {z}",
+        _ => raw,
+    };
 }
 
 /// <param name="Changed">True only when both sides are present and differ, so an INSERT does not

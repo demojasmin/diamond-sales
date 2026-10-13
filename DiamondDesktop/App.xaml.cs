@@ -16,15 +16,17 @@ public partial class App : Application
     /// </summary>
     private readonly HashSet<string> _reported = [];
 
-    /// How many repeats were swallowed. Not shown anywhere yet; it is here so the count exists
-    /// when there is somewhere honest to put it.
-    private int _repeats;
+    /// How many repeats were swallowed, per fault. Reported on the box for the NEXT distinct fault
+    /// so a storm of one thing is visible without a box per occurrence.
+    private readonly Dictionary<string, int> _repeats = [];
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         UseThreeLetterDayNames();
         StopTheWheelChangingPickers();
+        DoubleClickSelectsAll();
+        DoubleClickSelectsAllInGrids();
 
         // Without this, any unhandled exception closes the app with no window, no message and no
         // log — from the user's side it just vanishes, which is indistinguishable from the sign-in
@@ -48,15 +50,43 @@ public partial class App : Application
             string fault = $"{args.Exception.GetType().Name}: {args.Exception.Message}";
             if (!_reported.Add(fault))
             {
-                _repeats++;
+                _repeats[fault] = _repeats.GetValueOrDefault(fault) + 1;
                 return;                               // seen it; do not stack another box
             }
 
+            // IN ENGLISH, like every other message in the app.
+            //
+            // This was the ONE message path that did not go through Friendly. Everything the desk
+            // reads goes through Say, which unwraps PostgREST's envelope and says "Your session has
+            // expired. Sign in again." This box printed the envelope raw:
+            //
+            //     PostgrestException: {"code":"42501","details":null,"hint":"Grant the required
+            //     privileges to the current role with: GRANT SELECT ON public.grade TO anon;",
+            //     "message":"permission denied for table grade"}
+            //
+            // -- which is a lapsed session, in the only wording nobody at a desk can act on. The
+            // same fault reported through Say would have read as one sentence.
+            string plain = Friendly.Message(args.Exception.Message);
+
+            // The original is kept underneath rather than thrown away: a support call still needs
+            // the code and the stack frame, it just should not be the first thing anyone reads.
+            string technical = Friendly.Translates(args.Exception.Message)
+                ? $"\n\nTechnical detail: {fault}"
+                : "";
+
+            // A fault that stormed earlier is counted here rather than in its own box.
+            int alsoSeen = _repeats.Values.Sum();
+            string storm = alsoSeen > 0
+                ? $"\n\n({alsoSeen:N0} earlier repeat(s) of a fault were not shown separately.)"
+                : "";
+
             MessageBox.Show(
-                $"{fault}\n\n" +
-                $"{args.Exception.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}\n\n" +
+                $"{plain}\n\n" +
+                $"{args.Exception.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}" +
+                technical + "\n\n" +
                 "The app is still running and nothing on screen has been lost. If this keeps "
-                + "happening, note what you were doing and restart when it suits you.",
+                + "happening, note what you were doing and restart when it suits you."
+                + storm,
                 "Something went wrong", MessageBoxButton.OK, MessageBoxImage.Warning);
         };
 
@@ -124,6 +154,51 @@ public partial class App : Application
             typeof(System.Windows.Controls.ComboBox),
             UIElement.PreviewMouseWheelEvent,
             new System.Windows.Input.MouseWheelEventHandler(WheelGoesToThePage));
+
+    /// <summary>
+    /// Double-clicking any text field selects ALL of it, on request, so a value can be replaced in
+    /// one go. WPF's default selects one word, which in "3.43" is just "43". Every TextBox in the
+    /// app -- forms, grid cells, the text part of searchable pickers and date pickers -- is one.
+    /// </summary>
+    private static void DoubleClickSelectsAll() =>
+        EventManager.RegisterClassHandler(
+            typeof(System.Windows.Controls.TextBox),
+            System.Windows.Controls.Control.PreviewMouseDoubleClickEvent,
+            new System.Windows.Input.MouseButtonEventHandler((sender, e) =>
+            {
+                if (sender is not System.Windows.Controls.TextBox box || e.ChangedButton != System.Windows.Input.MouseButton.Left) return;
+                box.Focus();
+                box.SelectAll();
+                e.Handled = true;
+            }));
+
+    /// <summary>
+    /// The same for a grid cell that is not in edit mode yet: the double-click opens its editor,
+    /// and the editor's TextBox only exists after the click, so it is selected once it appears.
+    /// </summary>
+    private static void DoubleClickSelectsAllInGrids() =>
+        EventManager.RegisterClassHandler(
+            typeof(System.Windows.Controls.DataGridCell),
+            System.Windows.Controls.Control.MouseDoubleClickEvent,
+            new System.Windows.Input.MouseButtonEventHandler((sender, e) =>
+            {
+                if (sender is not System.Windows.Controls.DataGridCell cell || cell.IsReadOnly) return;
+                cell.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, new Action(() =>
+                {
+                    if (FindTextBox(cell) is { } box) { box.Focus(); box.SelectAll(); }
+                }));
+            }), handledEventsToo: true);
+
+    private static System.Windows.Controls.TextBox? FindTextBox(DependencyObject root)
+    {
+        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            if (child is System.Windows.Controls.TextBox box) return box;
+            if (FindTextBox(child) is { } deeper) return deeper;
+        }
+        return null;
+    }
 
     /// <summary>
     /// Marks the wheel handled so the picker ignores it, then re-raises it at the parent so the

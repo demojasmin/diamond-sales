@@ -55,6 +55,24 @@
     <SolidColorBrush x:Key="WarningBorderBrush" Color="#4DE0A63C"/>
     <SolidColorBrush x:Key="DangerSoftBrush" Color="#1FE5634D"/>
     <SolidColorBrush x:Key="DangerBorderBrush" Color="#4DE5634D"/>
+    <!-- Conversions in the Stock report's history: the one transaction type with no status colour. -->
+    <SolidColorBrush x:Key="ConversionBrush" Color="#A68BEB"/>
+    <SolidColorBrush x:Key="ConversionSoftBrush" Color="#26A68BEB"/>
+    <!-- Stock report: one soft tint per sieve size, so each size's Weight/Rate pair reads as
+         one column. Cycled in order across the sheet (ReportBand0 for the first size shown). -->
+    <SolidColorBrush x:Key="ReportBand0" Color="#246E9BFF"/>
+    <SolidColorBrush x:Key="ReportBand1" Color="#243FB984"/>
+    <SolidColorBrush x:Key="ReportBand2" Color="#24E0A63C"/>
+    <SolidColorBrush x:Key="ReportBand3" Color="#24A68BEB"/>
+    <SolidColorBrush x:Key="ReportBand4" Color="#24F07A95"/>
+    <SolidColorBrush x:Key="ReportBand5" Color="#243CC3D1"/>
+    <SolidColorBrush x:Key="ReportBand6" Color="#24F0955A"/>
+    <SolidColorBrush x:Key="ReportBand7" Color="#248E9BB0"/>
+    <!-- Stock report banding: laid over every other grade row and every other column (each
+         size's rate column), so a row and a column can be followed across the sheet. -->
+    <SolidColorBrush x:Key="ReportStripeBrush" Color="#0FFFFFFF"/>
+    <!-- Stock report: the left-hand Grade column and the Size header row, a step darker so they stand out. -->
+    <SolidColorBrush x:Key="ReportLabelBrush" Color="#24FFFFFF"/>
 
     <!-- ============================================================
          Stock report sheet. The report draws its own grid in code, so the two things that

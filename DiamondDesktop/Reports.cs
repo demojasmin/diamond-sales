@@ -322,7 +322,7 @@ public static class Reports
             n++;
             rows.Rows.Add(NoteRow(false,
                 n.ToString(CultureInfo.InvariantCulture),
-                $"{l.GradeCode}   {l.SizeCode}",
+                $"{GradeNames.Short(l.GradeCode)}   {SizeNames.Short(l.SizeCode)}",
                 N(l.GrossWeightCt),
                 N(l.PricePerCt),
                 l.Remark ?? ""));

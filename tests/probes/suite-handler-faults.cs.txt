@@ -1,0 +1,55 @@
+// A FAILING HANDLER DOES NOT TAKE THE APP DOWN, AND SAYS SOMETHING READABLE.
+//
+// 45 event handlers in this app are `async void`. That is correct for handlers -- there is no
+// caller to hand a Task back to -- but it means an exception the handler does not catch goes
+// straight to the dispatcher. Two things then have to be true, and only the first was:
+//
+//   the app stays up          App.DispatcherUnhandledException sets Handled, so a lapsed token on
+//                             Refresh does not close a window with a half-typed invoice in it;
+//   the message is readable   it was NOT. That handler was the one message path in the app that
+//                             skipped Friendly, so it printed PostgREST's raw JSON envelope where
+//                             every other screen prints "Your session has expired. Sign in again."
+//
+// Checked against the real faults this app produces, not invented ones.
+using DiamondDesktop;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+// The exact text that came back when the saved session lapsed, envelope and all.
+const string Lapsed = """
+{"code":"42501","details":null,"hint":"Grant the required privileges to the current role with: GRANT SELECT ON public.grade TO anon;","message":"permission denied for table grade"}
+""";
+
+string plain = Friendly.Message(Lapsed);
+Console.WriteLine($"   raw   {Lapsed.Trim()[..60]}...");
+Console.WriteLine($"   shown {plain}");
+Console.WriteLine();
+
+Check("READABLE - the envelope is opened, not printed",
+      !plain.TrimStart().StartsWith('{') && !plain.Contains("\"code\""), plain);
+Check("READABLE - and what the database actually said survives",
+      plain.Contains("permission denied for table grade"), plain);
+Check("READABLE - the hint comes with it, because it says what to do",
+      plain.Contains("GRANT SELECT"), plain);
+
+// The other faults a desk actually hits.
+Check("READABLE - an expired token reads as one sentence",
+      Friendly.Message("""{"message":"JWT expired"}""") == "Your session has expired. Sign in again.",
+      Friendly.Message("""{"message":"JWT expired"}"""));
+Check("READABLE - so does an unreachable server",
+      Friendly.Message("could not connect to server").StartsWith("Cannot reach the server"),
+      Friendly.Message("could not connect to server"));
+
+// And the app's own sentences are left exactly as written -- Friendly must not rewrite a message
+// somebody chose the words of.
+const string Ours = "Insufficient stock for NO II x 1/6: required 3.4300 ct, available 0.0000 ct.";
+Check("READABLE - a message the app wrote itself is untouched",
+      Friendly.Message(Ours) == Ours, Friendly.Message(Ours));
+Check("READABLE - and Translates agrees about which is which",
+      Friendly.Translates(Lapsed) && !Friendly.Translates(Ours));
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

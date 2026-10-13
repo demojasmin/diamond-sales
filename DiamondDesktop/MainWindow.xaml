@@ -449,27 +449,37 @@
                  invoice that has lost them.
 
                  Empty means no opinion, so an untouched screen shows everything. -->
-            <Border DockPanel.Dock="Top" Style="{StaticResource DashToolbar}" Margin="0,0,0,12">
+            <Border DockPanel.Dock="Top" Style="{StaticResource DashToolbar}" Margin="0,0,0,8" Padding="12,8">
+              <!-- A TITLED FILTER BAR. The four boxes read as deal fields to fill in ("Select buyer",
+                   and a Type box with no word at all), and their fixed widths did not share the
+                   card, so it says what it is, the boxes say "All ...", and they stretch together. -->
               <Grid>
-                <Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="1.4*"/>
+                  <ColumnDefinition Width="1.2*"/><ColumnDefinition Width="*"/>
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
-                  <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
-                  <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
+                <!-- ONE COMPACT ROW, on request: the title sits inline, and the boxes carry their own
+                     words ("All buyers" ...) so a label above each one is not needed. -->
+                <TextBlock Grid.Column="0" Text="FILTER LINES" Style="{StaticResource KpiLabel}"
+                           FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,12,0"/>
 
-                <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                  <TextBlock Text="DATE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                <StackPanel Grid.Column="1" Margin="0,0,8,0" VerticalAlignment="Center">
                   <!-- THE SAME CONTROL THE INVOICES PAGE FILTERS BY: AppDatePicker, 150 wide, and
                        the same CalendarClosed handler that commits the pick and gives the focus
                        back. It was a bare DatePicker at 132 — a different height, a different
                        calendar button and no commit-on-close, so the one filter that exists on both
                        pages looked and behaved like two. -->
-                  <DatePicker x:Name="LineFilterDate" Width="150" Height="34"
+                  <Grid>
+                  <DatePicker x:Name="LineFilterDate" Width="150" Height="32" ToolTip="Filter by date"
                               Style="{StaticResource AppDatePicker}"
                               SelectedDate="{Binding FilterDate, UpdateSourceTrigger=PropertyChanged}"
                               CalendarClosed="DatePicker_CalendarClosed"
                               AutomationProperties.Name="Filter lines by date"
                               AutomationProperties.HelpText="Shows the lines dealt on this date. Clear to show every date."/>
+                  <TextBlock Text="All dates" Style="{StaticResource FieldPlaceholder}"
+                             Visibility="{Binding FilterDate, Converter={StaticResource Empty}}"/>
+                  </Grid>
                 </StackPanel>
 
                 <!-- SEARCHABLE, and their lists are ASSIGNED FROM CODE for it.
@@ -482,10 +492,9 @@
                      The fix is the one the Deal Details pickers already use: no binding, and
                      PointAt() from DataContextChanged so a new entry re-points them. Same reason,
                      same shape, one helper. -->
-                <StackPanel Grid.Column="1" Margin="0,0,8,0">
-                  <TextBlock Text="BUYER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                  <ComboBox x:Name="LineFilterBuyer" MinWidth="160" MaxWidth="300" Height="34"
-                            DisplayMemberPath="Name" ui:FieldHint.Text="Select buyer"
+                <StackPanel Grid.Column="2" Margin="0,0,8,0" VerticalAlignment="Center">
+                  <ComboBox x:Name="LineFilterBuyer" MinWidth="130" Height="32"
+                            DisplayMemberPath="Name" ui:FieldHint.Text="All buyers"
                             SelectedItem="{Binding FilterBuyer, UpdateSourceTrigger=PropertyChanged}"
                             ui:PickerSearch.On="True"
                             PreviewMouseWheel="NoWheelChange"
@@ -493,10 +502,9 @@
                             AutomationProperties.HelpText="Type to search"/>
                 </StackPanel>
 
-                <StackPanel Grid.Column="2" Margin="0,0,8,0">
-                  <TextBlock Text="BROKER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                  <ComboBox x:Name="LineFilterBroker" MinWidth="150" MaxWidth="300" Height="34"
-                            DisplayMemberPath="Name" ui:FieldHint.Text="Select broker"
+                <StackPanel Grid.Column="3" Margin="0,0,8,0" VerticalAlignment="Center">
+                  <ComboBox x:Name="LineFilterBroker" MinWidth="130" Height="32"
+                            DisplayMemberPath="Name" ui:FieldHint.Text="All brokers"
                             SelectedItem="{Binding FilterBroker, UpdateSourceTrigger=PropertyChanged}"
                             ui:PickerSearch.On="True"
                             PreviewMouseWheel="NoWheelChange"
@@ -504,21 +512,20 @@
                             AutomationProperties.HelpText="Type to search"/>
                 </StackPanel>
 
-                <StackPanel Grid.Column="3">
-                  <TextBlock Text="TYPE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                  <ComboBox x:Name="LineFilterType" Width="130" Height="34"
+                <StackPanel Grid.Column="4" VerticalAlignment="Center">
+                  <ComboBox x:Name="LineFilterType" MinWidth="110" Height="32" ui:FieldHint.Text="All types"
                             ItemsSource="{Binding DocTypes}"
                             SelectedItem="{Binding FilterType, UpdateSourceTrigger=PropertyChanged}"
                             PreviewMouseWheel="NoWheelChange"
                             AutomationProperties.Name="Filter lines by type"/>
                 </StackPanel>
 
-                <TextBlock Grid.Column="4" Text="{Binding ShowingLabel}"
-                           Style="{StaticResource DashSubheading}" Margin="16,0,12,0"
-                           VerticalAlignment="Bottom" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Grid.Column="5" Text="{Binding ShowingLabel}"
+                           Style="{StaticResource DashSubheading}" Margin="12,0,12,0"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
 
-                <Button Grid.Column="5" x:Name="LineFilterClear" Click="LineFilterClear_Click"
-                        Style="{StaticResource DashButton}" VerticalAlignment="Bottom"
+                <Button Grid.Column="6" x:Name="LineFilterClear" Click="LineFilterClear_Click"
+                        Style="{StaticResource DashButton}" VerticalAlignment="Center"
                         ToolTip="Clear all four filters and show every row"
                         AutomationProperties.Name="Clear line filters">
                   <TextBlock Text="Clear"/>
@@ -638,10 +645,6 @@
                       <TextBlock x:Name="BlockChipText" Style="{StaticResource DashChipText}"/>
                     </Border>
                   </StackPanel>
-                  <TextBlock Style="{StaticResource DashSubheading}"
-                             TextTrimming="CharacterEllipsis"
-                             ToolTip="Enter adds a line · Rejection and Amount are calculated · each line holds its carats in stock as you type"
-                             Text="Enter adds a line · Rejection and Amount are calculated · each line holds its carats in stock as you type"/>
                 </StackPanel>
                 <!-- ONE action area, beside the heading that already draws the eye. Everything
                      that acts on this invoice is here: nothing is per-row any more, which is what
@@ -655,11 +658,11 @@
                 <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
                   <Button x:Name="AddLineButton" Click="AddLine_Click"
                           Style="{StaticResource DashButton}" Margin="0,0,8,0"
-                          ToolTip="Add another line  (Enter)"
-                          AutomationProperties.Name="Add line">
+                          ToolTip="Add a sale: choose its deal, then add its lines"
+                          AutomationProperties.Name="Add sale">
                     <StackPanel Orientation="Horizontal">
                       <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconAdd}"/>
-                      <TextBlock Text="Add line" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                      <TextBlock Text="Add sale" Margin="7,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
                   </Button>
                   <!-- Only on screen while something is ticked. Its label carries the count,
@@ -708,7 +711,6 @@
                   </Button>
                 </WrapPanel>
               </Grid>
-
 
           <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
                   CornerRadius="{StaticResource RadiusControl}" ClipToBounds="True">
@@ -1977,7 +1979,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource SuccessBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="not due"
+                              ui:Drill.Hint="Shows only the invoices that are not yet due, in the table below"
+                              AutomationProperties.Name="Not due, click to filter the table"
+                              MouseLeftButtonUp="RecBand_Click">
                   <TextBlock Text="Not due" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -1993,7 +1999,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource WarningBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="1-30"
+                              ui:Drill.Hint="Shows only the invoices 1 to 30 days overdue, in the table below"
+                              AutomationProperties.Name="1 to 30 days, click to filter the table"
+                              MouseLeftButtonUp="RecBand_Click">
                   <TextBlock Text="1 – 30 days" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2009,7 +2019,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="31-60"
+                              ui:Drill.Hint="Shows only the invoices 31 to 60 days overdue, in the table below"
+                              AutomationProperties.Name="31 to 60 days, click to filter the table"
+                              MouseLeftButtonUp="RecBand_Click">
                   <TextBlock Text="31 – 60 days" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2025,7 +2039,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource WarningBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="61-90"
+                              ui:Drill.Hint="Shows only the invoices 61 to 90 days overdue, in the table below"
+                              AutomationProperties.Name="61 to 90 days, click to filter the table"
+                              MouseLeftButtonUp="RecBand_Click">
                   <TextBlock Text="61 – 90 days" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2041,7 +2059,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource DangerBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="90+"
+                              ui:Drill.Hint="Shows only the invoices over 90 days overdue, in the table below"
+                              AutomationProperties.Name="Over 90 days, click to filter the table"
+                              MouseLeftButtonUp="RecBand_Click">
                   <TextBlock Text="90+ days" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2131,7 +2153,11 @@
                 <Border DockPanel.Dock="Top" Background="{DynamicResource Surface2Brush}"
                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
                         CornerRadius="10" Padding="12,10" Margin="0,0,0,12">
-                  <StackPanel>
+                  <StackPanel
+                              ui:Drill.On="True" Tag="buyer"
+                              ui:Drill.Hint="Shows every unpaid invoice of this buyer's in the table below"
+                              AutomationProperties.Name="Total outstanding for this buyer, click to filter the table to them"
+                              MouseLeftButtonUp="RecBand_Click">
                     <TextBlock Text="TOTAL OUTSTANDING" Style="{StaticResource KpiLabel}"/>
                     <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                              MaxHeight="26" Margin="0,4,0,0">
@@ -2297,7 +2323,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource WarningBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                            ui:Drill.On="True"
+                            ui:Drill.Hint="Lists which buckets a sales entry is holding, and how much of each"
+                            MouseLeftButtonUp="ReservedCarats_Click"
+                            AutomationProperties.Name="Reserved carats">
                   <TextBlock Text="Reserved carats" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2314,7 +2344,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                            ui:Drill.On="True"
+                            ui:Drill.Hint="Lists where the value sits, dearest bucket first"
+                            MouseLeftButtonUp="StockValue_Click"
+                            AutomationProperties.Name="Stock value">
                   <TextBlock Text="Stock value" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2330,7 +2364,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource SuccessBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                            ui:Drill.On="True"
+                            ui:Drill.Hint="Lists every bucket holding a balance, largest first"
+                            MouseLeftButtonUp="BucketsInStock_Click"
+                            AutomationProperties.Name="Buckets in stock">
                   <TextBlock Text="Buckets in stock" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2346,7 +2384,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}" Background="{DynamicResource DangerBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                            ui:Drill.On="True"
+                            ui:Drill.Hint="Lists which buckets are below zero, and by how much"
+                            MouseLeftButtonUp="NegativeBalances_Click"
+                            AutomationProperties.Name="Negative balances">
                   <TextBlock Text="Negative balances" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -2391,13 +2433,28 @@
               <Border Grid.Column="1" Width="1" Margin="0,2,28,2"
                       Background="{DynamicResource BorderBrush}"/>
 
-              <StackPanel Grid.Column="2">
+              <!-- THE FIGURE OPENS THE LIST BEHIND IT. A total told the desk that carats had been
+                   rejected and nothing else: not which buckets, not off which invoices, not what
+                   became of them. Finding one meant selecting a row and pressing Show movements,
+                   bucket by bucket, which is only possible if you already know where to look.
+                   Clicking the number is where anyone would try first. -->
+              <StackPanel Grid.Column="2" x:Name="RejectionCard"
+                          ui:Drill.On="True"
+                          ui:Drill.Hint="Lists every rejection: what left, which bucket, which invoice, and what became of it"
+                          MouseLeftButtonUp="Rejections_Click"
+                          AutomationProperties.Name="Rejections">
                 <TextBlock Text="REJECTION" Style="{StaticResource KpiLabel}"/>
+                <!-- Red, as a rejection is everywhere on the Stock report's history. -->
                 <TextBlock x:Name="StockBreakdownRejection" Style="{StaticResource KpiValue}"
                            Margin="0,4,0,0" Text="—"
-                           Foreground="{DynamicResource WarningBrush}"/>
+                           Foreground="{DynamicResource DangerBrush}"/>
                 <TextBlock x:Name="StockBreakdownRejectionNote" Style="{StaticResource KpiCaption}"
-                           Text="Carats rejected to date · already out of stock"/>
+                           Text="Carats rejected to date · a record, not a deduction"/>
+                <!-- Said in words as well as by the cursor: a figure that happens to be clickable
+                     is a figure nobody clicks. -->
+                <TextBlock x:Name="RejectionCardHint" Style="{StaticResource KpiCaption}"
+                           Foreground="{DynamicResource AccentBrush}"
+                           Text="Click to see what was rejected"/>
               </StackPanel>
 
               <TextBlock Grid.Column="3" x:Name="StockBreakdownScope"
@@ -2841,6 +2898,134 @@
                             PreviewMouseWheel="ReportSheet_PreviewMouseWheel">
                 <Grid MinWidth="{Binding ViewportWidth, ElementName=ReportSheetScroll}">
                   <Grid x:Name="ReportTable" HorizontalAlignment="Center"/>
+
+                  <!-- Read-only history of one bucket, opened by clicking its weight in Read only
+                       mode. StaysOpen=False closes it on any click outside. Filled in
+                       ShowStockHistoryAsync from Repo.MovementsAsync, the Stock page's ledger read. -->
+                  <Popup x:Name="HistoryPopup" StaysOpen="False" Placement="Bottom"
+                         AllowsTransparency="True" PopupAnimation="Fade">
+                    <Border Background="{DynamicResource SurfaceBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="10" Padding="12,10" Width="760" Margin="0,4,0,0">
+                      <DockPanel>
+                        <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                          <TextBlock x:Name="HistoryTitle" FontSize="13" FontWeight="SemiBold"
+                                     Foreground="{DynamicResource TextBrush}" Margin="0,0,32,0"
+                                     TextWrapping="Wrap" VerticalAlignment="Center"/>
+                          <!-- Same close button as the Stock page's movements drawer. -->
+                          <Button x:Name="HistoryClose" Click="CloseHistory_Click"
+                                  Style="{StaticResource GhostButton}" FocusVisualStyle="{x:Null}"
+                                  Focusable="False" Width="24" Height="24" Padding="0"
+                                  HorizontalAlignment="Right" VerticalAlignment="Center" Cursor="Hand"
+                                  ToolTip="Close" AutomationProperties.Name="Close stock history">
+                            <Path Data="M 0,0 L 9,9 M 9,0 L 0,9" Stretch="None"
+                                  Stroke="{DynamicResource TextMutedBrush}" StrokeThickness="1.6"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                          </Button>
+                        </Grid>
+                        <TextBlock x:Name="HistoryHint" DockPanel.Dock="Bottom"
+                                   Style="{StaticResource TimelineMeta}" Margin="0,8,0,0"/>
+                        <DataGrid x:Name="HistoryGrid" Style="{StaticResource AppDataGrid}"
+                                  AutomationProperties.Name="Stock history"
+                                  IsReadOnly="True" AutoGenerateColumns="False" MaxHeight="360"
+                                  HeadersVisibility="Column" CanUserAddRows="False"
+                                  RowHeight="NaN" MinRowHeight="42"
+                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                  ScrollViewer.CanContentScroll="False">
+                          <!-- Rows grow to fit a wrapped reason, as on Audit; 42 stays the floor. -->
+                          <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow" BasedOn="{StaticResource AppRow}">
+                              <Setter Property="Height" Value="NaN"/>
+                              <Setter Property="MinHeight" Value="42"/>
+                              <!-- A rejection, and its pre-0055 hold, sit on light red: a record to
+                                   notice, not a movement of stock. -->
+                              <Style.Triggers>
+                                <DataTrigger Binding="{Binding Tone}" Value="rejection">
+                                  <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
+                                </DataTrigger>
+                              </Style.Triggers>
+                            </Style>
+                          </DataGrid.RowStyle>
+                          <DataGrid.Columns>
+                            <DataGridTextColumn Header="DATE" Width="SizeToCells" MinWidth="110"
+                                                Binding="{Binding Date, StringFormat=dd MMM yyyy}"/>
+                            <!-- One colour per transaction type (StockHistoryRow.Tone), on a chip so
+                                 the type reads at a glance down the column. -->
+                            <DataGridTemplateColumn Header="TYPE" Width="SizeToCells" MinWidth="150">
+                              <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                  <Border CornerRadius="6" Padding="8,3" HorizontalAlignment="Left"
+                                          VerticalAlignment="Center" BorderThickness="1">
+                                    <Border.Style>
+                                      <Style TargetType="Border">
+                                        <Setter Property="Background" Value="{DynamicResource Surface2Brush}"/>
+                                        <Setter Property="BorderBrush" Value="Transparent"/>
+                                        <Style.Triggers>
+                                          <DataTrigger Binding="{Binding Tone}" Value="intake">
+                                            <Setter Property="Background" Value="{DynamicResource SuccessSoftBrush}"/>
+                                          </DataTrigger>
+                                          <DataTrigger Binding="{Binding Tone}" Value="sale">
+                                            <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+                                          </DataTrigger>
+                                          <DataTrigger Binding="{Binding Tone}" Value="rejection">
+                                            <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
+                                            <Setter Property="BorderBrush" Value="{DynamicResource DangerBorderBrush}"/>
+                                          </DataTrigger>
+                                          <DataTrigger Binding="{Binding Tone}" Value="conversion">
+                                            <Setter Property="Background" Value="{DynamicResource ConversionSoftBrush}"/>
+                                          </DataTrigger>
+                                          <DataTrigger Binding="{Binding Tone}" Value="adjust">
+                                            <Setter Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
+                                          </DataTrigger>
+                                        </Style.Triggers>
+                                      </Style>
+                                    </Border.Style>
+                                    <TextBlock Text="{Binding Kind}" FontSize="12" FontWeight="SemiBold">
+                                      <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                          <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+                                          <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Tone}" Value="intake">
+                                              <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tone}" Value="sale">
+                                              <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tone}" Value="rejection">
+                                              <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tone}" Value="conversion">
+                                              <Setter Property="Foreground" Value="{DynamicResource ConversionBrush}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tone}" Value="adjust">
+                                              <Setter Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+                                            </DataTrigger>
+                                          </Style.Triggers>
+                                        </Style>
+                                      </TextBlock.Style>
+                                    </TextBlock>
+                                  </Border>
+                                </DataTemplate>
+                              </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="QTY (CT)" Width="SizeToCells" MinWidth="110"
+                                                Binding="{Binding Qty}"
+                                                ElementStyle="{StaticResource Num}"/>
+                            <DataGridTextColumn Header="REASON" Width="*" Binding="{Binding Reason}">
+                              <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                  <Setter Property="TextWrapping" Value="Wrap"/>
+                                  <Setter Property="VerticalAlignment" Value="Center"/>
+                                  <Setter Property="Margin" Value="0,6"/>
+                                </Style>
+                              </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                          </DataGrid.Columns>
+                        </DataGrid>
+                      </DockPanel>
+                    </Border>
+                  </Popup>
                 </Grid>
               </ScrollViewer>
 
@@ -3206,10 +3391,23 @@
                       </StackPanel>
                       <StackPanel Style="{StaticResource OpField}">
                         <TextBlock Text="WEIGHT CT (±)" Style="{StaticResource OpLabel}"/>
+                        <!-- AllowNegative: an adjustment is signed (-0.40 takes carats out, e.g. a repair
+                             loss). The numeric filter refused the minus sign, so only increases could
+                             be typed. -->
                         <TextBox x:Name="AdjWeight" Width="110" Height="34"
                                  Style="{StaticResource AppNumericTextBox}"
+                                 local:NumericInput.AllowNegative="True"
                                  ToolTip="Negative takes carats out, positive puts them back."
                                  AutomationProperties.Name="Adjustment weight in carats"/>
+                      </StackPanel>
+                      <!-- Required when ADDING carats: an increase with no rate counted as free stones
+                           and dragged the bucket's average cost down. A removal ignores it. -->
+                      <StackPanel Style="{StaticResource OpField}">
+                        <TextBlock Text="RATE/CT" Style="{StaticResource OpLabel}"/>
+                        <TextBox x:Name="AdjRate" Width="110" Height="34"
+                                 Style="{StaticResource AppNumericTextBox}"
+                                 ToolTip="Needed when adding carats: what they are worth a carat. Ignored when taking carats out."
+                                 AutomationProperties.Name="Adjustment rate per carat"/>
                       </StackPanel>
                       <StackPanel Style="{StaticResource OpField}">
                         <TextBlock Text="REASON" Style="{StaticResource OpLabel}"/>
@@ -4037,7 +4235,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="sales"
+                              ui:Drill.Hint="Lists every invoice behind this figure, largest first"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W1 · Total sales">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE9D2;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4058,7 +4260,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="carats"
+                              ui:Drill.Hint="Lists every invoice behind this figure, heaviest first"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W2 · Carats sold">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xF158;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4078,7 +4284,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="rate"
+                              ui:Drill.Hint="Shows the amount and the weight it is blended from"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W3 · Blended rate / ct">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4098,7 +4308,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="broker"
+                              ui:Drill.Hint="Lists which invoices carry brokerage, and at what rate"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W14 · Broker cost">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE8C7;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4125,7 +4339,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="inventory"
+                              ui:Drill.Hint="Says what this figure is made of and where it is listed"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W11 · Inventory value">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4146,7 +4364,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="margin"
+                              ui:Drill.Hint="Lists the invoices that could not be costed"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W7 · Margin">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE1D3;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4167,7 +4389,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="outstanding"
+                              ui:Drill.Hint="Lists who owes it, most first"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="W9 · Outstanding">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE825;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4188,7 +4414,11 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                  <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="confirmed"
+                              ui:Drill.Hint="Lists every invoice counted here"
+                              MouseLeftButtonUp="DashFigure_Click"
+                              AutomationProperties.Name="Confirmed sales">
                     <StackPanel Orientation="Horizontal">
                       <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                  Foreground="{DynamicResource AccentBrush}" Margin="0,0,7,0"
@@ -4547,7 +4777,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="all"
+                              ui:Drill.Hint="Clears the action filter, showing every entry in the table below"
+                              AutomationProperties.Name="Events shown, click to filter the table"
+                              MouseLeftButtonUp="AuditCount_Click">
                   <TextBlock Text="Events shown" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4564,7 +4798,11 @@
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"
                         Background="{DynamicResource SuccessBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="INSERT"
+                              ui:Drill.Hint="Shows only the entries that created a record"
+                              AutomationProperties.Name="Inserts, click to filter the table"
+                              MouseLeftButtonUp="AuditCount_Click">
                   <TextBlock Text="Inserts" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4583,7 +4821,11 @@
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"
                         Background="{DynamicResource WarningBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="UPDATE"
+                              ui:Drill.Hint="Shows only the entries that amended a record"
+                              AutomationProperties.Name="Updates, click to filter the table"
+                              MouseLeftButtonUp="AuditCount_Click">
                   <TextBlock Text="Updates" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4600,7 +4842,11 @@
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"
                         Background="{DynamicResource DangerBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="DELETE"
+                              ui:Drill.Hint="Shows only the entries that removed a record"
+                              AutomationProperties.Name="Deletes, click to filter the table"
+                              MouseLeftButtonUp="AuditCount_Click">
                   <TextBlock Text="Deletes" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4686,6 +4932,15 @@
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                           SelectionChanged="AuditRow_Selected"
                           PreviewMouseWheel="InnerWheel">
+                  <!-- Rows GROW to fit "What happened". The app-wide row style fixes every row at 42px, which
+                       beat this grid's RowHeight="NaN": a sentence needing three lines was cut through
+                       its top and bottom. 42 stays the floor, so single-line rows are unchanged. -->
+                  <DataGrid.RowStyle>
+                    <Style TargetType="DataGridRow" BasedOn="{StaticResource AppRow}">
+                      <Setter Property="Height" Value="NaN"/>
+                      <Setter Property="MinHeight" Value="42"/>
+                    </Style>
+                  </DataGrid.RowStyle>
                   <DataGrid.Columns>
                     <!-- Widths trimmed to what each column actually needs. WHAT HAPPENED is the
                          star column, so it gets only what the fixed five leave — and at 642px
@@ -4960,7 +5215,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="all"
+                              ui:Drill.Hint="Clears the filters, showing every account in the table below"
+                              AutomationProperties.Name="Total accounts, click to filter the table"
+                              MouseLeftButtonUp="UserCount_Click">
                   <TextBlock Text="Total accounts" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4977,7 +5236,11 @@
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"
                         Background="{DynamicResource SuccessBrush}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="active"
+                              ui:Drill.Hint="Shows only the accounts that can sign in"
+                              AutomationProperties.Name="Active accounts, click to filter the table"
+                              MouseLeftButtonUp="UserCount_Click">
                   <TextBlock Text="Active" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">
@@ -4993,7 +5256,11 @@
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Style="{StaticResource KpiAccentEdge}"/>
-                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}">
+                <StackPanel Grid.Column="1" Style="{StaticResource KpiBody}"
+                              ui:Drill.On="True" Tag="owner"
+                              ui:Drill.Hint="Shows only the owners"
+                              AutomationProperties.Name="Owners, click to filter the table"
+                              MouseLeftButtonUp="UserCount_Click">
                   <TextBlock Text="Owners" Style="{StaticResource KpiLabel}"/>
                   <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly"
                            MaxHeight="27" Margin="0,6,0,0">

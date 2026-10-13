@@ -1,0 +1,70 @@
+// Backs up every stock and sales table of ONE workspace to JSON files, before a migration.
+//
+// READ ONLY: plain GET requests through PostgREST with the app's saved sign-in for that workspace.
+// Nothing is written to the database. The files land OUTSIDE the repository, because they hold
+// customer data:  D:\diamond-backups\<workspace>-<yyyyMMdd-HHmmss>\<table>.json
+//
+// Usage (from tests/probes):  cp tool-backup-tables.cs.txt Program.cs && dotnet run -c Release -- Priya
+//                                                                     ... or -- Demo
+using System.IO;
+using System.Net.Http;
+using System.Text.Json;
+using DiamondDesktop.Data;
+using InvProbe;
+
+string name = args.FirstOrDefault() ?? "";
+var ws = Db.Workspaces.FirstOrDefault(w => w.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+if (ws is null) { Console.WriteLine("Name the workspace to back up: Priya or Demo."); return 2; }
+
+Db.Use(ws);
+Environment.SetEnvironmentVariable("SOLITAIRE_SESSION",
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                 "SolitaireDesk", $"session-{ws.Ref}.dat"));
+await ProbeEnv.SignInAsync();
+string token = Db.Client.Auth.CurrentSession?.AccessToken
+               ?? throw new InvalidOperationException("No session for " + ws.Name);
+
+string dir = Path.Combine(@"D:\diamond-backups", $"{ws.Name}-{DateTime.Now:yyyyMMdd-HHmmss}");
+Directory.CreateDirectory(dir);
+
+using var http = new HttpClient();
+http.DefaultRequestHeaders.Add("apikey", ws.AnonKey);
+http.DefaultRequestHeaders.Add("Authorization", "Bearer " + token);
+
+// table, key to page in a stable order
+(string Table, string Order)[] tables =
+[
+    ("stock_movement", "movement_id"), ("stock_reservation", "reservation_id"),
+    ("sales_invoice", "invoice_id"), ("sales_line", "line_id"), ("receipt", "receipt_id"),
+    ("rough_intake", "intake_id"), ("rejection_disposition", "disposition_id"),
+    ("app_config", "key"), ("grade", "grade_id"), ("size_bucket", "size_id"),
+    ("grade_size", "grade_id,size_id"), ("buyer", "buyer_id"), ("broker", "broker_id"),
+    ("audit_log", "audit_id"),
+];
+
+int failures = 0;
+foreach (var (table, order) in tables)
+{
+    var rows = new List<JsonElement>();
+    try
+    {
+        for (int from = 0; ; from += 1000)
+        {
+            var req = new HttpRequestMessage(HttpMethod.Get,
+                $"{ws.Url}/rest/v1/{table}?select=*&order={order}&limit=1000&offset={from}");
+            var res = await http.SendAsync(req);
+            string body = await res.Content.ReadAsStringAsync();
+            if (!res.IsSuccessStatusCode) throw new InvalidOperationException($"{(int)res.StatusCode} {body}");
+            var page = JsonDocument.Parse(body).RootElement.EnumerateArray().Select(e => e.Clone()).ToList();
+            rows.AddRange(page);
+            if (page.Count < 1000) break;
+        }
+        File.WriteAllText(Path.Combine(dir, table + ".json"),
+            JsonSerializer.Serialize(rows, new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"  {table,-22} {rows.Count,6} row(s)");
+    }
+    catch (Exception e) { failures++; Console.WriteLine($"  {table,-22} FAILED  {e.Message}"); }
+}
+
+Console.WriteLine($"\n{ws.Name} backed up to {dir}" + (failures > 0 ? $" · {failures} table(s) FAILED" : ""));
+return failures == 0 ? 0 : 1;

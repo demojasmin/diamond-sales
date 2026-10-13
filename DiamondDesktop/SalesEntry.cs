@@ -110,9 +110,13 @@ public static class Catalogue
     /// A DOLLAR BILL is priced per carat in dollars and converted by the line's own Ex Rate, which
     /// the entry grid already carries. There is still no currency picker: the invoice totals in
     /// INR either way, which is what sales_invoice stores.
+    ///
+    /// R BILL is offered the same way, spelled exactly as the sale workbook writes it -- Priya's
+    /// imported invoices already carry "R BILL", so one picked here files beside them. The column
+    /// is varchar(12): every name here must stay within twelve characters.
     /// </summary>
     public static readonly IReadOnlyList<string> DocTypes =
-        ["BILL", "WITHOUT BILL", "EXPORT", "DOLLAR BILL"];
+        ["BILL", "WITHOUT BILL", "EXPORT", "DOLLAR BILL", "R BILL"];
 
     /// Every invoice is billed in INR — there is no currency picker on the entry screen, but
     /// sales_invoice still needs the id. Zero means the catalogue has not loaded, or INR is not
@@ -1483,8 +1487,9 @@ public sealed class InvoiceEntry : Notifier
     }
 
     /// <summary>
-    /// A line's bucket or weight changed, so what it holds against stock has to change with it
-    /// (0043). Raised for grade, size and weight only -- a price or a remark moves no carats.
+    /// A line's bucket or selection changed, so what it holds against stock has to change with it
+    /// (0043). Raised for grade, size and selection only -- since 0055 the selection is all that
+    /// leaves stock, so a price, a remark or the rejected part moves no carats.
     /// </summary>
     public event Action<SaleLine>? LineHoldChanged;
 
@@ -1503,7 +1508,7 @@ public sealed class InvoiceEntry : Notifier
 
         if (sender is SaleLine changed
             && e.PropertyName is nameof(SaleLine.Grade) or nameof(SaleLine.Size)
-                              or nameof(SaleLine.GrossWeightCt))
+                              or nameof(SaleLine.SelectionCt))
             LineHoldChanged?.Invoke(changed);
 
         // Derived properties are set by Recalculate itself — reacting to them would recurse.

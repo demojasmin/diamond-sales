@@ -1,0 +1,70 @@
+﻿// The rejection list: does each line say WHAT left, WHERE from, off WHICH invoice, WHEN and WHY?
+// Against MainWindow.RejectionLines directly -- the wording is the thing worth being sure of, and a
+// click handler is async void, where an exception vanishes and takes the evidence with it.
+using System.Threading;
+using System.Windows;
+using DiamondDesktop;
+using DiamondDesktop.Data;
+
+int fail = 0;
+void Check(string n, bool ok, string? d = null)
+{ Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {n}{(d is null ? "" : $"  . {d}")}"); if (!ok) fail++; }
+
+var rejections = new List<VStockMovement>
+{
+    // Off an imported invoice: the app knows the bucket and the invoice, and nothing about where
+    // the carats went.
+    new() { MovementId = 1, MovementDate = new DateOnly(2026, 9, 3), GradeCode = "NO II",
+            SizeCode = "1/6", MovementType = "REJECTION", WeightCt = 26.67m,
+            RefType = "sales_line", RefId = 99 },
+    // Recorded by hand, with destinations: the only kind that carries a why.
+    new() { MovementId = 2, MovementDate = new DateOnly(2026, 8, 20), GradeCode = "GH",
+            SizeCode = "+11", MovementType = "REJECTION", WeightCt = 11.00m,
+            RefType = "manual", RefId = null },
+};
+
+var dispositions = new List<RejectionDisposition>
+{
+    new() { DispositionId = 1, MovementId = 2, ToGradeId = 7, WeightCt = 6.31m, Note = "re-graded" },
+    new() { DispositionId = 2, MovementId = 2, ToGradeId = null, WeightCt = 4.69m, Note = "repairing" },
+};
+
+var grades   = new Dictionary<long, string> { [7] = "FL" };
+var invoices = new Dictionary<long, string> { [99] = "MIG-7-2" };
+
+var lines = MainWindow.RejectionLines(rejections, dispositions, grades, invoices);
+Console.WriteLine();
+foreach (var l in lines) Console.WriteLine($"   • {l}");
+Console.WriteLine();
+
+Check("one line per rejection", lines.Count == 2, $"{lines.Count}");
+Check("newest first", lines[0].Contains("NO II"), lines[0]);
+
+string imported = lines.First(l => l.Contains("NO II"));
+Check("WHAT  the carats lead the line", imported.StartsWith("26.6700 ct"), imported);
+Check("WHERE the bucket is named", imported.Contains("NO II \u00d7 1/6"));
+Check("WHICH the invoice is named", imported.Contains("off invoice MIG-7-2"));
+Check("WHEN  the date is there", imported.Contains("03 Sept 2026") || imported.Contains("03 Sep 2026"),
+      imported);
+Check("WHY   an imported rejection admits it has none",
+      imported.Contains("no destination recorded (the sales importer records none)"));
+
+string byHand = lines.First(l => l.Contains("GH"));
+Check("a hand-recorded one is told apart", byHand.Contains("recorded by hand"), byHand);
+Check("WHY   its destinations are spelled out",
+      byHand.Contains("6.3100 ct to FL") && byHand.Contains("(re-graded)"), byHand);
+Check("WHY   including one with no destination grade",
+      byHand.Contains("4.6900 ct (repairing)"), byHand);
+
+// A rejection off a line the app cannot name still says where it came from.
+var orphan = MainWindow.RejectionLines(
+    [new VStockMovement { MovementId = 3, MovementDate = new DateOnly(2026, 1, 5),
+                          GradeCode = "EX 1", SizeCode = "+6.5", MovementType = "REJECTION",
+                          WeightCt = 1.5m, RefType = "sales_line", RefId = 12345 }],
+    [], grades, invoices);
+Check("an unmatched invoice line still reads honestly",
+      orphan[0].Contains("off an invoice line"), orphan[0]);
+
+Console.WriteLine();
+Console.WriteLine(fail == 0 ? "ALL CHECKS PASSED" : $"{fail} check(s) FAILED");
+return fail == 0 ? 0 : 1;

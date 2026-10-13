@@ -372,7 +372,7 @@ var t = new Thread(() =>
     // The labels themselves, so a rename cannot quietly change what a button claims to do.
     string Label(string n) => ((StackPanel)((Button)win.FindName(n)!).Content)
         .Children.OfType<TextBlock>().First().Text;
-    Check("ACTIONS - Add line", Label("AddLineButton") == "Add line", Label("AddLineButton"));
+    Check("ACTIONS - Add sale", Label("AddLineButton") == "Add sale", Label("AddLineButton"));
     // There is no Clear button on the screen any more. NewInvoice_Click is still live -- the post
     // path calls it to reset the entry after a sale -- so the handler is what gets asserted, not a
     // button that is no longer there to press.
@@ -1170,7 +1170,7 @@ var t = new Thread(() =>
     deskEntry.Recalculate(); Refresh();
     bool onWithOne = deskEntry.ConfirmProblems().Count == 0;
 
-    typeof(MainWindow).GetMethod("AddLine", BindingFlags.Instance | BindingFlags.NonPublic)!
+    typeof(MainWindow).GetMethod("AddLine", BindingFlags.Instance | BindingFlags.NonPublic, Type.EmptyTypes)!
         .Invoke(win, null);
     deskEntry.Recalculate(); Refresh();
 
@@ -3000,8 +3000,10 @@ var t = new Thread(() =>
           "heading block is in column 0");
     int hAt = hdr.IndexOf("<StackPanel Grid.Column=\"0\" Margin=\"0,0,12,0\">");
     string head = hAt < 0 ? "" : hdr[hAt..Math.Min(hdr.Length, hAt + 2600)];
-    Check("HEADER - so the sentence ellipsises instead of running under the buttons",
-          head.Contains("TextTrimming=\"CharacterEllipsis\""));
+    // The "Enter adds a line ..." sentence under the heading was removed on request, so there is
+    // no subtitle left to run under the buttons -- and it must not come back.
+    Check("HEADER - the 'Enter adds a line' hint is gone",
+          !hdr.Contains("Enter adds a line"));
     Check("HEADER - and the buttons sit in their own column",
           hdr.Contains("<WrapPanel Grid.Column=\"1\" HorizontalAlignment=\"Right\""));
 
