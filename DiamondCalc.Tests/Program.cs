@@ -1743,15 +1743,94 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
     // The PDF reader matches sheets on these same marks. Moving the map out of MainWindow must
     // not have cost it one of them.
     var map = DiamondDesktop.MainWindow.PdfGradeLabelMap(
-        new[] { "NO II", "NO 1 BB", "TOP-COL", "NO DX", "OW" }
+        new[] { "NO II", "COL", "NO 1 BB", "TOP-COL", "NO DX", "OW" }
             .Select(c => new DiamondDesktop.Data.Grade { Code = c, DisplayName = c,
-                                                         // NO II's aliases after 0057 (FL, # and color merged)
-                                                         Aliases = c == "NO II" ? "#;II;FL;F L;FL1;COL;color" : null }));
+                                                         // after 0063: FL and # are II, color is COL again
+                                                         Aliases = c switch { "NO II" => "#;II;FL;F L;FL1;II Color;II Col",
+                                                                              "COL" => "COLOUR;COLOR;C;color", _ => null } }));
 
     Check("MARK - and the PDF reader still resolves every one of them",
-        new[] { ("#", "NO II"), ("II", "NO II"), ("FL", "NO II"), ("color", "NO II"),
+        new[] { ("#", "NO II"), ("II", "NO II"), ("FL", "NO II"), ("color", "COL"), ("II Color", "NO II"),
                 ("1BB", "NO 1 BB"), ("TOP co", "TOP-COL"), ("DX1", "NO DX"), ("OW", "OW") }
             .All(t => map.TryGetValue(t.Item1, out string? code) && code == t.Item2));
+
+    // 0063: "II Color" / "II Col" are II; Color, COLOR, COLOUR, COL and C are Color -- never mixed.
+    var iiColor = new[] { ("NO II", "#;F L;FL;FL1;II;NO2SPOT;NOII;II Color;II Colour;II Col;IICOLOR;IICOLOUR;IICOL"),
+                          ("COL", "COLOUR;COLOR;C;color;Colour") };
+    var pdf = DiamondDesktop.MainWindow.PdfGradeLabelMap(
+        iiColor.Select(g => new DiamondDesktop.Data.Grade { Code = g.Item1, DisplayName = g.Item1, Aliases = g.Item2 }));
+    var sales = DiamondDesktop.SaleFileImport.AliasMap(iiColor.Select(g => (g.Item1, (string?)g.Item2)));
+    var cases = new[] { ("II Color", "NO II"), ("II color", "NO II"), ("ii colour", "NO II"), ("II Col", "NO II"),
+                        ("IICOLOR", "NO II"), ("II", "NO II"), ("FL", "NO II"), ("#", "NO II"),
+                        ("Color", "COL"), ("color", "COL"), ("COLOR", "COL"), ("COLOUR", "COL"), ("COL", "COL"), ("C", "COL") };
+
+    Check("II COLOR - the PDF reader keeps II Color and Color apart",
+        cases.All(t => pdf.TryGetValue(DiamondDesktop.PdfStockFile.Normalise(t.Item1), out string? c) && c == t.Item2));
+    Check("II COLOR - the sheet importers keep II Color and Color apart",
+        cases.All(t => DiamondDesktop.SaleFileImport.ResolveGrade(sales, t.Item1, out string c) && c == t.Item2));
+}
+
+// ---- Confirm sale - the invoice date is shown, and an old one is flagged ---------------
+{
+    var today = new DiamondDesktop.SaleLine { DealDate = DateTime.Today };
+    var old = new DiamondDesktop.SaleLine { DealDate = new DateTime(2026, 9, 3) };
+    Check("DATE - a line dated today reads as just the date",
+        DiamondDesktop.MainWindow.InvoiceDateFact([today]) == DateTime.Today.ToString("dd MMM yyyy"));
+    Check("DATE - an old date is called out as not today",
+        DiamondDesktop.MainWindow.InvoiceDateFact([old]).StartsWith(old.DealDate.ToString("dd MMM yyyy") + " · NOT today"),
+        DiamondDesktop.MainWindow.InvoiceDateFact([old]));
+    Check("DATE - two dates are both named",
+        DiamondDesktop.MainWindow.InvoiceDateFact([old, today]).StartsWith("2 dates: " + old.DealDate.ToString("dd MMM yyyy")));
+    Check("DATE - the deal cell leads with the line's date",
+        old.DealLine2.StartsWith(old.DealDate.ToString("dd MMM") + " · "), old.DealLine2);
+}
+
+// ---- Stock upload - the same file twice is refused -----------------------------------
+{
+    DiamondDesktop.StockRow R(string g, string s, decimal ct, decimal rate) => new(g, s, ct, rate, 1, g, s);
+    var file = new[] { R("NO II", "+6.5", 10.1234m, 33500m), R("NO 2", "+11", 5.5m, 34000m) };
+    var standing = new DiamondDesktop.Data.VStockImportBatch
+        { Parcels = 2, Carats = 15.6234m, Value = Math.Round(10.1234m * 33500m + 5.5m * 34000m, 2), AsAt = new DateOnly(2026, 11, 1) };
+
+    Check("UPLOAD - a file matching a standing upload is caught",
+        DiamondDesktop.MainWindow.DuplicateBatch(file, [standing]) is not null);
+    Check("UPLOAD - a recount differing by one parcel's weight is not",
+        DiamondDesktop.MainWindow.DuplicateBatch([file[0], R("NO 2", "+11", 5.49m, 34000m)], [standing]) is null);
+    Check("UPLOAD - nothing standing, nothing to match",
+        DiamondDesktop.MainWindow.DuplicateBatch(file, []) is null);
+}
+
+// ---- Sales report - totals and groups ----------------------------------------------------
+{
+    var srInv = new[]
+    {
+        new DiamondDesktop.Data.VInvoice { InvoiceId = 1, InvoiceNo = "INV-1", BuyerName = "A", Outstanding = 0 },
+        new DiamondDesktop.Data.VInvoice { InvoiceId = 2, InvoiceNo = "INV-2", BuyerName = "B", Outstanding = 50, IsOverdue = true },
+    };
+    DiamondDesktop.Data.VSalesLine SrL(long id, string g, decimal sel, decimal amt, decimal pre) =>
+        new() { InvoiceId = id, InvoiceNo = $"INV-{id}", GradeCode = g, SizeCode = "+11",
+                GrossWeightCt = sel + 1, SelectionCt = sel, RejectionCt = 1, Amount = amt, AmountPreBroker = pre };
+    var srRows = DiamondDesktop.SalesReportCalc.Rows(
+        [SrL(1, "NO II", 2, 200, 210), SrL(1, "NO 2", 3, 300, 300), SrL(2, "NO II", 5, 500, 500)], srInv);
+    var byBuyer = DiamondDesktop.SalesReportCalc.Group(srRows, "Buyer");
+    var byGrade = DiamondDesktop.SalesReportCalc.Group(srRows, "Grade");
+
+    Check("REPORT - lines carry their invoice's buyer and payment",
+        srRows.Count == 3 && srRows[0].Buyer == "A" && srRows[0].Payment == "Paid" && srRows[2].Payment == "Overdue");
+    Check("REPORT - broker cost is the amount before broker less the amount",
+        srRows[0].BrokerCost == 10 && srRows[1].BrokerCost == 0);
+    Check("REPORT - by buyer: invoices counted once, shares add to 100",
+        byBuyer.Count == 2 && byBuyer.First(g => g.Name == "A").Invoices == 1
+        && byBuyer.First(g => g.Name == "A").Lines == 2 && byBuyer.Sum(g => g.SharePct) == 100m);
+    var d = new DateTime(2026, 2, 20);
+    Check("REPORT - periods: last month, quarter and an April financial year",
+        DiamondDesktop.MainWindow.SalesReportRange("LASTMONTH", d) == (new DateTime(2026, 1, 1), new DateTime(2026, 1, 31))
+        && DiamondDesktop.MainWindow.SalesReportRange("QUARTER", d).From == new DateTime(2026, 1, 1)
+        && DiamondDesktop.MainWindow.SalesReportRange("FY", d).From == new DateTime(2025, 4, 1)
+        && DiamondDesktop.MainWindow.SalesReportRange("MONTH", d) == (new DateTime(2026, 2, 1), d));
+
+    Check("REPORT - by grade: II across two invoices, average rate per selected carat",
+        byGrade.First(g => g.Name == "II") is { Invoices: 2, SelectionCt: 7, Amount: 700, AvgRate: 100 });
 }
 
 // ---- Zero figures - the sheet prints 0.00 and so must the screen ---------------------
@@ -2219,14 +2298,16 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
               && adjRow.Fields.First(f => f.Name == "size_id").OnlyValue == "2 · -6.5",
               $"{adjRow.Fields.First(f => f.Name == "grade_id").OnlyValue} / {adjRow.Fields.First(f => f.Name == "size_id").OnlyValue}");
 
-        // -- Stock report: FL, NO II and COL read as one "II" row; TOP-COL stays its own ---------
+        // -- Stock report: FL and NO II read as one "II" row; Color (COL, 0063) and TOP-COL stay their own
         var order = new List<string> { "PREMIUM", "1MB", "NO 1 BB", "FL", "NO II", "EX 1", "TOP-COL", "COL", "LB 1" };
         var rowsII = DiamondDesktop.MainWindow.ReportRows(order, editing: false);
-        Check("REPORT II - FL, NO II and COL become ONE row labelled II, where FL sorted",
-              rowsII.Select(r => r.Label).SequenceEqual(["PREMIUM", "1MB", "NO 1 BB", "II", "EX 1", "TOP-COL", "LB 1"]),
+        Check("REPORT II - FL and NO II become ONE row labelled II, where FL sorted",
+              rowsII.Select(r => r.Label).SequenceEqual(["PREMIUM", "1MB", "NO 1 BB", "II", "EX 1", "TOP-COL", "COL", "LB 1"]),
               string.Join(", ", rowsII.Select(r => r.Label)));
-        Check("REPORT II - and that row holds exactly the three real grades",
-              rowsII.Single(r => r.Label == "II").Members.SequenceEqual(["FL", "NO II", "COL"]));
+        Check("REPORT II - and that row holds exactly FL and NO II",
+              rowsII.Single(r => r.Label == "II").Members.SequenceEqual(["FL", "NO II"]));
+        Check("COLOR - Color is its own row on the Stock report, never inside II",
+              rowsII.Single(r => r.Label == "COL").Members.SequenceEqual(["COL"]));
         Check("REPORT II - TOP-COL is not part of it",
               rowsII.Single(r => r.Label == "TOP-COL").Members.SequenceEqual(["TOP-COL"]));
         Check("REPORT II - in Edit mode every grade is its own row again (a correction needs one grade)",
@@ -2234,11 +2315,12 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
         var hidden = new List<string> { "NO II", "COL" };            // FL hidden as empty
         var rowsHidden = DiamondDesktop.MainWindow.ReportRows(hidden, false, pool: order);
         Check("REPORT II - an empty FL hidden from the report still appears in II's breakdown",
-              rowsHidden.Count == 1 && rowsHidden[0].Members.SequenceEqual(["FL", "NO II", "COL"]));
-        var tipII = DiamondDesktop.MainWindow.ReportGroupTip("II", ["FL", "NO II", "COL"],
+              rowsHidden.Count == 2 && rowsHidden[0].Members.SequenceEqual(["FL", "NO II"])
+              && rowsHidden[1].Members.SequenceEqual(["COL"]));
+        var tipII = DiamondDesktop.MainWindow.ReportGroupTip("II", ["FL", "NO II"],
             g => g switch { "FL" => 58.38m, "NO II" => 266.21m, _ => 0m });
-        Check("REPORT II - hovering shows FL, II and Color separately, and their total",
-              tipII.Contains("FL: 58.38 ct") && tipII.Contains("II: 266.21 ct") && tipII.Contains("Color: 0.00 ct")
+        Check("REPORT II - hovering shows FL and II separately, and their total (no Color)",
+              tipII.Contains("FL: 58.38 ct") && tipII.Contains("II: 266.21 ct") && !tipII.Contains("Color")
               && tipII.Contains("Total: 324.59 ct"), tipII.Replace(Environment.NewLine, " | "));
 
         // -- Stock page and Dashboard: the same "II" grouping, display only ---------------------
@@ -2253,23 +2335,24 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
         };
         var grouped = DiamondDesktop.MainWindow.GroupRomanTwo(stockRows);
         var iiRow = grouped.FirstOrDefault(r => r.GradeCode == "II");
-        Check("STOCK II - FL, NO II and COL in one sieve become one II row, in FL's place",
-              grouped.Select(r => r.GradeCode + " " + r.SizeCode).SequenceEqual(["1MB +6.5", "II +6.5", "TOP-COL +6.5", "NO II +11"]),
+        Check("STOCK II - FL and NO II in one sieve become one II row, in FL's place; Color stays its own",
+              grouped.Select(r => r.GradeCode + " " + r.SizeCode).SequenceEqual(["1MB +6.5", "II +6.5", "COL +6.5", "TOP-COL +6.5", "NO II +11"]),
               string.Join(", ", grouped.Select(r => r.GradeCode + " " + r.SizeCode)));
         Check("STOCK II - its carats and value are the members' sums",
-              iiRow is { BalanceCt: 334.59m, StockValue: 11_160_000m } && iiRow.Members!.Count == 3,
+              iiRow is { BalanceCt: 324.59m, StockValue: 10_920_000m } && iiRow.Members!.Count == 2,
               $"{iiRow?.BalanceCt} ct, {iiRow?.StockValue}");
-        Check("STOCK II - hovering its grade names FL, II and Color separately",
+        Check("STOCK II - hovering its grade names FL and II separately, and not Color",
               iiRow!.GradeName!.Contains("FL: 58.38 ct") && iiRow.GradeName.Contains("II: 266.21 ct")
-              && iiRow.GradeName.Contains("Color: 10.00 ct"), iiRow.GradeName.Replace(Environment.NewLine, " | "));
+              && !iiRow.GradeName.Contains("Color"), iiRow.GradeName.Replace(Environment.NewLine, " | "));
         Check("STOCK II - the real rows are untouched", stockRows.Count == 6 && stockRows.All(r => r.Members is null));
         var bars = DiamondDesktop.MainWindow.InventoryByGrade(stockRows);
         var iiBar = bars.FirstOrDefault(b => b.Label == "II");
-        Check("DASHBOARD II - inventory by grade shows one II bar worth all three",
-              iiBar.Value == 11_160_000m + 9_200_000m && !bars.Any(b => b.Label is "FL" or "NO II" or "COL")
+        Check("DASHBOARD II - inventory by grade shows one II bar worth FL + NO II, and Color its own bar",
+              iiBar.Value == 10_920_000m + 9_200_000m && !bars.Any(b => b.Label is "FL" or "NO II")
+              && bars.Any(b => b.Label == "COL" && b.Value == 240_000m)
               && bars.Any(b => b.Label == "TOP-COL"), string.Join(", ", bars.Select(b => $"{b.Label} {b.Value}")));
         Check("DASHBOARD II - its second line names each grade's own value",
-              iiBar.Secondary is { } sec && sec.StartsWith("FL ") && sec.Contains("· II ") && sec.Contains("· Color "), iiBar.Secondary);
+              iiBar.Secondary is { } sec && sec.StartsWith("FL ") && sec.Contains("· II ") && !sec.Contains("Color"), iiBar.Secondary);
 
         var hist = DiamondDesktop.MainWindow.StockHistoryRows(
         [
@@ -2292,6 +2375,44 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
                   ["Purchase / intake:intake", "Sale:sale", "Rejection:rejection", "Conversion in:conversion",
                    "Conversion out:conversion", "Adjustment:adjust", "Rejection hold:rejection"]),
               string.Join(", ", toned.Select(h => $"{h.Kind}:{h.Tone}")));
+
+        var mb = DiamondDesktop.MainWindow.ParseMergeBreakdown(
+            "2026-10-13;COL,-6.5,3.17;FL,-6.5,17.27;NO II,-6.5,127.71;COL,+11,42.14;NO II,+11,220.29");
+        Check("II SPLIT - the merge snapshot reads back: date, and FL / II / Color per size",
+              mb is { At: { Year: 2026, Month: 10, Day: 13 } } && mb.Cells[("FL", "-6.5")] == 17.27m
+              && mb.Cells[("NO II", "+11")] == 220.29m && mb.Cells.Values.Sum() == 410.58m,
+              mb is null ? "null" : $"{mb.At} · {mb.Cells.Count} cells · {mb.Cells.Values.Sum()}");
+        var tipText = (string)typeof(DiamondDesktop.MainWindow)
+            .GetMethod("MergeBreakdownTip", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+            .Invoke(null, [DiamondDesktop.MainWindow.ParseMergeBreakdown(
+                "2026-10-13;COL,-6.5,3.17;FL,-6.5,17.27;NO II,-6.5,127.71;COL,+11,42.14;FL,+11,78.85;NO II,+11,598.70;COL,1/6,168.61")!,
+                new[] { "-6.5", "+11", "1/6" }, "II", null])!;
+        Check("II SPLIT - the hover reads exactly as the grouped one did: FL, II, Color and the total",
+              tipText == string.Join(Environment.NewLine, "II combines FL, II, Color", "FL: 96.12 ct", "II: 726.41 ct",
+                                     "Color: 213.92 ct", "Total: 1,036.45 ct"), tipText.Replace(Environment.NewLine, " | "));
+        Check("II SPLIT - nothing saved means no hover, not an empty one",
+              DiamondDesktop.MainWindow.ParseMergeBreakdown("") is null
+              && DiamondDesktop.MainWindow.ParseMergeBreakdown("2026-10-13;") is null);
+
+        string[] shuffled = ["1/3", "+23", "0.25", "-2", "14+", "+11", "0.2", "+6.5", "1/6", "-6.5", "+18"];
+        var ordered = shuffled.OrderBy(c => DiamondDesktop.MainWindow.SieveRank(c)).ToList();
+        Check("SIZES - one fixed order, smallest stones first, whatever order they come in",
+              ordered.SequenceEqual(["-2", "-6.5", "+6.5", "+11", "14+", "+18", "+23", "1/6", "0.2", "0.25", "1/3"]),
+              string.Join(" ", ordered));
+        Check("SIZES - a code it cannot read is not guessed at",
+              DiamondDesktop.MainWindow.SieveRank("MIX") is null && DiamondDesktop.MainWindow.SieveRank("") is null);
+
+        Check("AGES - the Age filter offers all five bands, exactly the names the engine files invoices under",
+              DiamondDesktop.MainWindow.AgeBands.SequenceEqual(
+                  new[] { 0, 1, 31, 61, 91 }.Select(DiamondCalc.Calc.AgeBucket)),
+              string.Join(" | ", DiamondDesktop.MainWindow.AgeBands));
+
+        var checkPw = typeof(DiamondDesktop.MainWindow).GetMethod("CheckPassword",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        string? Pw(string p) => (string?)checkPw.Invoke(null, [p]);
+        Check("PASSWORD - ten real characters pass; ten spaces, or short padded with spaces, do not",
+              Pw("Secret-123") is null && Pw("  Secret-123  ") is null
+              && Pw("          ") is not null && Pw("  abc      ") is not null && Pw("short") is not null);
 
         string? RateErr(decimal w, string? r) => DiamondDesktop.MainWindow.AdjustmentRateError(w, r);
         Check("ADJUST - adding carats with no rate, a zero or a negative rate is refused",

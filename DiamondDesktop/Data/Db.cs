@@ -266,6 +266,10 @@ public static class Db
                      or FailureHint.Reason.NoSessionFound
             } => "Session expired. Sign in again.",
             HttpRequestException or TaskCanceledException => Offline,
+            // Deactivating an account also bans it in Supabase Auth (admin-users), so a sign-in is
+            // refused with "user_banned" -- the same fact the profile check reports, in its words.
+            GotrueException g when g.Message.Contains("user_banned", StringComparison.OrdinalIgnoreCase)
+                                || g.Message.Contains("User is banned", StringComparison.OrdinalIgnoreCase) => Deactivated,
             _ => ex.Message
         };
 
