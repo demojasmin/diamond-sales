@@ -186,7 +186,7 @@
                                 Binding="{Binding Remark, UpdateSourceTrigger=LostFocus}"/>
             <!-- The same remove button the Invoice lines table uses, in a column wide enough to hold
                  it whole: at 44px with the ghost style's padding the icon was clipped. -->
-            <DataGridTemplateColumn Header="" Width="56" MinWidth="56" CanUserResize="False">
+            <DataGridTemplateColumn Header="Action" Width="76" MinWidth="76" CanUserResize="False">
               <DataGridTemplateColumn.CellTemplate>
                 <DataTemplate>
                   <Button Tag="{Binding}" Click="RemoveLine_Click" Style="{StaticResource DashButton}"

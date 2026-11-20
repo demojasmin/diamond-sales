@@ -32,7 +32,10 @@ public partial class AddSaleDialog : Window
     {
         InitializeComponent();
         _addLine = addLine;
-        _deal.SetInvoiceDate(entry.InvoiceDate);
+        // TODAY, not the entry's date. The entry's date is whatever a restored or reopened entry was
+        // typed on (03-09-2026 on Demo), so a new sale opened silently back-dated. A different
+        // date is still one click away in the box.
+        _deal.SetInvoiceDate(DateTime.Today);
         DealFields.DataContext = _deal;
 
         // Filled from code, as every picker in this app is: PickerSearch wraps a local ItemsSource.

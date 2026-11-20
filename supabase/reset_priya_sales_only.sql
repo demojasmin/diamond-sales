@@ -36,6 +36,16 @@
 --                               caught by the first tag and would otherwise be
 --                               left holding a correction to an invoice that has
 --                               gone.
+--     ref_type = 'cancel'       the ADJUST cancel_invoice writes to give a
+--                               cancelled invoice's carats back (ref_id = the
+--                               invoice). Keeping it after its SALE is gone would
+--                               credit those carats a second time.
+--     ref_type = 'rejection_hold'  the pre-0055 rejection of an invoice, restated
+--                               as a negative ADJUST (ref_id = the invoice). With
+--                               the invoice gone it is a deduction for nothing.
+--
+--     NOT 'rej_hold_mvmt' -- that is the hold on a hand-recorded rejection, which
+--     is stock data and stays.
 --
 -- Everything else in stock_movement -- INTAKE, CONVERT_IN, CONVERT_OUT, a
 -- rejection or an adjustment recorded by hand on the Intake & movements page --
@@ -97,13 +107,13 @@ begin
 
     select count(*), coalesce(sum(weight_ct), 0) into v_mov, v_back
       from public.stock_movement
-     where ref_type in ('sales_line', 'import_edit');
+     where ref_type in ('sales_line', 'import_edit', 'cancel', 'rejection_hold');
 
     select coalesce(round(sum(ledger_ct), 4), 0) into v_now from public.v_stock_position;
 
     raise notice 'Removing % invoice(s), % line(s), % receipt(s) and % sales movement(s).',
                  v_inv, v_lines, v_rec, v_mov;
-    raise notice 'Stock now % ct; % ct comes back off those movements.', v_now, v_back;
+    raise notice 'Stock now % ct; those movements net % ct (signed as stored).', v_now, v_back;
 end $$;
 
 
@@ -117,7 +127,7 @@ end $$;
 --
 -- rejection_disposition rows cascade from here. Do not add a delete for them.
 delete from public.stock_movement
- where ref_type in ('sales_line', 'import_edit');
+ where ref_type in ('sales_line', 'import_edit', 'cancel', 'rejection_hold');
 
 
 -- ── carats a half-typed sales entry is holding (0043) ───────────────────────
@@ -159,7 +169,7 @@ select 'no receipts left',
 union all
 select 'no sales movements left',
        case when (select count(*) from public.stock_movement
-                   where ref_type in ('sales_line', 'import_edit')) = 0
+                   where ref_type in ('sales_line', 'import_edit', 'cancel', 'rejection_hold')) = 0
             then 'ok' else 'STILL THERE' end
 union all
 select 'no carats held by an entry',

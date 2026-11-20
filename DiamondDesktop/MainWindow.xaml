@@ -209,6 +209,9 @@
         <DataTrigger Binding="{Binding}" Value="Invoices">
           <Setter TargetName="icon" Property="Data" Value="M3,4.5 h14 M3,9 h14 M3,13.5 h14 M3,17.5 h8"/>
         </DataTrigger>
+        <DataTrigger Binding="{Binding}" Value="Sales report">
+          <Setter TargetName="icon" Property="Data" Value="M3,17 h14 M5,14 v-4 M9,14 v-8 M13,14 v-6 M17,14 v-10"/>
+        </DataTrigger>
         <DataTrigger Binding="{Binding}" Value="Receivables">
           <Setter TargetName="icon" Property="Data" Value="M10,2.8 A7.2,7.2 0 1,0 10,17.2 A7.2,7.2 0 1,0 10,2.8 M6.8,10.4 h6.4 M8.4,7.6 h3.2"/>
         </DataTrigger>
@@ -420,8 +423,32 @@
               <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
                 <Grid.ColumnDefinitions>
                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <ContentControl Grid.Column="0" Style="{StaticResource BrandMark}"/>
+
+                <!-- THE TOTALS LIVE IN THE HEADER (redesign, Nov 2026). They were a card of their own
+                     under the table, which cost the grid ~70px of height and put the running figure
+                     the desk watches while typing at the far bottom of the window. Same three
+                     x:Names and bindings, so nothing that reads them has to know they moved. -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
+                  <StackPanel Margin="0,0,28,0">
+                    <TextBlock Text="CARATS" Style="{StaticResource KpiLabel}" HorizontalAlignment="Right"/>
+                    <TextBlock x:Name="TotalCarats" Margin="0,2,0,0" HorizontalAlignment="Right"
+                               Text="{Binding TotalCarats, StringFormat=N2}" Style="{StaticResource Total}"/>
+                  </StackPanel>
+                  <StackPanel Margin="0,0,28,0">
+                    <TextBlock Text="AMOUNT" Style="{StaticResource KpiLabel}" HorizontalAlignment="Right"/>
+                    <TextBlock x:Name="TotalAmount" Margin="0,2,0,0" HorizontalAlignment="Right"
+                               Text="{Binding TotalAmount, Converter={StaticResource Money}}" Style="{StaticResource Total}"/>
+                  </StackPanel>
+                  <StackPanel>
+                    <TextBlock Text="BLENDED RATE / CT" Style="{StaticResource KpiLabel}" HorizontalAlignment="Right"/>
+                    <TextBlock x:Name="BlendedRate" Margin="0,2,0,0" HorizontalAlignment="Right"
+                               Text="{Binding BlendedRate, Converter={StaticResource Money}}" Style="{StaticResource Total}"/>
+                  </StackPanel>
+                </StackPanel>
+
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                   <StackPanel Orientation="Horizontal">
                     <TextBlock Text="Sales entry" Style="{StaticResource PageHeaderTitle}"/>
@@ -435,8 +462,52 @@
                                                 Converter={StaticResource CountLabel}, ConverterParameter=line}"/>
                     </Border>
                   </StackPanel>
-                  <TextBlock Text="Keyboard-first invoice entry · buyer, broker and terms, and the due date follows from the terms"
-                             Style="{StaticResource DashSubheading}"/>
+                  <!-- The workflow in one line, in the order it is done. The old subtitle described
+                       fields ("buyer, broker and terms...") and never said what to press. -->
+                  <!-- THE STEPS, as a strip that shows where the desk is (Nov 2026). Written in
+                       SetEntryStep from RefreshActionStates: 1 while the entry is empty, 2 while
+                       something blocks Confirm sale, 3 once it can be confirmed. Display only. -->
+                  <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <StackPanel Orientation="Horizontal" Margin="0,0,18,0" VerticalAlignment="Center">
+                      <Border x:Name="Step1Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1"
+                              Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}">
+                        <TextBlock x:Name="Step1Num" Text="1" FontSize="12" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextMutedBrush}"/>
+                      </Border>
+                      <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
+                        <TextBlock x:Name="Step1Title" Text="Add sale" FontSize="12.5"
+                                   Foreground="{DynamicResource TextMutedBrush}"/>
+                        <TextBlock Text="Pick the buyer, type the lines" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                      </StackPanel>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,18,0" VerticalAlignment="Center">
+                      <Border x:Name="Step2Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1"
+                              Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}">
+                        <TextBlock x:Name="Step2Num" Text="2" FontSize="12" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextMutedBrush}"/>
+                      </Border>
+                      <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
+                        <TextBlock x:Name="Step2Title" Text="Check lines" FontSize="12.5"
+                                   Foreground="{DynamicResource TextMutedBrush}"/>
+                        <TextBlock Text="Fix anything marked" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                      </StackPanel>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,18,0" VerticalAlignment="Center">
+                      <Border x:Name="Step3Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1"
+                              Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}">
+                        <TextBlock x:Name="Step3Num" Text="3" FontSize="12" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextMutedBrush}"/>
+                      </Border>
+                      <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
+                        <TextBlock x:Name="Step3Title" Text="Confirm" FontSize="12.5"
+                                   Foreground="{DynamicResource TextMutedBrush}"/>
+                        <TextBlock Text="Confirm sale or Print memo" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                      </StackPanel>
+                    </StackPanel>
+                  </StackPanel>
                 </StackPanel>
               </Grid>
 
@@ -449,7 +520,7 @@
                  invoice that has lost them.
 
                  Empty means no opinion, so an untouched screen shows everything. -->
-            <Border DockPanel.Dock="Top" Style="{StaticResource DashToolbar}" Margin="0,0,0,8" Padding="12,8">
+            <Border x:Name="LineFilterBar" DockPanel.Dock="Top" Style="{StaticResource DashToolbar}" Margin="0,0,0,8" Padding="12,8">
               <!-- A TITLED FILTER BAR. The four boxes read as deal fields to fill in ("Select buyer",
                    and a Type box with no word at all), and their fixed widths did not share the
                    card, so it says what it is, the boxes say "All ...", and they stretch together. -->
@@ -559,33 +630,6 @@
             </DockPanel>
           </Border>
 
-          <Border DockPanel.Dock="Bottom" Style="{StaticResource DashCard}" Margin="0,12,0,0">
-            <!-- Totals only. The actions moved up into the Invoice lines card, beside the work
-                 they act on, where there is room for their full labels. -->
-            <Grid>
-              <!-- Label above figure, not beside it. Three label/value pairs on one line read as
-                   six things; stacked they read as three. Same bindings and same names — the
-                   figures themselves are untouched. -->
-              <WrapPanel VerticalAlignment="Center">
-                <StackPanel Margin="0,0,32,0">
-                  <TextBlock Text="CARATS" Style="{StaticResource KpiLabel}"/>
-                  <TextBlock x:Name="TotalCarats" Margin="0,2,0,0"
-                             Text="{Binding TotalCarats, StringFormat=N2}" Style="{StaticResource Total}"/>
-                </StackPanel>
-                <StackPanel Margin="0,0,32,0">
-                  <TextBlock Text="AMOUNT" Style="{StaticResource KpiLabel}"/>
-                  <TextBlock x:Name="TotalAmount" Margin="0,2,0,0"
-                             Text="{Binding TotalAmount, Converter={StaticResource Money}}" Style="{StaticResource Total}"/>
-                </StackPanel>
-                <StackPanel Margin="0,0,24,0">
-                  <TextBlock Text="BLENDED RATE / CT" Style="{StaticResource KpiLabel}"/>
-                  <TextBlock x:Name="BlendedRate" Margin="0,2,0,0"
-                             Text="{Binding BlendedRate, Converter={StaticResource Money}}" Style="{StaticResource Total}"/>
-                </StackPanel>
-              </WrapPanel>
-            </Grid>
-          </Border>
-
           <!-- ── the lines, and the deal drawer beside them ──────────────────────
                A column each, exactly as the Invoices and Stock pages already split a list from its
                detail. BESIDE and not over: the requirement is that the table stays visible while a
@@ -645,6 +689,8 @@
                       <TextBlock x:Name="BlockChipText" Style="{StaticResource DashChipText}"/>
                     </Border>
                   </StackPanel>
+                  <TextBlock x:Name="LinesGuide" Style="{StaticResource DashSubheading}" Margin="0,3,0,0"
+                             TextWrapping="Wrap" Text="Start with Add sale."/>
                 </StackPanel>
                 <!-- ONE action area, beside the heading that already draws the eye. Everything
                      that acts on this invoice is here: nothing is per-row any more, which is what
@@ -656,8 +702,10 @@
 
                      Icon then label, one style, one spacing, on every one of them. -->
                 <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
+                  <!-- PRIMARY on an untouched screen: it is the first step, and it was drawn exactly
+                       like every secondary button beside it. Confirm sale keeps the gold. -->
                   <Button x:Name="AddLineButton" Click="AddLine_Click"
-                          Style="{StaticResource DashButton}" Margin="0,0,8,0"
+                          Style="{StaticResource AppPrimaryButton}" Margin="0,0,8,0"
                           ToolTip="Add a sale: choose its deal, then add its lines"
                           AutomationProperties.Name="Add sale">
                     <StackPanel Orientation="Horizontal">
@@ -1016,7 +1064,7 @@
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTemplateColumn Header="Grade" Width="120*" MinWidth="112" CellStyle="{StaticResource ComboCell}">
+              <DataGridTemplateColumn Header="Grade" Width="120*" MinWidth="100" CellStyle="{StaticResource ComboCell}">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <Grid>
@@ -1044,14 +1092,14 @@
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTextColumn Header="Weight ct" Width="80*" MinWidth="84" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Weight ct" Width="80*" MinWidth="76" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding GrossWeightCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Selection" Width="88*" MinWidth="84" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Selection" Width="88*" MinWidth="76" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding SelectionCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
               <!-- Read-only and never wider than "999.99", so it can afford the floor that the two
                    Less columns need. -->
-              <DataGridTextColumn Header="Rejection" Width="88*" MinWidth="84" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
-                                  Binding="{Binding RejectionCt, StringFormat=N2, Mode=OneWay}" Foreground="{DynamicResource AccentBrush}"/>
+              <DataGridTextColumn Header="Rejection" Width="80*" MinWidth="72" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
+                                  Binding="{Binding RejectionCt, StringFormat=N2, Mode=OneWay}" Foreground="{DynamicResource TextMutedBrush}"/>
               <DataGridTextColumn Header="Price/ct" Width="128*" MinWidth="80" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding PricePerCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}">
                 <DataGridTextColumn.ElementStyle>
@@ -1061,14 +1109,14 @@
                   </Style>
                 </DataGridTextColumn.ElementStyle>
               </DataGridTextColumn>
-              <DataGridTextColumn Header="Ex Rate" Width="66*" MinWidth="72" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Ex Rate" Width="66*" MinWidth="62" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding ExRate, UpdateSourceTrigger=LostFocus}"/>
               <!-- 52*/46 gave the editor 13px of text room — one character — so a percentage like
                    12.5 scrolled out of sight as it was typed and the field looked dead. These two
                    hold the same shape of figure as Ex Rate and are sized to match it. -->
-              <DataGridTextColumn Header="Less 1" Width="62*" MinWidth="62" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Less 1" Width="62*" MinWidth="56" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding Less1Pct, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Less 2" Width="62*" MinWidth="62" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Less 2" Width="62*" MinWidth="56" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding Less2Pct, UpdateSourceTrigger=LostFocus}"/>
               <DataGridTextColumn Header="Amount" Width="144*" MinWidth="92" IsReadOnly="True" HeaderStyle="{StaticResource AppNumericHeader}"
                                   Binding="{Binding Amount, StringFormat=N2, Mode=OneWay}" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}">
@@ -1102,7 +1150,7 @@
                    the row's height with it. 200* and a floor of 150. The star weight only shares
                    out spare width, so it costs no other column anything; the floor adds 70px to
                    the table's total, which the horizontal scrollbar already handles. -->
-              <DataGridTemplateColumn Header="Remark" Width="200*" MinWidth="150">
+              <DataGridTemplateColumn Header="Remark" Width="200*" MinWidth="90">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <Grid>
@@ -1143,7 +1191,7 @@
                    The buyer line turns red and reads "No buyer" when there is none: sales_invoice
                    .buyer_id is NOT NULL, so that row cannot be written at all, and a blank cell
                    would have looked merely unfilled rather than blocking. -->
-              <DataGridTemplateColumn Header="Deal Details" Width="176" MinWidth="168"
+              <DataGridTemplateColumn Header="Deal Details" Width="140" MinWidth="140"
                                       CanUserResize="False" SortMemberPath="DealSummary">
                 <DataGridTemplateColumn.CellStyle>
                   <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
@@ -1202,22 +1250,10 @@
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
 
-              <!-- ACTION, last and next to Remark. Four icon buttons, no labels: Print memo,
-                   Move to stock, Confirm sale, Remove. Same icons and the same ActionIcon style as
-                   the header row above, so a glyph means the same thing in both places.
-
-                   Icons rather than words because this repeats on every line. The same four as
-                   text measured over 300px and made Action the widest column in the table, which
-                   starved the star columns and clipped the Size and Grade dropdowns. At 26px each
-                   the column is 136 and the table's floors come to 1072, inside the card at any
-                   normal window.
-
-                   ALL THREE ARE ABOUT THIS LINE. They share the header buttons' handlers, and what
-                   separates them is Tag="{Binding}": ActOn() reads it and acts on that row, or
-                   falls back to the ticked rows when there is none, which is what the header
-                   buttons and Ctrl+P get. Print memo and Confirm sale used to ignore the row and
-                   do the whole entry from here. The header keeps the worded copies. -->
-              <DataGridTemplateColumn Header="Action" Width="108" MinWidth="108"
+              <!-- ACTION, back on request (Nov 2026): Print memo, Confirm and Remove for THIS row,
+                   as compact icons with tooltips. The header buttons stay for the ticked lines (or
+                   all lines). 90px with 26px icons so the table still fits the card. -->
+              <DataGridTemplateColumn Header="Action" Width="88" MinWidth="88"
                                       CanUserResize="False">
                 <DataGridTemplateColumn.CellStyle>
                   <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
@@ -1232,7 +1268,7 @@
                            handlers fell through to the ticked rows, so a row icon did whatever the
                            ticks said and ignored the row it was sitting on. -->
                       <Button Click="PrintMemo_Click" Tag="{Binding}" Style="{StaticResource DashButton}"
-                              Height="26" Width="28" MinWidth="0" Padding="0" Margin="2,0"
+                              Height="26" Width="26" MinWidth="0" Padding="0" Margin="1,0"
                               ToolTip="Print a memo for this line"
                               AutomationProperties.Name="Print memo for this line">
                         <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconMemo}"/>
@@ -1240,7 +1276,7 @@
                       <!-- The row's Move to stock icon goes with the header button above. Three
                            actions per row now, not four, so the column is 108px rather than 136. -->
                       <Button Click="Post_Click" Tag="{Binding}" Style="{StaticResource DashGoldButton}"
-                              Height="26" Width="28" MinWidth="0" Padding="0" Margin="2,0"
+                              Height="26" Width="26" MinWidth="0" Padding="0" Margin="1,0"
                               ToolTip="Confirm this line — posts it and takes the stock"
                               AutomationProperties.Name="Confirm this line">
                         <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconConfirm}"/>
@@ -1257,7 +1293,7 @@
                            why they stay icon-only and the column still fits. -->
                       <Button Click="RemoveLine_Click" Tag="{Binding}"
                               Style="{StaticResource DashButton}"
-                              Height="26" Width="28" MinWidth="0" Padding="0" Margin="2,0"
+                              Height="26" Width="26" MinWidth="0" Padding="0" Margin="1,0"
                               Foreground="{DynamicResource DangerBrush}"
                               ToolTip="Remove this line"
                               AutomationProperties.Name="Remove this line">
@@ -1295,7 +1331,7 @@
             <TextBlock Style="{StaticResource EmptyHint}"
                        VerticalAlignment="Top" Margin="12,96,12,0"
                        Visibility="{Binding EntriesStarted, Converter={StaticResource Empty}}"
-                       Text="Pick a grade and size, then type the weight.&#10;Enter adds another line · Ctrl+S saves a memo."/>
+                       Text="Press Add sale to pick the buyer and type the lines — or type into the row above and press Edit to set its deal.&#10;Enter adds a line · tick lines only to act on some of them · Delete removes a line · Ctrl+P prints a memo"/>
 
             <!-- With no catalogue the Grade and Size dropdowns open onto nothing, which reads as
                  "this app is broken" rather than "it could not reach the database" — and a line can
@@ -1869,6 +1905,249 @@
               </DockPanel>
             </Border>
           </Grid>
+        </DockPanel>
+      </TabItem>
+
+      <!-- ══ Sales report (Nov 2026) ═══════════════════════════════════════
+           Every POSTED line in a period, joined to its invoice for buyer, broker and payment state.
+           Read-only: two existing reads (Repo.SalesLinesAsync, Repo.InvoicesAsync), no new query,
+           no write. Code in SalesReport.cs. -->
+      <TabItem Header="Sales report">
+        <TabItem.Resources>
+          <Style TargetType="ScrollBar" BasedOn="{StaticResource SlimScrollBar}"/>
+          <!-- Every heading carries itself as a tooltip, so one trimmed to "..." can still be read. -->
+          <Style x:Key="SrHeader" TargetType="DataGridColumnHeader" BasedOn="{StaticResource AppColumnHeader}">
+            <Setter Property="ToolTip" Value="{Binding Content, RelativeSource={RelativeSource Self}}"/>
+          </Style>
+          <Style x:Key="SrNumHeader" TargetType="DataGridColumnHeader" BasedOn="{StaticResource AppNumericHeader}">
+            <Setter Property="ToolTip" Value="{Binding Content, RelativeSource={RelativeSource Self}}"/>
+          </Style>
+        </TabItem.Resources>
+        <DockPanel Margin="16,14,16,14">
+
+          <Border DockPanel.Dock="Top" Style="{StaticResource PageHeaderCard}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <ContentControl Grid.Column="0" Style="{StaticResource BrandMark}"/>
+              <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal">
+                  <TextBlock Text="Sales report" Style="{StaticResource PageHeaderTitle}"/>
+                  <Border Style="{StaticResource DashChip}" Margin="10,0,0,0">
+                    <TextBlock x:Name="SrChip" Style="{StaticResource DashChipText}" Text="Not loaded yet"/>
+                  </Border>
+                </StackPanel>
+                <TextBlock x:Name="SrPeriod" Style="{StaticResource DashSubheading}"
+                           Text="Confirmed sales, line by line, with totals"/>
+              </StackPanel>
+              <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Content="Refresh" Click="LoadSalesReport_Click" Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
+                <Button Content="Export summary" Click="ExportSalesSummary_Click" Style="{StaticResource DashButton}" Margin="0,0,8,0"/>
+                <Button Content="Export lines" Click="ExportSalesReport_Click" Style="{StaticResource DashButton}"/>
+              </StackPanel>
+            </Grid>
+          </Border>
+
+          <!-- Filters. Dates re-read the database; buyer, grade and search narrow what is loaded. -->
+          <Border DockPanel.Dock="Top" Style="{StaticResource DashToolbar}" Margin="0,0,0,12">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*" MinWidth="150"/>
+                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <!-- A quick period beside the two dates: picking one fills From and To. Editing a date
+                   by hand turns this to Custom. -->
+              <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="0,0,8,0">
+                <StackPanel Margin="0,0,8,0">
+                  <TextBlock Text="PERIOD" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                  <ComboBox x:Name="SrRange" Width="130" Height="34" SelectedIndex="0"
+                            SelectionChanged="SrRange_Changed" PreviewMouseWheel="NoWheelChange"
+                            AutomationProperties.Name="Sales report period">
+                    <ComboBoxItem Tag="MONTH">This month</ComboBoxItem>
+                    <ComboBoxItem Tag="LASTMONTH">Last month</ComboBoxItem>
+                    <ComboBoxItem Tag="QUARTER">This quarter</ComboBoxItem>
+                    <ComboBoxItem Tag="FY">Financial year</ComboBoxItem>
+                    <ComboBoxItem Tag="ALL">All time</ComboBoxItem>
+                    <ComboBoxItem Tag="CUSTOM">Custom</ComboBoxItem>
+                  </ComboBox>
+                </StackPanel>
+                <StackPanel>
+                <TextBlock Text="FROM" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                <DatePicker x:Name="SrFrom" Style="{StaticResource AppDatePicker}" Width="130" Height="34"
+                            SelectedDateChanged="SrDate_Changed" CalendarClosed="DatePicker_CalendarClosed"
+                            AutomationProperties.Name="Sales report from"/>
+                </StackPanel>
+              </StackPanel>
+              <StackPanel Grid.Column="1" Margin="0,0,8,0">
+                <TextBlock Text="TO" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                <DatePicker x:Name="SrTo" Style="{StaticResource AppDatePicker}" Width="130" Height="34"
+                            SelectedDateChanged="SrDate_Changed" CalendarClosed="DatePicker_CalendarClosed"
+                            AutomationProperties.Name="Sales report to"/>
+              </StackPanel>
+              <StackPanel Grid.Column="2" Margin="0,0,8,0">
+                <TextBlock Text="BUYER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                <ComboBox x:Name="SrBuyer" MinWidth="150" MaxWidth="280" Height="34"
+                          SelectionChanged="SrFilter_Changed" PreviewMouseWheel="NoWheelChange"
+                          AutomationProperties.Name="Sales report buyer"/>
+              </StackPanel>
+              <StackPanel Grid.Column="3" Margin="0,0,8,0">
+                <TextBlock Text="GRADE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                <ComboBox x:Name="SrGrade" MinWidth="110" MaxWidth="220" Height="34"
+                          SelectionChanged="SrFilter_Changed" PreviewMouseWheel="NoWheelChange"
+                          AutomationProperties.Name="Sales report grade"/>
+              </StackPanel>
+              <StackPanel Grid.Column="4" Margin="0,0,8,0">
+                <TextBlock Text="SEARCH" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                <TextBox x:Name="SrSearch" Style="{StaticResource SearchBar}" Height="34"
+                         Tag="Invoice no, buyer, broker or remark" TextChanged="SrFilter_Changed"
+                         AutomationProperties.Name="Search the sales report"/>
+              </StackPanel>
+              <StackPanel Grid.Column="5" Margin="0,0,8,0">
+                <TextBlock Text="SUMMARY BY" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                <ComboBox x:Name="SrGroupBy" Width="110" Height="34" SelectedIndex="0"
+                          SelectionChanged="SrFilter_Changed" PreviewMouseWheel="NoWheelChange"
+                          AutomationProperties.Name="Summarise the sales report by">
+                  <ComboBoxItem>Buyer</ComboBoxItem>
+                  <ComboBoxItem>Grade</ComboBoxItem>
+                  <ComboBoxItem>Size</ComboBoxItem>
+                  <ComboBoxItem>Broker</ComboBoxItem>
+                  <ComboBoxItem>Month</ComboBoxItem>
+                </ComboBox>
+              </StackPanel>
+              <Button Grid.Column="6" Content="Clear" Click="SrClear_Click" Style="{StaticResource DashButton}"
+                      VerticalAlignment="Bottom" ToolTip="Show every buyer and grade in the period"/>
+            </Grid>
+          </Border>
+
+          <!-- Totals for what is shown. Received / outstanding are per INVOICE (whole invoice). -->
+          <UniformGrid DockPanel.Dock="Top" Columns="5" Margin="0,0,-10,2">
+            <Border Style="{StaticResource KpiTile}" Margin="0,0,10,10">
+              <StackPanel Style="{StaticResource KpiBody}">
+                <TextBlock Text="INVOICES" Style="{StaticResource KpiLabel}"/>
+                <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly" MaxHeight="27" Margin="0,6,0,0">
+                  <TextBlock x:Name="SrKInvoices" Style="{StaticResource KpiValue}"/>
+                </Viewbox>
+                <TextBlock x:Name="SrKLines" Style="{StaticResource KpiCaption}"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource KpiTile}" Margin="0,0,10,10">
+              <StackPanel Style="{StaticResource KpiBody}">
+                <TextBlock Text="CARATS SOLD (SELECTION)" Style="{StaticResource KpiLabel}"/>
+                <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly" MaxHeight="27" Margin="0,6,0,0">
+                  <TextBlock x:Name="SrKCarats" Style="{StaticResource KpiValue}"/>
+                </Viewbox>
+                <TextBlock x:Name="SrKGross" Style="{StaticResource KpiCaption}" TextTrimming="CharacterEllipsis"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource KpiTile}" Margin="0,0,10,10">
+              <StackPanel Style="{StaticResource KpiBody}">
+                <TextBlock Text="SALES AMOUNT" Style="{StaticResource KpiLabel}"/>
+                <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly" MaxHeight="27" Margin="0,6,0,0">
+                  <TextBlock x:Name="SrKAmount" Style="{StaticResource KpiValue}"/>
+                </Viewbox>
+                <TextBlock x:Name="SrKRate" Style="{StaticResource KpiCaption}" TextTrimming="CharacterEllipsis"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource KpiTile}" Margin="0,0,10,10">
+              <StackPanel Style="{StaticResource KpiBody}">
+                <TextBlock Text="BROKER COST" Style="{StaticResource KpiLabel}"/>
+                <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly" MaxHeight="27" Margin="0,6,0,0">
+                  <TextBlock x:Name="SrKBroker" Style="{StaticResource KpiValue}"/>
+                </Viewbox>
+                <TextBlock Text="Deducted from the amounts" Style="{StaticResource KpiCaption}"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource KpiTile}" Margin="0,0,10,10"
+                    ToolTip="Per invoice: an invoice that is only partly shown (grade filter) counts in full.">
+              <StackPanel Style="{StaticResource KpiBody}">
+                <TextBlock Text="RECEIVED / OUTSTANDING" Style="{StaticResource KpiLabel}"/>
+                <Viewbox HorizontalAlignment="Left" StretchDirection="DownOnly" MaxHeight="27" Margin="0,6,0,0">
+                <StackPanel Orientation="Horizontal">
+                  <TextBlock x:Name="SrKReceived" Style="{StaticResource KpiValue}"/>
+                  <TextBlock Text=" / " Style="{StaticResource KpiValue}" Foreground="{DynamicResource TextMutedBrush}"/>
+                  <TextBlock x:Name="SrKOutstanding" Style="{StaticResource KpiValue}" Foreground="{DynamicResource DangerBrush}"/>
+                </StackPanel>
+                </Viewbox>
+                <TextBlock x:Name="SrKOverdue" Style="{StaticResource KpiCaption}"/>
+              </StackPanel>
+            </Border>
+          </UniformGrid>
+
+          <!-- SUMMARY AND SOLD LINES AS TABS, one card: each gets the whole height instead of
+               two half-height tables. Same SectionTabs style as Master data. -->
+          <Border Style="{StaticResource DashCard}">
+            <TabControl x:Name="SrTabs" Style="{StaticResource SectionTabs}" Padding="0,8,0,0">
+              <TabItem Header="Summary" Style="{StaticResource SectionTabItem}">
+                <Grid>
+                <TextBlock x:Name="SrSummaryEmpty" Style="{StaticResource EmptyHint}" Visibility="Collapsed"
+                           VerticalAlignment="Top" Margin="12,56,12,0" Panel.ZIndex="1"
+                           Text="Nothing to summarise for these filters."/>
+                <DataGrid x:Name="SrSummaryGrid" IsReadOnly="True" AutoGenerateColumns="False"
+                          HeadersVisibility="Column" GridLinesVisibility="None" BorderThickness="0"
+                          Background="Transparent" CanUserSortColumns="True"
+                          ColumnHeaderStyle="{StaticResource SrHeader}"
+                          ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                  <DataGrid.Columns>
+                    <DataGridTextColumn Header="NAME" Binding="{Binding Name}" Width="2*" MinWidth="140"/>
+                    <DataGridTextColumn Header="INVOICES" Binding="{Binding Invoices, StringFormat=N0}" Width="Auto" MinWidth="96" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                    <DataGridTextColumn Header="LINES" Binding="{Binding Lines, StringFormat=N0}" Width="Auto" MinWidth="75" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                    <DataGridTextColumn Header="WEIGHT CT" Binding="{Binding WeightCt, StringFormat=N2}" Width="Auto" MinWidth="103" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                    <DataGridTextColumn Header="SELECTION CT" Binding="{Binding SelectionCt, StringFormat=N2}" Width="Auto" MinWidth="124" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                    <DataGridTextColumn Header="REJECTION CT" Binding="{Binding RejectionCt, StringFormat=N2}" Width="Auto" MinWidth="124" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                    <DataGridTextColumn Header="AMOUNT" Binding="{Binding Amount, StringFormat=N2}" Width="Auto" MinWidth="140" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                    <DataGridTextColumn Header="AVG RATE / CT" Binding="{Binding AvgRate, StringFormat=N2}" Width="Auto" MinWidth="131" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                    <DataGridTextColumn Header="BROKER COST" Binding="{Binding BrokerCost, StringFormat=N2}" Width="Auto" MinWidth="117" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                    <DataGridTextColumn Header="SHARE %" Binding="{Binding SharePct, StringFormat=N1}" Width="Auto" MinWidth="89" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                  </DataGrid.Columns>
+                </DataGrid>
+                </Grid>
+              </TabItem>
+              <TabItem Header="Sold lines" Style="{StaticResource SectionTabItem}">
+                <Grid>
+                  <!-- SIDEWAYS SCROLL OF ITS OWN. A DataGrid draws no horizontal bar while it has no
+                       rows, so the right-hand headings were simply cut off. This scroller always
+                       shows one when the columns are wider than the card; the grid keeps its own
+                       vertical scrolling inside it. -->
+                  <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                                Focusable="False">
+                  <DataGrid x:Name="SrLines" IsReadOnly="True" AutoGenerateColumns="False"
+                            HeadersVisibility="Column" GridLinesVisibility="None" BorderThickness="0"
+                            Background="Transparent" CanUserSortColumns="True"
+                          ColumnHeaderStyle="{StaticResource SrHeader}"
+                            ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                            ScrollViewer.VerticalScrollBarVisibility="Auto">
+                    <DataGrid.Columns>
+                      <DataGridTextColumn Header="DATE" Binding="{Binding Date, StringFormat=dd-MM-yyyy}" Width="Auto" MinWidth="70"/>
+                      <DataGridTextColumn Header="INVOICE NO" Binding="{Binding InvoiceNo}" Width="Auto" MinWidth="110"/>
+                      <DataGridTextColumn Header="BUYER" Binding="{Binding Buyer}" Width="Auto" MinWidth="75"/>
+                      <DataGridTextColumn Header="BROKER" Binding="{Binding Broker}" Width="Auto" MinWidth="82"/>
+                      <DataGridTextColumn Header="GRADE" Binding="{Binding Grade}" Width="Auto" MinWidth="75"/>
+                      <DataGridTextColumn Header="SIZE" Binding="{Binding Size}" Width="Auto" MinWidth="70"/>
+                      <DataGridTextColumn Header="WEIGHT CT" Binding="{Binding WeightCt, StringFormat=N2}" Width="Auto" MinWidth="103" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                      <DataGridTextColumn Header="SELECTION" Binding="{Binding SelectionCt, StringFormat=N2}" Width="Auto" MinWidth="103" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                      <DataGridTextColumn Header="REJECTION" Binding="{Binding RejectionCt, StringFormat=N2}" Width="Auto" MinWidth="103" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                      <DataGridTextColumn Header="PRICE / CT" Binding="{Binding PricePerCt, StringFormat=N2}" Width="Auto" MinWidth="110" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                      <DataGridTextColumn Header="EX RATE" Binding="{Binding ExRate}" Width="Auto" MinWidth="89" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                      <DataGridTextColumn Header="LESS 1" Binding="{Binding Less1Pct}" Width="Auto" MinWidth="82" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                      <DataGridTextColumn Header="LESS 2" Binding="{Binding Less2Pct}" Width="Auto" MinWidth="82" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                      <DataGridTextColumn Header="BROKER %" Binding="{Binding BrokerPct}" Width="Auto" MinWidth="96" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                      <DataGridTextColumn Header="BROKER COST" Binding="{Binding BrokerCost, StringFormat=N2}" Width="Auto" MinWidth="117" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                      <DataGridTextColumn Header="AMOUNT" Binding="{Binding Amount, StringFormat=N2}" Width="Auto" MinWidth="140" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}" FontWeight="SemiBold"/>
+                      <DataGridTextColumn Header="NET RATE / CT" Binding="{Binding NetRate, StringFormat=N2}" Width="Auto" MinWidth="131" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource SrNumHeader}"/>
+                      <DataGridTextColumn Header="PAYMENT" Binding="{Binding Payment}" Width="Auto" MinWidth="89"/>
+                      <DataGridTextColumn Header="REMARK" Binding="{Binding Remark}" Width="Auto" MinWidth="180"/>
+                    </DataGrid.Columns>
+                  </DataGrid>
+                  </ScrollViewer>
+                  <TextBlock x:Name="SrEmpty" Style="{StaticResource EmptyHint}" Visibility="Collapsed"
+                             VerticalAlignment="Top" Margin="12,60,12,0"
+                             Text="No confirmed sales in this period. Change the dates, or clear the filters."/>
+                </Grid>
+              </TabItem>
+            </TabControl>
+          </Border>
         </DockPanel>
       </TabItem>
 
@@ -4966,7 +5245,15 @@
                     <DataGridTextColumn Header="RECORD" Binding="{Binding Record}" Width="84" MinWidth="82"/>
                     <!-- The page is titled "Every change, who and when" and showed only the when.
                          changed_by was captured and mapped all along; nothing bound it. -->
-                    <DataGridTextColumn Header="WHO" Binding="{Binding By}" Width="Auto" MinWidth="90"/>
+                    <DataGridTextColumn Header="WHO" Binding="{Binding By}" Width="Auto" MinWidth="90">
+                      <!-- A step smaller than the rest of the row: an account name, not the record. -->
+                      <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                          <Setter Property="FontSize" Value="11.5"/>
+                          <Setter Property="VerticalAlignment" Value="Center"/>
+                        </Style>
+                      </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
                     <!-- What happened, not which columns moved. Summary is still the field list
                          and still carries the detail drawer; this column answers the question the
                          page is opened with.

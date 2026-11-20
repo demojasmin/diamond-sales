@@ -15,7 +15,9 @@
 // buttons for non-owners, which stops an honest mistake -- it is not a security
 // boundary, because anyone can call this URL directly with any token.
 // ---------------------------------------------------------------------------
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// An exact version, not "@2": a floating tag would pull whatever supabase-js released last on the
+// next deploy, into the one function that holds the service_role key.
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.47.10";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -41,6 +43,13 @@ const json = (body: unknown, status = 200) =>
 
 const fail = (status: number, code: string, message: string) =>
     json({ ok: false, code, message }, status);
+
+// A database error is logged here, in Supabase's function logs, and the caller gets a plain
+// sentence: the raw text names tables, columns and constraints, which no screen needs to show.
+const dbFail = (code: string, message: string, detail: unknown) => {
+    console.error(`admin-users ${code}:`, detail);
+    return fail(400, code, message);
+};
 
 Deno.serve(async (req) => {
     if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -89,20 +98,58 @@ Deno.serve(async (req) => {
     // record_uuid, because profiles.id is a uuid and audit_log.record_id is a
     // bigint (0021 adds the column). The specific operation travels in
     // new_values so the existing INSERT/UPDATE/DELETE check constraint stands.
+    //
+    // The change has already happened when this runs, so a failed audit write cannot undo it -- but
+    // it must not pass silently either. It is logged, and the response says so (audit: "failed"),
+    // so an account change with no audit row is visible rather than merely missing.
     const writeAudit = async (
         dbAction: "INSERT" | "UPDATE",
         detail: Record<string, unknown>,
         before: Record<string, unknown> | null = null,
-    ) => {
-        await admin.from("audit_log").insert({
+        recordId: string | null = targetId,
+    ): Promise<"ok" | "failed"> => {
+        const { error } = await admin.from("audit_log").insert({
             table_name: "profiles",
-            record_uuid: targetId,
+            record_uuid: recordId,
             action: dbAction,
             changed_by: callerId,
             old_values: before,
             new_values: { admin_action: action, ...detail },
         });
+        if (error) {
+            console.error("admin-users AUDIT_FAILED:", action, recordId, error);
+            return "failed";
+        }
+        return "ok";
     };
+
+    // Ends a user's sessions through 0060's admin_end_sessions (service_role only). This replaced
+    // auth.admin.signOut(<user id>), which takes the user's own JWT, not an id -- it failed every
+    // time and the failure was ignored, so no session was ever ended. A failure here is logged and
+    // reported in the response (sessions: "failed"); the change itself has already been made.
+    const endSessions = async (userId: string): Promise<"ended" | "failed"> => {
+        const { error } = await admin.rpc("admin_end_sessions", { p_user: userId });
+        if (error) {
+            console.error("admin-users END_SESSIONS_FAILED:", userId, error);
+            return "failed";
+        }
+        return "ended";
+    };
+
+    // A Supabase Auth sign-in ban, applied on deactivation and lifted on reactivation. "876000h" is
+    // a hundred years -- Auth has no "forever", and the ban is lifted explicitly, not by expiry. A
+    // failure is logged and reported (ban: "failed"); the profile change has already been made.
+    const setBan = async (userId: string, banned: boolean): Promise<"applied" | "lifted" | "failed"> => {
+        const { error } = await admin.auth.admin.updateUserById(userId, { ban_duration: banned ? "876000h" : "none" });
+        if (error) {
+            console.error("admin-users BAN_FAILED:", userId, banned, error);
+            return "failed";
+        }
+        return banned ? "applied" : "lifted";
+    };
+
+    // A password must have ten characters that are not spaces at either end: ten spaces is not one.
+    const weakPassword = (password: string) => password.trim().length < 10;
 
     // Guards shared by every action that targets an existing account.
     const loadTarget = async () => {
@@ -115,8 +162,12 @@ Deno.serve(async (req) => {
 
     // An owner locking themselves out, or the last owner being removed, leaves
     // nobody who can undo it -- the one failure this endpoint cannot recover from.
-    const lastOwnerCheck = async (target: { id: string; role: string }) => {
-        if (target.role !== "owner") return null;
+    //
+    // Only an ACTIVE owner counts. Demoting or deactivating an owner who is already deactivated
+    // removes no one who can sign in, so it must not be refused as "the only active owner" -- which
+    // it was, whenever exactly one other owner was active (Priya: one active, one inactive).
+    const lastOwnerCheck = async (target: { id: string; role: string; active: boolean }) => {
+        if (target.role !== "owner" || !target.active) return null;
         const { count } = await admin
             .from("profiles").select("id", { count: "exact", head: true })
             .eq("role", "owner").eq("active", true);
@@ -145,8 +196,8 @@ Deno.serve(async (req) => {
             }
             // Supabase's own floor is 6; 10 is this app's, and it is cheaper to
             // refuse here than to explain a rejected signup.
-            if (password.length < 10) {
-                return fail(400, "WEAK_PASSWORD", "Password must be at least 10 characters.");
+            if (weakPassword(password)) {
+                return fail(400, "WEAK_PASSWORD", "Password must be at least 10 characters, not counting spaces at either end.");
             }
 
             const { data: created, error: createError } = await admin.auth.admin.createUser({
@@ -168,15 +219,11 @@ Deno.serve(async (req) => {
                 // The login exists but has no usable profile -- remove it rather
                 // than leave an account nobody can sign in with or find.
                 await admin.auth.admin.deleteUser(created.user.id);
-                return fail(400, "PROFILE_FAILED", profileError.message);
+                return dbFail("PROFILE_FAILED", "The login could not be set up. Nothing was created.", profileError);
             }
 
-            await admin.from("audit_log").insert({
-                table_name: "profiles", record_uuid: created.user.id, action: "INSERT",
-                changed_by: callerId,
-                new_values: { admin_action: "create", email, full_name: fullName, role },
-            });
-            return json({ ok: true, user_id: created.user.id, email, role });
+            const audit = await writeAudit("INSERT", { email, full_name: fullName, role }, null, created.user.id);
+            return json({ ok: true, user_id: created.user.id, email, role, audit });
         }
 
         // ── activate / deactivate ──────────────────────────────────────────
@@ -194,19 +241,28 @@ Deno.serve(async (req) => {
                 if (blocked) return blocked;
             }
             if (target!.active === active) {
-                return json({ ok: true, unchanged: true, active });
+                // Already in that state. Deactivating again still (re)applies the sign-in ban and
+                // ends sessions, so an account switched off before the ban existed can be closed
+                // properly without first reactivating it. Reactivating again changes nothing.
+                if (active) return json({ ok: true, unchanged: true, active });
+                const ban = await setBan(target!.id, true);
+                const sessions = await endSessions(target!.id);
+                return json({ ok: true, unchanged: true, active, ban, sessions });
             }
 
             const { error: updateError } = await admin
                 .from("profiles").update({ active }).eq("id", target!.id);
-            if (updateError) return fail(400, "UPDATE_FAILED", updateError.message);
+            if (updateError) return dbFail("UPDATE_FAILED", "The account could not be changed.", updateError);
 
-            // Deactivating must also end the sessions they already hold, or the
-            // account keeps working until its token expires.
-            if (!active) await admin.auth.admin.signOut(target!.id, "global");
+            // Deactivating closes the account at the door as well as at the data: a Supabase sign-in
+            // ban (so no new session can be started, from the app or by calling Supabase directly)
+            // and the sessions it already holds ended. Data access already stopped -- every RLS
+            // check requires an active profile. Reactivating lifts the ban.
+            const ban = await setBan(target!.id, !active);
+            const sessions = active ? undefined : await endSessions(target!.id);
 
-            await writeAudit("UPDATE", { active }, { active: target!.active });
-            return json({ ok: true, active });
+            const audit = await writeAudit("UPDATE", { active }, { active: target!.active });
+            return json({ ok: true, active, audit, ban, ...(sessions ? { sessions } : {}) });
         }
 
         // ── change role ────────────────────────────────────────────────────
@@ -229,17 +285,18 @@ Deno.serve(async (req) => {
 
             const { error: updateError } = await admin
                 .from("profiles").update({ role }).eq("id", target!.id);
-            if (updateError) return fail(400, "UPDATE_FAILED", updateError.message);
+            if (updateError) return dbFail("UPDATE_FAILED", "The role could not be changed.", updateError);
 
-            await writeAudit("UPDATE", { role }, { role: target!.role });
-            return json({ ok: true, role });
+            const audit = await writeAudit("UPDATE", { role }, { role: target!.role });
+            return json({ ok: true, role, audit });
         }
 
         // ── reset password ─────────────────────────────────────────────────
         case "reset_password": {
             const password = String(body.password ?? "");
-            if (password.length < 10) {
-                return fail(400, "WEAK_PASSWORD", "Password must be at least 10 characters.");
+            // A blank (or short) password changes nothing: refused before anything is touched.
+            if (weakPassword(password)) {
+                return fail(400, "WEAK_PASSWORD", "Password must be at least 10 characters, not counting spaces at either end.");
             }
             const { target, error } = await loadTarget();
             if (error) return error;
@@ -248,13 +305,16 @@ Deno.serve(async (req) => {
                 .updateUserById(target!.id, { password });
             if (resetError) return fail(400, "RESET_FAILED", resetError.message);
 
-            // Every existing session dies with the old password, so a leaked
-            // token cannot outlive the reset that was meant to stop it.
-            await admin.auth.admin.signOut(target!.id, "global");
+            // Every existing session dies with the old password, so a leaked token cannot outlive
+            // the reset that was meant to stop it. Supabase Auth already ends them all when a password
+            // changes (tested on Demo, 15 Oct 2026: refresh_token_not_found) -- the caller's own too,
+            // so an owner resetting their own password signs in again everywhere. This is the second,
+            // explicit guarantee, independent of that behaviour.
+            const sessions = await endSessions(target!.id);
 
             // The password itself is never written to the audit, only the fact.
-            await writeAudit("UPDATE", { password_reset: true });
-            return json({ ok: true });
+            const audit = await writeAudit("UPDATE", { password_reset: true });
+            return json({ ok: true, audit, sessions });
         }
 
         default:

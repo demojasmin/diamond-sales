@@ -74,7 +74,8 @@ public static class GradeNames
 {
     public static readonly Dictionary<string, string> Marks = new(StringComparer.Ordinal)
     {
-        ["NO II"] = "II",          // FL, # and color, one grade since 0057
+        ["NO II"] = "II",          // FL and # (0057); "II Color" / "II Col" too (0063)
+        ["COL"] = "Color",         // its own grade again since 0063 -- never part of II
         ["NO 1 BB"] = "1BB",
         ["EX 1"] = "EX1",
         ["NO 2"] = "2",

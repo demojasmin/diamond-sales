@@ -636,9 +636,11 @@ public sealed class SaleLine : Notifier
     /// read. Two lines fit with room to spare, and DealSummary still carries all of it on the
     /// tooltip, so nothing is lost, only folded.
     /// </summary>
+    // THE DATE LEADS (Nov 2026). A restored entry keeps the date it was typed on, so its rows
+    // could post as an invoice months old while the screen showed no date at all. Display only.
     public string DealLine2 =>
-        (_dealBroker is null ? "No broker" : _dealBroker.Name) + " · " + DealTerms;
-    public string DealSummary => $"{DealBuyerName} · {DealBrokerName} · {DealTerms}";
+        $"{_dealInvoiceDate:dd MMM} · " + (_dealBroker is null ? "No broker" : _dealBroker.Name) + " · " + DealTerms;
+    public string DealSummary => $"{_dealInvoiceDate:dd MMM yyyy} · {DealBuyerName} · {DealBrokerName} · {DealTerms}";
 
     /// A line with no buyer cannot be sold: sales_invoice.buyer_id is NOT NULL, and the cell says so
     /// in place of a name rather than leaving the row looking finished.

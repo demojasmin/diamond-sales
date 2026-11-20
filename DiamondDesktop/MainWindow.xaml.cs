@@ -526,7 +526,15 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private IReadOnlyList<SaleLine> ActOn(object sender) =>
         (sender as FrameworkElement)?.Tag is SaleLine row && !row.IsBlank
             ? [row]
-            : _invoice.SelectedLines;
+            : HeaderScope();
+
+    /// <summary>
+    /// What the header buttons (and Ctrl+P) act on: the ticked lines, or EVERY line when nothing is
+    /// ticked (Nov 2026, "make it simpler"). Ticking used to be a required step before Confirm sale
+    /// or Print memo even appeared; now it only narrows. Empty on an empty entry.
+    /// </summary>
+    private IReadOnlyList<SaleLine> HeaderScope() =>
+        _invoice.SelectedLines is { Count: > 0 } ticked ? ticked : _invoice.RealLines;
 
     private void TickCountChanged()
     {
@@ -559,19 +567,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // were VISIBLE, while both still acted on the whole entry -- so "Confirm sale · 2 lines" on
         // a four-row entry sold four. They go through ActOn() now, so the count below says what the
         // button will actually do.
+        // SIMPLER (Nov 2026): Remove still needs a tick, but Print memo and Confirm sale are on
+        // screen as soon as there is a line, and act on every line unless some are ticked. An
+        // untouched screen still shows Add sale alone. Labels are written in ShowHeaderActions,
+        // which RefreshActionStates (below) also calls when a line is added or removed.
         bool anyTicked = n > 0;
         DeleteLines.Visibility = anyTicked ? Visibility.Visible : Visibility.Collapsed;
-        if (SaveDraft is not null)
-            SaveDraft.Visibility = anyTicked ? Visibility.Visible : Visibility.Collapsed;
-        if (Post is not null)
-            Post.Visibility = anyTicked ? Visibility.Visible : Visibility.Collapsed;
-
-        // THE COUNT ON ALL THREE, and on all three it is now the truth: each acts on exactly the
-        // rows it names. Blank ticked rows are the one gap -- they count here and are dropped by
-        // RealLines -- and they are also the rows nobody ticks on purpose.
-        string rows = n == 1 ? "1 line" : $"{n} lines";
-        if (SaveDraftLabel is not null) SaveDraftLabel.Text = $"Print memo · {rows}";
-        if (PostLabel is not null) PostLabel.Text = $"Confirm sale · {rows}";
 
         // The chip beside these buttons reads the ticks too ("Tick the lines to confirm — nothing is
         // selected"), and it was only redrawn when a line's FIGURES changed -- so with every row
@@ -643,6 +644,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// </summary>
     private void AddLine_Click(object sender, RoutedEventArgs e)
     {
+        // The dialog cannot finish without a buyer, so with none on file it was a dead end: a whole
+        // table typed, then refused. Say so before any typing.
+        if (_invoice.Buyers.Count == 0)
+        {
+            Refuse("No buyers yet — add one in Master data first, then Add sale");
+            return;
+        }
+
         var dialog = new AddSaleDialog(_invoice, AddLine) { Owner = this };
         dialog.ShowDialog();
         if (dialog.Added > 0)
@@ -839,8 +848,62 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         else                                            line.SizeFilter  = line.Size?.ShortName  ?? "";
     }
 
+    /// <summary>
+    /// Lights the header's step strip: steps before <paramref name="current"/> are done (green tick),
+    /// the current one is the accent colour, later ones are muted. Display only. Brushes are set as
+    /// resource references so the strip follows a theme switch.
+    /// </summary>
+    private void SetEntryStep(int current)
+    {
+        var steps = new[] { (Step1Dot, Step1Num, Step1Title), (Step2Dot, Step2Num, Step2Title), (Step3Dot, Step3Num, Step3Title) };
+        for (int i = 0; i < steps.Length; i++)
+        {
+            var (dot, num, title) = steps[i];
+            if (dot is null) return;
+            int n = i + 1;
+            bool done = n < current, now = n == current;
+
+            dot.SetResourceReference(Border.BackgroundProperty, done ? "SuccessBrush" : now ? "AccentBrush" : "SurfaceBrush");
+            dot.SetResourceReference(Border.BorderBrushProperty, done ? "SuccessBrush" : now ? "AccentBrush" : "BorderBrush");
+            num.Text = done ? "✓" : n.ToString();
+            if (done || now) num.Foreground = Brushes.White;
+            else num.SetResourceReference(TextBlock.ForegroundProperty, "TextMutedBrush");
+            title.SetResourceReference(TextBlock.ForegroundProperty, now ? "TextBrush" : "TextMutedBrush");
+            title.FontWeight = now ? FontWeights.SemiBold : FontWeights.Normal;
+        }
+    }
+
+    /// <summary>Print memo and Confirm sale: shown once there is a line, labelled with what they act on.</summary>
+    private void ShowHeaderActions()
+    {
+        if (SaveDraft is null || Post is null) return;
+
+        int all = _invoice.RealLines.Count;
+        int ticked = _invoice.SelectedLines.Count;
+        var shown = all > 0 ? Visibility.Visible : Visibility.Collapsed;
+        SaveDraft.Visibility = shown;
+        Post.Visibility = shown;
+
+        string rows = ticked > 0 ? (ticked == 1 ? "1 ticked line" : $"{ticked} ticked lines")
+                                 : (all == 1 ? "1 line" : $"all {all} lines");
+        SaveDraftLabel.Text = $"Print memo · {rows}";
+        PostLabel.Text = $"Confirm sale · {rows}";
+
+        // ONE MAIN BUTTON AT A TIME. Add sale is the step on an empty screen; once there are lines
+        // the next step is Confirm sale, so Add sale steps back to a plain button.
+        if (AddLineButton is not null)
+            AddLineButton.Style = (Style)FindResource(all > 0 ? "DashButton" : "AppPrimaryButton");
+
+        // The line filters only earn their room on a long entry -- or while one is in use, so a
+        // filter can never be hidden while it is hiding rows.
+        if (LineFilterBar is not null)
+            LineFilterBar.Visibility = all >= 6 || _invoice.AnyFilter ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private void RefreshActionStates()
     {
+        ShowHeaderActions();
+
         // Never mid-operation: Busy() disabled these deliberately and re-enables them itself on
         // release. Re-enabling here would put a live Confirm sale under a running post.
         if (_inFlight > 0) return;
@@ -889,7 +952,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // ConfirmProblems, not Problems: this button confirms a SALE, which carries the minimum
         // line count on top of everything else. Print memo and the Update modal keep using
         // Problems() and are unaffected.
-        var problems = _invoice.ConfirmProblems();
+        // Over what the button will actually act on (HeaderScope), so the chip never asks for a
+        // tick that is no longer required. Null on an empty entry, which says "needs a line".
+        var scope = HeaderScope();
+        var problems = _invoice.ConfirmProblems(scope.Count > 0 ? scope : null);
         string? why = problems.FirstOrDefault();
 
         // ALWAYS LIVE, on the desk's word. Disabling it was the wrong call: the button went dead
@@ -911,7 +977,22 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // And in the open, not only on hover. See BlockChip in the markup.
         if (BlockChip is not null)
         {
-            BlockChip.Visibility = why is null ? Visibility.Collapsed : Visibility.Visible;
+            // Not on an untouched screen: "An invoice needs at least one line" greeted the desk
+            // before anything had been typed, a warning for not having started. The empty-state
+            // hint already says what to do; the chip speaks once there is a line to be wrong.
+            bool started = _invoice.LineCount > 0;
+            BlockChip.Visibility = why is null || !started ? Visibility.Collapsed : Visibility.Visible;
+
+            // Where the desk is, in the header strip and in words under the table heading.
+            int step = !started ? 1 : why is null ? 3 : 2;
+            SetEntryStep(step);
+            if (LinesGuide is not null)
+                LinesGuide.Text = step switch
+                {
+                    1 => "Start with Add sale: choose the buyer, then type each parcel's size, grade, weight and price.",
+                    2 => "Fix the item shown in the warning (use Edit for buyer, broker and terms), then confirm.",
+                    _ => "Ready. Confirm sale posts the invoice and takes the stock — tick lines first to confirm only some.",
+                };
             BlockChipText.Text = problems.Count > 1 ? $"{why} (+{problems.Count - 1} more)" : why ?? "";
         }
     }
@@ -1668,6 +1749,16 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// the balance against gross for exactly that reason. A summary leading with "2.00 ct sold"
     /// would understate what the desk is about to give up.
     /// </summary>
+    /// "20 Nov 2026", or "03 Sep 2026 · NOT today" / "2 dates: …" -- what the confirmed invoice(s) will be dated.
+    public static string InvoiceDateFact(IReadOnlyList<SaleLine> lines)
+    {
+        var dates = lines.Select(l => l.DealDate.Date).Distinct().OrderBy(d => d).ToList();
+        if (dates.Count == 0) return "—";
+        string text = dates.Count == 1 ? $"{dates[0]:dd MMM yyyy}"
+                                       : $"{dates.Count} dates: " + string.Join(", ", dates.Select(d => d.ToString("dd MMM yyyy")));
+        return dates.All(d => d == DateTime.Today) ? text : text + " · NOT today (Edit the line to change it)";
+    }
+
     public static (List<(string Label, string Value)> Facts, List<string> Lines) SaleSummary(InvoiceEntry invoice)
         => SaleSummary(invoice, invoice.RealLines);
 
@@ -1698,6 +1789,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             // The chosen lines' amount, not the entry's: confirming two of four must not headline
             // the four-row total.
             ("Amount", Money.Short(lines.Sum(l => l.Amount))),
+            // The date the invoice will carry, and a plain warning when it is not today -- the
+            // Invoices page filters by it, so an unseen old date reads as a sale that vanished.
+            ("Invoice date", InvoiceDateFact(lines)),
             ("Due", deals.Count == 1
                 ? deals[0][0].DealDueDate.ToString("dd MMM yyyy")
                 : $"{deals.Min(d => d[0].DealDueDate):dd MMM yyyy} – {deals.Max(d => d[0].DealDueDate):dd MMM yyyy}"),
@@ -2050,6 +2144,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // The rest keep their place, their typing and their carats: the release above was per line,
         // so nothing gave theirs back. Removing them raises LineDropped, whose DropLineAsync finds
         // them already out of _held and returns without a round trip.
+        // What was sold, read before the lines leave the screen, for the confirmation below.
+        var soldTo = chosen.Select(l => l.DealBuyerName).Distinct().ToList();
+        decimal soldCt = chosen.Sum(l => l.SelectionCt), soldAmount = chosen.Sum(l => l.Amount);
+        int soldLines = chosen.Count;
+        string soldDate = InvoiceDateFact(chosen).Replace(" (Edit the line to change it)", "");
+
         foreach (var line in chosen) _invoice.Lines.Remove(line);
 
         // The saved drafts no longer line up with what is left. Their ids were per deal in deal
@@ -2099,23 +2199,43 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             : "";
 
         Say(what + kept, ok: true, popup: false);   // the "Sale confirmed" box below says it
-        MessageBox.Show(this,
-            (posted.Count == 1
-                ? $"Recorded as sale {posted[0]}."
-                : $"Recorded as {posted.Count} sales:{Environment.NewLine}{Environment.NewLine}"
-                  + string.Join(Environment.NewLine, posted))
-            + (anyLeft
-                ? $"{Environment.NewLine}{Environment.NewLine}"
-                  + $"{_invoice.RealLines.Count} line(s) were not ticked and are still on this entry. "
-                  + "Their stock is still reserved."
-                : ""),
-            posted.Count == 1 ? "Sale confirmed" : "Sales confirmed",
-            MessageBoxButton.OK, MessageBoxImage.Information);
 
-        // A fresh entry only when there is nothing left to be on. NewInvoice_Click releases the
-        // WHOLE entry, so calling it with rows still on screen would give back the carats those
-        // rows are holding -- exactly the release the per-line one above avoided.
+        // WHERE THE SALE IS NOW, said and offered (Nov 2026). The confirmed lines leave this
+        // entry and become a posted invoice: the Invoices page shows it with its lines, and the
+        // Sales report, Receivables and Stock all count it. "Open in Invoices" goes straight there
+        // with the new invoice selected, so the lines just confirmed are on screen.
+        List<(string, string)> facts =
+        [
+            (posted.Count == 1 ? "Invoice" : "Invoices", string.Join(", ", posted)),
+            ("Buyer", string.Join(", ", soldTo)),
+            ("Lines", $"{soldLines:N0}"),
+            ("Carats (selection)", $"{soldCt:N2} ct"),
+            ("Amount", Money.Exact(soldAmount)),
+            ("Invoice date", soldDate),
+        ];
+        List<string> where =
+        [
+            "Invoices — the invoice and its lines (select it to see them).",
+            "Sales report and Dashboard — counted in sales for its date.",
+            "Receivables — the amount due, until a receipt is entered.",
+            "Stock — these carats are deducted.",
+        ];
+        if (anyLeft)
+            where.Add($"{_invoice.RealLines.Count} line(s) were not included and are still on this entry, still holding stock.");
+
+        bool open = AppDialog.Confirm(this,
+            title: posted.Count == 1 ? "Sale confirmed" : "Sales confirmed",
+            headline: posted.Count == 1 ? $"Recorded as sale {posted[0]}" : $"Recorded as {posted.Count} sales",
+            subhead: "The confirmed lines have left this entry",
+            facts: facts,
+            emphasis: null,
+            listTitle: "Where to find it now",
+            bullets: where,
+            primaryText: "Open in Invoices",
+            secondaryText: "Stay on Sales entry");
+
         if (!anyLeft) NewInvoice_Click(sender, e);
+        if (open) await ShowPostedInvoicesAsync(posted);
     }
 
     /// <summary>
@@ -2126,6 +2246,26 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// The lines are deliberately left where they are. Clearing them would take away the only
     /// record of what has not gone through.
     /// </summary>
+    /// <summary>
+    /// The Invoices page, narrowed to the invoice just confirmed and with it selected, so its detail
+    /// panel shows the lines. Several invoices: the page unfiltered with the first of them selected
+    /// (newest are at the top).
+    /// </summary>
+    private async Task ShowPostedInvoicesAsync(IReadOnlyList<string> invoiceNos)
+    {
+        InvoiceDateFilter.SelectedDate = null;      // a date filter would hide an invoice not dated today
+        if (InvoiceBuyer.Items.Count > 0) InvoiceBuyer.SelectedIndex = 0;
+        InvoiceSearch.Text = invoiceNos.Count == 1 ? invoiceNos[0] : "";
+        foreach (var tab in Tabs.Items.OfType<TabItem>())
+            if (tab.Header as string == "Invoices") { tab.IsSelected = true; break; }
+
+        await LoadInvoicesAsync();
+        var hit = InvoiceGrid.Items.OfType<VInvoice>().FirstOrDefault(i => invoiceNos.Contains(i.InvoiceNo ?? ""));
+        if (hit is null) return;
+        InvoiceGrid.SelectedItem = hit;
+        InvoiceGrid.ScrollIntoView(hit);
+    }
+
     private void ReportPartial(List<string> posted, string failure)
     {
         if (posted.Count == 0) { Say(failure); return; }
@@ -2447,7 +2587,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
 
     /// 420px: two fields side by side, and the eleven-column table still readable beside it.
-    private const double DealDrawerWidth = 420;
+    private const double DealDrawerWidth = 360;   // was 420: the table beside it keeps more of its columns
 
     private void EditDeal_Click(object sender, RoutedEventArgs e)
     {
@@ -2651,6 +2791,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         if (Grid.Items.Count > 0 && Grid.CurrentCell.Column is null)
             Grid.CurrentCell = new DataGridCellInfo(Grid.Items[0], Grid.Columns[0]);
+
+        // Back to the left edge. Edit lives in Deal Details at the far right, so opening the drawer
+        // scrolled the table there and closing it left it there: the tick and Size columns off
+        // screen and Grade cut to "rade", which read as a broken table.
+        if ((Grid.CurrentItem ?? (Grid.Items.Count > 0 ? Grid.Items[0] : null)) is { } row)
+            Grid.ScrollIntoView(row, Grid.Columns[0]);
         Grid.Focus();
     }
 
@@ -2963,10 +3109,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             : $"Total {Money.Short(rows.Sum(r => r.Outstanding))} across "
               + $"{rows.Select(r => r.BuyerName).Distinct().Count():N0} buyer(s)";
 
-        // Both lists offer only what actually came back.
+        // Age: always all five bands, the same five as the tiles above, even when one holds no
+        // invoices -- a band missing from the list read as a band the app does not have. Any band
+        // the server sends that is not one of the five is still offered, after them.
+        // Buyer: only the buyers that actually came back.
         object? keepBucket = ReceivablesBucket.SelectedItem;
         ReceivablesBucket.ItemsSource = new[] { "All ages" }
-            .Concat(rows.Select(r => r.AgeBucket).Distinct().OrderBy(Age)).ToList();
+            .Concat(AgeBands.Concat(rows.Select(r => r.AgeBucket)).Distinct().OrderBy(Age)).ToList();
         ReceivablesBucket.SelectedItem =
             keepBucket is string kb && ReceivablesBucket.Items.Contains(kb) ? kb : "All ages";
 
@@ -2989,6 +3138,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// The band names come from v_receivables_ageing and are the same five Android and the server
     /// agree on (CALC-AGE). Keep this in step with DiamondCalc.Calc.AgeBucket.
     /// </summary>
+    /// The five receivables age bands, in order: the server's v_receivables_ageing names.
+    public static readonly IReadOnlyList<string> AgeBands = ["not due", "1-30", "31-60", "61-90", "90+"];
+
     private static int Age(string bucket) => bucket switch
     {
         "not due" => 0, "1-30" => 1, "31-60" => 2, "61-90" => 3, "90+" => 4, _ => 5,
@@ -6576,7 +6728,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     };
 
     /// <summary>
-    /// W11's bars: inventory value per grade, with FL, NO II and COL drawn as one "II" bar whose
+    /// W11's bars: inventory value per grade, with FL and NO II drawn as one "II" bar (Color is its own, 0063) whose
     /// second line names each member's own value. Display only -- the stock rows are untouched.
     /// </summary>
     public static List<(string Label, decimal Value, string? Secondary)> InventoryByGrade(IEnumerable<VStockPosition> stock)
@@ -6914,8 +7066,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         UserRoles.Contains(role.Trim().ToLowerInvariant())
             ? null : $"Role must be one of {string.Join(", ", UserRoles)}.";
 
+    // Spaces at either end do not count -- ten spaces is not a password. The server applies the same rule.
     private static string? CheckPassword(string password) =>
-        password.Length >= 10 ? null : "Password must be at least 10 characters.";
+        password.Trim().Length >= 10 ? null : "Password must be at least 10 characters, not counting spaces at either end.";
 
     private async void NewUser_Click(object sender, RoutedEventArgs e)
     {
@@ -7004,9 +7157,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             }
         }
 
+        // Supabase ends EVERY session of an account whose password changes, the one in this window
+        // included -- so resetting your own says so, rather than signing you out later unexplained.
+        bool ownPassword = password.Length > 0 && user.Id.ToString() == Db.Client.Auth.CurrentUser?.Id;
         Say(done.Count == 0
             ? "Nothing changed."
-            : $"{user.FullName}: {string.Join(", ", done)}", ok: done.Count > 0);
+            : $"{user.FullName}: {string.Join(", ", done)}"
+              + (ownPassword ? ". This was your own password: sign in again with it on every device, this one included." : ""),
+            ok: done.Count > 0);
 
         if (done.Count > 0) LoadUsers_Click(sender, e);
     }
@@ -7106,6 +7264,43 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// It is never mistaken for cost: it is only consulted where there is no stock to have a cost.
     /// </summary>
     private Dictionary<(string Grade, string Size), decimal>? _reportSheetRates;
+
+    /// <summary>
+    /// What II held at the 0057 merge, split back into FL, NO II and COL -- written once by
+    /// supabase/STORE_II_MERGE_BREAKDOWN.sql. A snapshot by necessity: since the merge every sale
+    /// lands on II and nothing records which of the three it came from.
+    /// </summary>
+    public sealed record MergeBreakdown(DateOnly? At, Dictionary<(string Grade, string Size), decimal> Cells);
+    public const string IiMergeBreakdownKey = "ii_merge_breakdown";
+    private MergeBreakdown? _iiMergeBreakdown;
+
+    /// <summary>"2026-10-13;FL,-6.5,17.27;NO II,-6.5,127.71;..." to its cells. Null when absent or empty.</summary>
+    public static MergeBreakdown? ParseMergeBreakdown(string? saved)
+    {
+        var parts = (saved ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 2) return null;
+        DateOnly? at = DateOnly.TryParseExact(parts[0], "yyyy-MM-dd", out var d) ? d : null;
+        var cells = new Dictionary<(string, string), decimal>();
+        foreach (var p in parts.Skip(at is null ? 0 : 1))
+        {
+            var f = p.Split(',');
+            if (f.Length == 3 && decimal.TryParse(f[2], System.Globalization.NumberStyles.Number,
+                                                  System.Globalization.CultureInfo.InvariantCulture, out var ct))
+                cells[(f[0], f[1])] = ct;
+        }
+        return cells.Count == 0 ? null : new MergeBreakdown(at, cells);
+    }
+
+    /// <summary>
+    /// The hover for II, worded exactly as the grouped row's was before 0057 (ReportGroupTip):
+    /// "II combines FL, II, Color", each one's carats on its own line, and the total -- from the
+    /// carats each held at the merge, which is the only split that still exists.
+    /// </summary>
+    private static string MergeBreakdownTip(MergeBreakdown merged, IReadOnlyCollection<string> sizes,
+                                            string heading, string? note = null) =>
+        ReportGroupTip(heading, ["FL", "NO II", "COL"],
+                       g => merged.Cells.Where(c => c.Key.Grade == g && sizes.Contains(c.Key.Size)).Sum(c => c.Value))
+        + (note is { Length: > 0 } ? Environment.NewLine + Environment.NewLine + note : "");
     private readonly List<CheckBox> _reportSizeBoxes = [];
     private List<VStockPosition> _reportRows = [];
 
@@ -7398,6 +7593,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 : [];
 
             _reportSheetRates = ParseSheetRates(config.GetValueOrDefault(StockSheetRatesKey, ""));
+            _iiMergeBreakdown = ParseMergeBreakdown(config.GetValueOrDefault(IiMergeBreakdownKey, ""));
         }
 
         // Built AFTER the read, not before, so a sieve that HOLDS STOCK is ticked whether or not
@@ -7449,16 +7645,40 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// no columns at all reads as broken rather than as "there is nothing here".
     /// </summary>
     /// <summary>
-    /// A sieve's column position: where the last imported sheet printed it, then catalogue order
-    /// for anything the sheet did not carry. By SizeId alone 1/6 landed after 1/5 and 1/4, because
-    /// it was added to the catalogue later; the client's sheet prints it straight after +11.
+    /// A sieve's column position: ONE fixed order, smallest stones first, the same on every
+    /// database -- -2, -6.5, +6.5, +11, 14+, +18, +23, then the carat fractions 1/6, 1/5, 1/4, 1/3.
+    ///
+    /// It used to follow whichever sheet was imported last, then catalogue order, so the columns
+    /// moved between Priya and Demo (and with each import): 1/5 sat where 1/6 should, -2 drifted to
+    /// the middle. A size this cannot read falls back to catalogue order, after the rest.
     /// </summary>
-    private long ReportSizeRank(string code)
+    private decimal ReportSizeRank(string code) =>
+        SieveRank(code) ?? 10_000m + (Catalogue.AllSizes.FirstOrDefault(z => z.Code == code)?.SizeId ?? 100_000);
+
+    /// <summary>
+    /// Where a sieve code sits by stone size, or null when it is not one this recognises.
+    /// "-N" is below sieve N (N - 0.5), "+N" / "N+" is sieve N, and a carat size -- "1/6", "0.2" --
+    /// comes after every sieve, by its carats.
+    /// </summary>
+    public static decimal? SieveRank(string? code)
     {
-        int onSheet = (_reportSheetSizes ?? []).FindIndex(s => string.Equals(s, code, StringComparison.OrdinalIgnoreCase));
-        return onSheet >= 0
-            ? onSheet
-            : 1000 + (Catalogue.AllSizes.FirstOrDefault(z => z.Code == code)?.SizeId ?? 100_000);
+        string c = (code ?? "").Trim().TrimStart('\'', ',').Replace(" ", "");
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        if (c.Contains('/'))
+        {
+            var p = c.Split('/');
+            return p.Length == 2 && decimal.TryParse(p[0], System.Globalization.NumberStyles.Number, inv, out var a)
+                   && decimal.TryParse(p[1], System.Globalization.NumberStyles.Number, inv, out var b) && b != 0
+                ? 1000m + a / b : null;
+        }
+        if (c.StartsWith('-') && decimal.TryParse(c[1..], System.Globalization.NumberStyles.Number, inv, out var below))
+            return below - 0.5m;
+        string sieve = c.Trim('+');
+        if ((c.StartsWith('+') || c.EndsWith('+')) && decimal.TryParse(sieve, System.Globalization.NumberStyles.Number, inv, out var n))
+            return n;
+        // A bare decimal under 1 is a carat size written as a decimal ("0.2" = 1/5).
+        return decimal.TryParse(c, System.Globalization.NumberStyles.Number, inv, out var ct) && ct is > 0m and < 1m
+            ? 1000m + ct : null;
     }
 
     private bool ReportSizeOnByDefault(string code) =>
@@ -7780,6 +8000,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             var nameCell = ReportCell(combined ? label : GradeLabel(grade), false, TextAlignment.Right,
                                       CellRule, figure: false);
             if (combined) nameCell.ToolTip = ReportGroupTip(label, members, m => sizes.Sum(z => Weight(m, z)));
+            // II since 0057: what it held at the merge, split back into FL / II / Color.
+            else if (grade == "NO II" && _iiMergeBreakdown is { } merged)
+                nameCell.ToolTip = MergeBreakdownTip(merged, sizes, "II");
             ReportTable.Children.Add(Place(nameCell, row, 0));
 
             for (int i = 0; i < sizes.Count; i++)
@@ -7813,9 +8036,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 if (combined)
                     weightCell.ToolTip = ReportGroupTip($"{label} × {SizeLabel(sizeCode)}", members, m => Weight(m, sizeCode))
                                          + (note is { Length: > 0 } ? Environment.NewLine + Environment.NewLine + note : "");
+                bool splitAtMerge = !combined && grade == "NO II" && _iiMergeBreakdown is { } m0
+                                    && m0.Cells.Keys.Any(k => k.Size == sizeCode);
+                if (splitAtMerge)
+                    weightCell.ToolTip = MergeBreakdownTip(_iiMergeBreakdown!, [sizeCode],
+                                                           $"II × {SizeLabel(sizeCode)}", note);
                 if (note is { Length: > 0 })
                 {
-                    if (!combined) weightCell.ToolTip = note;
+                    if (!combined && !splitAtMerge) weightCell.ToolTip = note;
                     if (weightCell.Child is TextBlock marked)
                     {
                         marked.SetResourceReference(TextBlock.ForegroundProperty, "WarningBrush");
@@ -8036,13 +8264,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
              .ToList();
 
     /// <summary>
-    /// The Stock report's rows: one per grade, except FL, NO II and COL, which the office reads as
+    /// The Stock report's rows: one per grade, except FL and NO II, which the office reads as
     /// one Roman "II" and which are drawn as one row at the place the first of them sorts. Only
     /// the members actually on the report are grouped, and a group of one is just that grade.
     /// In Edit mode nothing is grouped -- a correction belongs to a single real grade. TOP-COL is
     /// not a member and stays its own row.
     /// </summary>
-    public static readonly IReadOnlyList<string> ReportRomanTwo = ["FL", "NO II", "COL"];
+    // COL is NOT a member since 0063: Color is its own grade and its own row, never added into II.
+    public static readonly IReadOnlyList<string> ReportRomanTwo = ["FL", "NO II"];
 
     public static List<(string Label, List<string> Members)> ReportRows(IReadOnlyList<string> grades, bool editing,
                                                                          IReadOnlyList<string>? pool = null)
@@ -9319,9 +9548,55 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         return true;
     }
 
+    /// <summary>
+    /// The upload already standing that this sheet is a copy of, or null.
+    ///
+    /// "The same file" is judged on what it HOLDS, not on its name: the same number of holdings,
+    /// the same total carats and the same total value as a batch still in the ledger. A renamed
+    /// copy is caught; a genuine recount, which never lands on all three to the paisa, is not.
+    /// Compared at the precision v_stock_import_batch rounds to (4 dp carats, 2 dp value).
+    /// Only batches still standing count -- one a later full count replaced is gone from the view.
+    /// </summary>
+    public static VStockImportBatch? DuplicateBatch(IReadOnlyList<StockRow> rows,
+                                                    IEnumerable<VStockImportBatch> batches)
+    {
+        if (rows.Count == 0) return null;
+        decimal carats = Math.Round(rows.Sum(r => r.WeightCt), 4);
+        decimal value  = Math.Round(rows.Sum(r => r.WeightCt * r.PricePerCt), 2);
+        return batches.FirstOrDefault(b => b.Parcels == rows.Count
+                                        && Math.Round(b.Carats, 4) == carats
+                                        && Math.Round(b.Value, 2) == value);
+    }
+
     private AppDialog.Answer AskReplaceOrAdd(StockImportPlan plan, string fileName, DateOnly asAt,
                                              IReadOnlyList<VStockImportBatch> batches)
     {
+        // ALREADY UPLOADED. Asked before replace-or-add, because "Add" on a copy doubles every
+        // bucket in it -- the one import mistake that silently corrupts the position. Both
+        // importers come through here, so neither can skip it. Cancel writes nothing.
+        if (DuplicateBatch(plan.Rows, batches) is { } same)
+        {
+            AppDialog.Info(this,
+                title: "Already uploaded",
+                headline: "This stock file has already been uploaded",
+                subhead: fileName,
+                facts:
+                [
+                    ("This file", $"{plan.Rows.Count:N0} holding(s), {plan.TotalCarats:N4} ct"),
+                    ("Already in stock", $"{same.Parcels:N0} holding(s), {same.Carats:N4} ct, "
+                                         + $"{Money.Short(same.Value)}"),
+                    ("Uploaded as at", $"{same.AsAt:dd MMM yyyy} · {same.Source.ToUpperInvariant()}"),
+                ],
+                listTitle: "What to do",
+                bullets:
+                [
+                    "Nothing needs doing if this is the same count — it is already in the stock.",
+                    "If the stock has changed, upload the corrected file instead.",
+                ],
+                note: "Nothing was written. The stock position is exactly as it was.");
+            return AppDialog.Answer.Cancel;
+        }
+
         decimal onHand = batches.Sum(b => b.Carats);
 
         List<(string, string)> facts =
@@ -9897,6 +10172,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         ["Sales entry"] = "Keyboard-first invoice entry",
         ["Invoices"] = "Search, edit, post, receipts",
+        ["Sales report"] = "Confirmed sales by line, buyer, grade and period",
         ["Receivables"] = "Ageing and collections",
         ["Stock"] = "Grade × sieve-size position",
         ["Intake & movements"] = "Rough intake, conversions, rejections",
@@ -10023,6 +10299,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 FocusWhereEntryResumes();
                 break;
             case "Invoices": LoadInvoices_Click(this, e); break;
+            case "Sales report": _ = LoadSalesReportAsync(); break;
             case "Receivables": LoadReceivables_Click(this, e); break;
             // THE SEARCH BOX, not whatever happens to be first in the tab order.
             //
