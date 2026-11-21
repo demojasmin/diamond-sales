@@ -178,12 +178,26 @@ public partial class MainWindow
         await LoadSalesReportAsync();
     }
 
-    private void SrClear_Click(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// Clear puts the WHOLE report back to how it opens: this month, all buyers, all grades, no
+    /// search, summary by buyer. It used to reset only buyer, grade and search -- so with those
+    /// already at "All" and a period such as Last month chosen, pressing it changed nothing at all.
+    /// </summary>
+    private async void SrClear_Click(object sender, RoutedEventArgs e)
     {
-        SrBuyer.SelectedIndex = 0;
-        SrGrade.SelectedIndex = 0;
-        SrSearch.Text = "";
-        ShowSalesReport();
+        _srLoading = true;                      // one reload at the end, not one per control
+        try
+        {
+            SrBuyer.SelectedIndex = 0;
+            SrGrade.SelectedIndex = 0;
+            SrSearch.Text = "";
+            SrGroupBy.SelectedIndex = 0;
+            SrRange.SelectedIndex = 0;          // This month
+            ApplyRange("MONTH");
+        }
+        finally { _srLoading = false; }
+
+        await LoadSalesReportAsync();           // reads the new dates and redraws everything
     }
 
     private void ShowSalesReport()

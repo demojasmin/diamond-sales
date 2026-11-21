@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="clr-namespace:DiamondDesktop"
-        Title="Add sale" Width="1180" Height="620" MinWidth="900" MinHeight="460"
+        Title="Add sale" Width="1180" Height="690" MinWidth="900" MinHeight="520"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         Icon="{StaticResource AppIcon}"
         ShowInTaskbar="False" WindowStyle="SingleBorderWindow"
@@ -43,8 +43,11 @@
     <Border DockPanel.Dock="Bottom" Background="{DynamicResource SurfaceBrush}"
             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="22,14">
       <DockPanel>
-        <TextBlock x:Name="AddedText" VerticalAlignment="Center" Foreground="{DynamicResource TextMutedBrush}"
-                   Text="0 line(s) ready"/>
+        <StackPanel VerticalAlignment="Center">
+          <TextBlock x:Name="AddedText" FontWeight="SemiBold" Text="0 line(s) ready"/>
+          <TextBlock Text="3 &#x00B7; Add to invoice puts them on the Sales entry. Nothing is sold until Confirm sale."
+                     FontSize="11.5" Foreground="{DynamicResource TextMutedBrush}"/>
+        </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="CancelButton" Content="Cancel" Margin="0,0,10,0" IsCancel="True"
                   Style="{StaticResource SecondaryAction}" Click="Cancel_Click" VerticalAlignment="Center"/>
@@ -58,11 +61,26 @@
     <DockPanel Margin="22,20,22,14">
       <StackPanel DockPanel.Dock="Top">
         <TextBlock Text="Add sale" Style="{StaticResource CardTitle}"/>
-        <TextBlock Text="Choose the deal, type the lines in the table, then press Add to invoice. Every line uses these deal details."
-                   Style="{StaticResource CardSubtitle}" Margin="0,4,0,16" TextWrapping="Wrap"/>
+        <TextBlock Style="{StaticResource CardSubtitle}" Margin="0,4,0,10" TextWrapping="Wrap">
+          <Run Text="1  Deal details" FontWeight="SemiBold"/><Run Text="   &#x203A;   "/>
+          <Run Text="2  Lines" FontWeight="SemiBold"/><Run Text="   &#x203A;   "/>
+          <Run Text="3  Add to invoice" FontWeight="SemiBold"/><Run Text="   &#x2014;  the lines then appear on the Sales entry, ready to confirm."/>
+        </TextBlock>
 
-        <!-- DEAL DETAILS -->
-        <TextBlock Text="DEAL DETAILS" Style="{StaticResource KpiLabel}" FontWeight="SemiBold" Margin="0,0,0,8"/>
+        <!-- WHAT TO DO NOW. Rewritten by ShowReady on every change, so it always names the next step. -->
+        <Border Background="{DynamicResource AccentSoftBrush}" CornerRadius="8" Padding="12,8" Margin="0,0,0,14">
+          <TextBlock x:Name="GuideText" TextWrapping="Wrap" FontSize="12.5" Foreground="{DynamicResource TextBrush}"
+                     Text="Step 1 — choose the buyer."/>
+        </Border>
+
+        <!-- 1 · DEAL DETAILS, in a card of its own -->
+        <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1" CornerRadius="10" Padding="14,12">
+        <StackPanel>
+        <TextBlock Margin="0,0,0,10" FontSize="12">
+          <Run Text="1 &#x00B7; DEAL DETAILS" FontWeight="SemiBold"/>
+          <Run Text="   every line in this sale uses them  &#x00B7;  buyer is required" Foreground="{DynamicResource TextMutedBrush}"/>
+        </TextBlock>
         <Grid x:Name="DealFields">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="150"/><ColumnDefinition Width="10"/>
@@ -76,10 +94,12 @@
           <StackPanel Grid.Column="0">
             <TextBlock Text="DATE" Style="{StaticResource Field}"/>
             <DatePicker x:Name="DealDate" Height="34" SelectedDate="{Binding DealDate}"
-                        Style="{StaticResource AppDatePicker}" AutomationProperties.Name="Date"/>
+                        Style="{StaticResource AppDatePicker}" AutomationProperties.Name="Date"
+                        ToolTip="Today or later. Past dates are not allowed."
+                        DateValidationError="DealDate_Invalid"/>
           </StackPanel>
           <StackPanel Grid.Column="2">
-            <TextBlock Text="BUYER" Style="{StaticResource Field}"/>
+            <TextBlock Text="BUYER *" Style="{StaticResource Field}"/>
             <ComboBox x:Name="BuyerBox" Height="34" DisplayMemberPath="Name" ui:FieldHint.Text="Select buyer"
                       SelectedItem="{Binding DealBuyer}" ui:PickerSearch.On="True"
                       SelectionChanged="Buyer_Changed" AutomationProperties.Name="Buyer" AutomationProperties.HelpText="Required"/>
@@ -111,9 +131,11 @@
                        ToolTip="Follows from the date and the terms"/>
           </StackPanel>
         </Grid>
+        </StackPanel>
+        </Border>
 
-        <!-- LINES heading, with Add Line where the main card keeps it -->
-        <DockPanel Margin="0,20,0,8">
+        <!-- 2 · LINES heading, with Add Line where the main card keeps it -->
+        <DockPanel Margin="0,18,0,8">
           <Button x:Name="AddLineButton" DockPanel.Dock="Right" Click="AddLine_Click"
                   Style="{StaticResource DashButton}" AutomationProperties.Name="Add line">
             <StackPanel Orientation="Horizontal">
@@ -121,7 +143,10 @@
               <TextBlock Text="Add Line" Margin="7,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
           </Button>
-          <TextBlock Text="LINES" Style="{StaticResource KpiLabel}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+          <TextBlock VerticalAlignment="Center" FontSize="12">
+            <Run Text="2 &#x00B7; LINES" FontWeight="SemiBold"/>
+            <Run Text="   one row per parcel: size, grade, weight, selection, price/ct" Foreground="{DynamicResource TextMutedBrush}"/>
+          </TextBlock>
         </DockPanel>
       </StackPanel>
 

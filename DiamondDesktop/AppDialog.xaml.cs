@@ -37,6 +37,18 @@ public partial class AppDialog : Window
         Build(owner, Tone.Warning, title, headline, subhead, facts, emphasis, listTitle, bullets,
               primaryText, secondaryText, null).ShowThenAnswer();
 
+    /// <summary>
+    /// Reports something that WORKED and offers a next step: Info's green tick, Confirm's two
+    /// buttons. True when the primary (the next step) was chosen. Used by "Sale confirmed", which
+    /// is an outcome, not a question -- Confirm's amber warning read as "something went wrong".
+    /// </summary>
+    public static bool Done(Window owner, string title, string headline, string? subhead,
+                            IEnumerable<(string Label, string Value)> facts,
+                            string? listTitle, IEnumerable<string>? bullets,
+                            string primaryText, string secondaryText) =>
+        Build(owner, Tone.Info, title, headline, subhead, facts, null, listTitle, bullets,
+              primaryText, secondaryText, null).AutoClose(NoticeSeconds).ShowThenAnswer();
+
     /// <summary>States an outcome. One button, nothing to decide.</summary>
     public static void Info(Window owner, string title, string headline, string? subhead,
                             IEnumerable<(string Label, string Value)> facts,
@@ -44,7 +56,7 @@ public partial class AppDialog : Window
     {
         var dialog = Build(owner, Tone.Info, title, headline, subhead, facts, null, listTitle,
                            bullets, "Done", null, note);
-        dialog.ShowDialog();
+        dialog.AutoClose(NoticeSeconds).ShowDialog();
     }
 
     /// <summary>
@@ -60,7 +72,7 @@ public partial class AppDialog : Window
     {
         var dialog = Build(owner, Tone.Warning, title, headline, subhead, facts, null, listTitle,
                            bullets, "Done", null, note);
-        dialog.ShowDialog();
+        dialog.AutoClose(RefusalSeconds).ShowDialog();
     }
 
     /// <summary>
@@ -79,6 +91,39 @@ public partial class AppDialog : Window
         d.ShowDialog();
         return d._answer;
     }
+
+    // ── Notifications close themselves (Nov 2026, on request) ─────────────────────────────────
+    //
+    // Info, Done and Refused report something; they do not ask. Each closes on its own after a few
+    // seconds -- or at once on its button, the title bar's X or Esc. The countdown is shown in the
+    // footer and PAUSES while the mouse is over the box, so nobody loses a message half-read.
+    //
+    // Confirm and Choose are NOT given this. They ask a question, and closing a question by itself
+    // would quietly cancel what the person was about to do ("Confirm this sale?" vanishing = no sale).
+    // Closing on its own counts as the secondary answer: nothing chosen, nothing done.
+    private const int NoticeSeconds = 10;
+    private const int RefusalSeconds = 15;
+
+    private System.Windows.Threading.DispatcherTimer? _autoClose;
+    private int _secondsLeft;
+
+    private AppDialog AutoClose(int seconds)
+    {
+        _secondsLeft = seconds;
+        _autoClose = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _autoClose.Tick += (_, _) =>
+        {
+            if (IsMouseOver) { ShowCountdown(paused: true); return; }
+            if (--_secondsLeft <= 0) { _autoClose.Stop(); Close(); return; }
+            ShowCountdown(paused: false);
+        };
+        Loaded += (_, _) => { ShowCountdown(paused: false); _autoClose.Start(); };
+        Closed += (_, _) => _autoClose.Stop();
+        return this;
+    }
+
+    private void ShowCountdown(bool paused) =>
+        AutoCloseText.Text = paused ? "Paused while you read" : $"Closes in {_secondsLeft} s";
 
     private bool ShowThenAnswer()
     {

@@ -363,6 +363,62 @@ Eq("SALES-001 rejection computes on entry", line.RejectionCt, 24.40m);
 Eq("SALES-001 amount computes on entry", line.Amount, 108430.62m);
 Check("SALES-001 a complete line has no error", line.Error is null, line.Error);
 
+// Status badge (Nov 2026): the same checks Confirm sale runs, in the desk's words.
+{
+    var statusLine = new DiamondDesktop.SaleLine();
+    Check("STATUS - the empty typing row reads New", statusLine.EntryStatus == "New", statusLine.EntryStatus);
+
+    // Option A: one empty New row at the bottom, always -- and never a second one.
+    var typing = new DiamondDesktop.InvoiceEntry();
+    typing.Lines.Clear();
+    DiamondDesktop.MainWindow.EnsureTypingRow(typing);
+    Check("TYPING ROW - an entry with no rows gets one", typing.Lines.Count == 1 && typing.Lines[0].IsBlank);
+    DiamondDesktop.MainWindow.EnsureTypingRow(typing);
+    Check("TYPING ROW - and never a second", typing.Lines.Count == 1);
+    typing.Lines[0].PricePerCt = 100m;                      // typed into: no longer blank
+    DiamondDesktop.MainWindow.EnsureTypingRow(typing);
+    Check("TYPING ROW - a typed last row gets a fresh one under it",
+        typing.Lines.Count == 2 && typing.Lines[1].IsBlank && !typing.Lines[0].IsBlank);
+    Check("TYPING ROW - the empty row is never a real line", typing.RealLines.Count == 1);
+
+    // Status tabs and groups (Nov 2026): Ready lines first, drafts next, the New row last.
+    Check("GROUPS - a draft, the New row and a ready line land in DRAFT, NEW and READY",
+        typing.Lines[0].StatusGroup == "DRAFT" && typing.Lines[1].StatusGroup == "NEW"
+        && line.StatusGroup == "READY" || line.DealBuyer is null,
+        $"{typing.Lines[0].StatusGroup} / {typing.Lines[1].StatusGroup} / {line.StatusGroup}");
+    Check("GROUPS - order is Ready, Draft, New",
+        new DiamondDesktop.SaleLine { DealDate = DateTime.Today }.StatusOrder == 2 && typing.Lines[0].StatusOrder == 1);
+    typing.FilterStatus = "READY";
+    Check("TABS - Ready shows no draft and no New row", typing.VisibleLines.Count == 0, $"{typing.VisibleLines.Count}");
+    typing.FilterStatus = "DRAFT";
+    Check("TABS - Draft shows the draft and the New row to start one", typing.VisibleLines.Count == 2, $"{typing.VisibleLines.Count}");
+    typing.ClearFilters();
+    Check("TABS - Clear goes back to All", typing.FilterStatus is null && typing.VisibleLines.Count == 2);
+    Check("TABS - a tab is not a filter (the filter bar stays shut)", !typing.AnyFilter);
+    Check("MISSING - the typed draft is missing size, grade and weight",
+        typing.Lines[0].MissingSize && typing.Lines[0].MissingGrade && typing.Lines[0].MissingWeight);
+    // "No broker" (Nov 2026): a choice in the list, never a broker on a saved line.
+    Check("NO BROKER - the choice is recognised", DiamondDesktop.PartyRef.NoBroker.IsNoBroker);
+    Check("NO BROKER - a real broker is not it", !new DiamondDesktop.PartyRef(7, "AMIT BHAI").IsNoBroker);
+    Check("NO BROKER - and a real broker called the same is not it either",
+        !new DiamondDesktop.PartyRef(8, "No broker").IsNoBroker);
+    var nb = new DiamondDesktop.SaleLine { DealBroker = null };
+    Check("NO BROKER - a line with none reads No broker", nb.DealBrokerName == "No broker" && nb.DealKey.Broker is null);
+    Check("MISSING - the empty New row is never marked missing",
+        !typing.Lines[1].MissingSize && !typing.Lines[1].MissingWeight);
+    Check("STATUS - a complete line with no buyer is a Draft",
+        line.DealBuyer is not null || line.EntryStatus == "Draft", $"{line.EntryStatus} / buyer {line.DealBuyerName}");
+    var keepBuyer = line.DealBuyer;
+    line.DealBuyer = inv.Buyers[0];
+    Check("STATUS - a complete line with a buyer is Added", line.EntryStatus == "Added", line.EntryStatusTip);
+    line.SelectionCt = 999m;                                      // above the weight
+    Check("STATUS - a contradiction reads Fix", line.EntryStatus == "Fix", line.EntryStatusTip);
+    Check("STATUS - a Fix line says why (the summary bar shows it)", line.StatusReason is { Length: > 0 }, line.StatusReason);
+    line.SelectionCt = 112.89m;
+    line.DealBuyer = keepBuyer;
+    Check("STATUS - and the figures are untouched by any of it", line.Amount == 108430.62m, $"{line.Amount}");
+}
+
 // The header's broker % applies to every line (docs/03 C-7)
 inv.BrokerPct = 0m;
 Eq("SALES-001 changing header broker % recomputes the lines", line.Amount, 109525.88m);
@@ -1783,6 +1839,18 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
         DiamondDesktop.MainWindow.InvoiceDateFact([old, today]).StartsWith("2 dates: " + old.DealDate.ToString("dd MMM yyyy")));
     Check("DATE - the deal cell leads with the line's date",
         old.DealLine2.StartsWith(old.DealDate.ToString("dd MMM") + " · "), old.DealLine2);
+}
+
+// ---- Stock report ends at MIX: off-sheet grades (sort 100+) have no row ------------------
+{
+    Check("REPORT ROWS - a grade on the paper (MIX, 22) keeps its row",
+        DiamondDesktop.MainWindow.OnStockReport(22, holdsStock: false));
+    Check("REPORT ROWS - an off-sheet grade (NO 1, 101) with no stock has none",
+        !DiamondDesktop.MainWindow.OnStockReport(101, holdsStock: false));
+    Check("REPORT ROWS - but one holding stock still shows, so no carats vanish",
+        DiamondDesktop.MainWindow.OnStockReport(105, holdsStock: true));
+    Check("REPORT ROWS - a grade the catalogue does not know shows only if it holds stock",
+        !DiamondDesktop.MainWindow.OnStockReport(null, false) && DiamondDesktop.MainWindow.OnStockReport(null, true));
 }
 
 // ---- Stock upload - the same file twice is refused -----------------------------------

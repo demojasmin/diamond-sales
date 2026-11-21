@@ -223,6 +223,15 @@ public sealed record PartyRef(long Id, string Name, int? DefaultTermsDays = null
                               decimal? DefaultBrokerPct = null, bool Active = true)
 {
     public override string ToString() => Name;
+
+    /// <summary>
+    /// The "No broker" entry at the top of every broker list (Nov 2026). A CHOICE, never a record:
+    /// it is turned back into null before a line is saved, so the database only ever sees no broker
+    /// at all -- exactly what a sale that never had one carries. Id 0 is no real broker's id.
+    /// </summary>
+    public static readonly PartyRef NoBroker = new(0, "No broker");
+
+    public bool IsNoBroker => Id == 0 && Name == "No broker";
 }
 
 public abstract class Notifier : INotifyPropertyChanged
@@ -691,6 +700,60 @@ public sealed class SaleLine : Notifier
 
     public bool IsBlank => _grade is null && _size is null && _grossWeightCt == 0 && _selectionCt == 0 && _pricePerCt == 0;
 
+    // ── Where this line stands, in the desk's words (Nov 2026). DISPLAY ONLY ───────────────────
+    //
+    //   New      the empty row at the bottom, waiting to be typed into (Option A, Nov 2026)
+    //   Draft    on the entry but not finished: a figure or the buyer is still missing
+    //   Fix      the figures contradict each other (selection above weight, and so on)
+    //   Added    complete, on this invoice and holding its stock -- pending confirmation
+    //
+    // "Confirmed" is never a line on this screen: Confirm sale moves the line to Invoices.
+    // Computed from the same Error / IsIncomplete / DealProblem the Confirm check reads, so the
+    // badge and the button can never disagree. Nothing saves or groups on it.
+    public string EntryStatus =>
+        IsBlank ? "New"
+        : HasConflict ? "Fix"
+        : _error is not null || DealProblem is not null ? "Draft"
+        : "Added";
+
+    /// The table's group for this line (Nov 2026): READY, DRAFT (Draft and Fix) or NEW. Display only.
+    public string StatusGroup => EntryStatus switch { "Added" => "READY", "New" => "NEW", _ => "DRAFT" };
+
+    /// Group order in the table: ready first, then drafts, the New row last.
+    public int StatusOrder => EntryStatus switch { "Added" => 0, "New" => 2, _ => 1 };
+
+    /// The required cell that is still empty, so the table can outline exactly that cell.
+    public bool MissingSize => !IsBlank && _size is null;
+    public bool MissingGrade => !IsBlank && _grade is null;
+    public bool MissingWeight => !IsBlank && _grossWeightCt <= 0;
+
+    /// What keeps a Draft or Fix line from being Added, in a few words. Display only.
+    public string? StatusReason => _error ?? DealProblem;
+
+    public string EntryStatusTip => EntryStatus switch
+    {
+        "Fix"   => "Fix this line: " + _error,
+        "Draft" => "Draft — not finished: " + (_error ?? DealProblem),
+        "Added" => "Added to this invoice and holding its stock. Pending confirmation — press Confirm sale.",
+        _       => "New line: type size, grade, weight and price here, then press Edit to set the buyer. Or use Add sale.",
+    };
+
+    public SaleLine()
+    {
+        // The badge follows every change to the line, whichever property moved.
+        PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(EntryStatus) or nameof(EntryStatusTip) or nameof(StatusGroup)
+                or nameof(MissingSize) or nameof(MissingGrade) or nameof(MissingWeight)) return;
+            Raise(nameof(EntryStatus));
+            Raise(nameof(EntryStatusTip));
+            Raise(nameof(StatusGroup));
+            Raise(nameof(MissingSize));
+            Raise(nameof(MissingGrade));
+            Raise(nameof(MissingWeight));
+        };
+    }
+
     /// <summary>
     /// Whether this row can be ticked. FALSE for the empty row at the bottom.
     ///
@@ -1060,6 +1123,14 @@ public sealed class InvoiceEntry : Notifier
     public PartyRef? FilterBroker { get => _filterBroker; set { Set(ref _filterBroker, value); Repage(); } }
     public string?   FilterType   { get => _filterType;   set { Set(ref _filterType, value);   Repage(); } }
 
+    /// <summary>
+    /// The status tab (Nov 2026): null = All, "READY" = Added lines, "DRAFT" = Draft and Fix lines
+    /// plus the New row (it is where a draft starts). Display only, and deliberately NOT part of
+    /// AnyFilter: it is a tab, not a filter, so it never opens the filter bar.
+    /// </summary>
+    public string? FilterStatus { get => _filterStatus; set { Set(ref _filterStatus, value); Repage(); } }
+    private string? _filterStatus;
+
     public bool AnyFilter => _filterDate is not null || _filterBuyer is not null
                           || _filterBroker is not null || !string.IsNullOrWhiteSpace(_filterType);
 
@@ -1070,7 +1141,9 @@ public sealed class InvoiceEntry : Notifier
               && (_filterBuyer is not { } b || l.DealBuyer?.Id == b.Id)
               && (_filterBroker is not { } r || l.DealBroker?.Id == r.Id)
               && (string.IsNullOrWhiteSpace(_filterType)
-                  || string.Equals(l.DealDocType, _filterType, StringComparison.OrdinalIgnoreCase)))
+                  || string.Equals(l.DealDocType, _filterType, StringComparison.OrdinalIgnoreCase))
+              && (_filterStatus is null
+                  || (_filterStatus == "READY" ? l.StatusGroup == "READY" : l.StatusGroup != "READY")))
              .ToList();
 
     public int PageCount => Math.Max(1, (FilteredLines.Count + PageSize - 1) / PageSize);
@@ -1158,11 +1231,11 @@ public sealed class InvoiceEntry : Notifier
     /// <summary>Clears all four filters and returns to the first page.</summary>
     public void ClearFilters()
     {
-        _filterDate = null; _filterBuyer = null; _filterBroker = null; _filterType = null;
+        _filterDate = null; _filterBuyer = null; _filterBroker = null; _filterType = null; _filterStatus = null;
         _page = 0;
 
         Raise(nameof(FilterDate)); Raise(nameof(FilterBuyer));
-        Raise(nameof(FilterBroker)); Raise(nameof(FilterType));
+        Raise(nameof(FilterBroker)); Raise(nameof(FilterType)); Raise(nameof(FilterStatus));
         Repage();
     }
 
@@ -1539,6 +1612,11 @@ public sealed class InvoiceEntry : Notifier
             or nameof(SaleLine.DealSummary) or nameof(SaleLine.DealTerms) or nameof(SaleLine.DealLine2)
             or nameof(SaleLine.DealDueDate) or nameof(SaleLine.DealKey)
             or nameof(SaleLine.HasBuyer)
+            // The Status badge (Nov 2026) is raised after EVERY line change, Recalculate's own
+            // included, so reacting to it is the same recursion again. It moves no figure.
+            or nameof(SaleLine.EntryStatus) or nameof(SaleLine.EntryStatusTip)
+            or nameof(SaleLine.StatusGroup) or nameof(SaleLine.MissingSize)
+            or nameof(SaleLine.MissingGrade) or nameof(SaleLine.MissingWeight)
             or nameof(SaleLine.DealBuyerName) or nameof(SaleLine.DealBrokerName)) return;
         Recalculate();
     }
