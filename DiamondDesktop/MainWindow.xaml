@@ -388,8 +388,19 @@
             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="16,7">
       <!-- Transparent, not unset: a TextBlock with no background is not hit-testable, and the
            click-to-dismiss wired in the constructor would never fire. -->
-      <TextBlock x:Name="Status" Foreground="{DynamicResource DangerBrush}" TextWrapping="NoWrap"
+      <!-- An X to close the message (Nov 2026). Shown only while there is one. -->
+      <DockPanel>
+        <Button x:Name="StatusClose" DockPanel.Dock="Right" Click="StatusClose_Click"
+                Style="{StaticResource GhostButton}" Width="22" Height="22" Padding="0" Margin="8,0,0,0"
+                VerticalAlignment="Center" Cursor="Hand" ToolTip="Close" AutomationProperties.Name="Close message"
+                Visibility="{Binding Text, ElementName=Status, Converter={StaticResource Empty}, ConverterParameter=Invert}">
+          <Path Data="M 0,0 L 8,8 M 8,0 L 0,8" Stretch="None" StrokeThickness="1.6"
+                Stroke="{DynamicResource TextMutedBrush}" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Button>
+        <TextBlock x:Name="Status" Foreground="{DynamicResource DangerBrush}" TextWrapping="NoWrap"
                  Background="Transparent" ToolTipService.InitialShowDelay="400"/>
+      </DockPanel>
     </Border>
 
     <!-- Pages, with the loading veil over them. A 3px bar at the top of the window was too quiet
@@ -411,6 +422,34 @@
       <TabItem Header="Sales entry" x:Name="SalesEntryTab">
         <TabItem.Resources>
           <Style TargetType="ScrollBar" BasedOn="{StaticResource SlimScrollBar}"/>
+          <!-- Status tabs (Nov 2026): a pill per status, filled when chosen. -->
+          <Style x:Key="EntryTab" TargetType="RadioButton">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                  <Border x:Name="Pill" CornerRadius="14" Padding="12,4" BorderThickness="1"
+                          Background="Transparent" BorderBrush="{DynamicResource BorderBrush}">
+                    <ContentPresenter VerticalAlignment="Center"/>
+                  </Border>
+                  <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                      <Setter TargetName="Pill" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                    </Trigger>
+                    <Trigger Property="IsChecked" Value="True">
+                      <Setter TargetName="Pill" Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+                      <Setter TargetName="Pill" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                      <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                      <Setter Property="FontWeight" Value="SemiBold"/>
+                    </Trigger>
+                  </ControlTemplate.Triggers>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>
         </TabItem.Resources>
         <DockPanel Margin="16,14,16,14">
           <!-- This card is the page header as well as the invoice's own fields: the page opens
@@ -433,18 +472,18 @@
                      x:Names and bindings, so nothing that reads them has to know they moved. -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
                   <StackPanel Margin="0,0,28,0">
-                    <TextBlock Text="CARATS" Style="{StaticResource KpiLabel}" HorizontalAlignment="Right"/>
-                    <TextBlock x:Name="TotalCarats" Margin="0,2,0,0" HorizontalAlignment="Right"
+                    <TextBlock Text="CARATS" Style="{StaticResource KpiLabel}" HorizontalAlignment="Left"/>
+                    <TextBlock x:Name="TotalCarats" Margin="0,2,0,0" HorizontalAlignment="Left"
                                Text="{Binding TotalCarats, StringFormat=N2}" Style="{StaticResource Total}"/>
                   </StackPanel>
                   <StackPanel Margin="0,0,28,0">
-                    <TextBlock Text="AMOUNT" Style="{StaticResource KpiLabel}" HorizontalAlignment="Right"/>
-                    <TextBlock x:Name="TotalAmount" Margin="0,2,0,0" HorizontalAlignment="Right"
+                    <TextBlock Text="AMOUNT" Style="{StaticResource KpiLabel}" HorizontalAlignment="Left"/>
+                    <TextBlock x:Name="TotalAmount" Margin="0,2,0,0" HorizontalAlignment="Left"
                                Text="{Binding TotalAmount, Converter={StaticResource Money}}" Style="{StaticResource Total}"/>
                   </StackPanel>
                   <StackPanel>
-                    <TextBlock Text="BLENDED RATE / CT" Style="{StaticResource KpiLabel}" HorizontalAlignment="Right"/>
-                    <TextBlock x:Name="BlendedRate" Margin="0,2,0,0" HorizontalAlignment="Right"
+                    <TextBlock Text="BLENDED RATE / CT" Style="{StaticResource KpiLabel}" HorizontalAlignment="Left"/>
+                    <TextBlock x:Name="BlendedRate" Margin="0,2,0,0" HorizontalAlignment="Left"
                                Text="{Binding BlendedRate, Converter={StaticResource Money}}" Style="{StaticResource Total}"/>
                   </StackPanel>
                 </StackPanel>
@@ -462,13 +501,17 @@
                                                 Converter={StaticResource CountLabel}, ConverterParameter=line}"/>
                     </Border>
                   </StackPanel>
-                  <!-- The workflow in one line, in the order it is done. The old subtitle described
-                       fields ("buyer, broker and terms...") and never said what to press. -->
-                  <!-- THE STEPS, as a strip that shows where the desk is (Nov 2026). Written in
-                       SetEntryStep from RefreshActionStates: 1 while the entry is empty, 2 while
-                       something blocks Confirm sale, 3 once it can be confirmed. Display only. -->
+                  <!-- THE FOUR STEPS (Nov 2026): Add sale > Enter details > Add to invoice > Confirm
+                       sale. Lit by SetEntryStep from RefreshActionStates: 1 on an empty entry, 2
+                       while a line is still a Draft or needs fixing, 4 once every line is Added and
+                       Confirm sale can go. Step 3 happens in the Add sale window. Display only. -->
                   <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                    <StackPanel Orientation="Horizontal" Margin="0,0,18,0" VerticalAlignment="Center">
+                    <!-- A GUIDE, not a progress bar (Nov 2026): one bar cannot show two lines in two
+                         states, so nothing here lights up. Progress is per line (Status) and in the
+                         summary under Invoice lines. SetEntryStep(0) draws it neutral. -->
+                    <TextBlock Text="How it works:" FontSize="11.5" FontWeight="SemiBold" Margin="0,0,12,0"
+                               VerticalAlignment="Center" Foreground="{DynamicResource TextMutedBrush}"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,12,0" VerticalAlignment="Center">
                       <Border x:Name="Step1Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1"
                               Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}">
                         <TextBlock x:Name="Step1Num" Text="1" FontSize="12" FontWeight="SemiBold"
@@ -478,10 +521,12 @@
                       <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
                         <TextBlock x:Name="Step1Title" Text="Add sale" FontSize="12.5"
                                    Foreground="{DynamicResource TextMutedBrush}"/>
-                        <TextBlock Text="Pick the buyer, type the lines" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                        <TextBlock Text="Press Add sale" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
                       </StackPanel>
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,18,0" VerticalAlignment="Center">
+                    <TextBlock Text="&#x203A;" FontSize="16" Margin="0,0,12,2" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextMutedBrush}"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,12,0" VerticalAlignment="Center">
                       <Border x:Name="Step2Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1"
                               Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}">
                         <TextBlock x:Name="Step2Num" Text="2" FontSize="12" FontWeight="SemiBold"
@@ -489,12 +534,14 @@
                                    Foreground="{DynamicResource TextMutedBrush}"/>
                       </Border>
                       <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
-                        <TextBlock x:Name="Step2Title" Text="Check lines" FontSize="12.5"
+                        <TextBlock x:Name="Step2Title" Text="Enter details" FontSize="12.5"
                                    Foreground="{DynamicResource TextMutedBrush}"/>
-                        <TextBlock Text="Fix anything marked" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                        <TextBlock Text="Buyer, then each parcel" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
                       </StackPanel>
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,18,0" VerticalAlignment="Center">
+                    <TextBlock Text="&#x203A;" FontSize="16" Margin="0,0,12,2" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextMutedBrush}"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,12,0" VerticalAlignment="Center">
                       <Border x:Name="Step3Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1"
                               Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}">
                         <TextBlock x:Name="Step3Num" Text="3" FontSize="12" FontWeight="SemiBold"
@@ -502,12 +549,38 @@
                                    Foreground="{DynamicResource TextMutedBrush}"/>
                       </Border>
                       <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
-                        <TextBlock x:Name="Step3Title" Text="Confirm" FontSize="12.5"
+                        <TextBlock x:Name="Step3Title" Text="Add to invoice" FontSize="12.5"
                                    Foreground="{DynamicResource TextMutedBrush}"/>
-                        <TextBlock Text="Confirm sale or Print memo" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                        <TextBlock Text="Lines appear in the table" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                      </StackPanel>
+                    </StackPanel>
+                    <TextBlock Text="&#x203A;" FontSize="16" Margin="0,0,12,2" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextMutedBrush}"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,12,0" VerticalAlignment="Center">
+                      <Border x:Name="Step4Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1"
+                              Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}">
+                        <TextBlock x:Name="Step4Num" Text="4" FontSize="12" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextMutedBrush}"/>
+                      </Border>
+                      <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
+                        <TextBlock x:Name="Step4Title" Text="Confirm sale" FontSize="12.5"
+                                   Foreground="{DynamicResource TextMutedBrush}"/>
+                        <TextBlock x:Name="Step4Desc" Text="Posts it, moves to Invoices" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
                       </StackPanel>
                     </StackPanel>
                   </StackPanel>
+                  <!-- LAST CONFIRMED (Nov 2026): where the last sale went, one click away. Stays after
+                       the green message times out, until the next sale is confirmed. Written by
+                       ShowLastConfirmed; hidden until a sale has been confirmed in this session. -->
+                  <TextBlock x:Name="LastConfirmed" Visibility="Collapsed" Margin="0,8,0,0" FontSize="12"
+                             TextWrapping="Wrap">
+                    <Run Text="&#x2713; Last confirmed: " Foreground="{DynamicResource SuccessBrush}" FontWeight="SemiBold"/><Run
+                         x:Name="LastConfirmedNo" FontWeight="SemiBold" Foreground="{DynamicResource TextBrush}"/><Run
+                         x:Name="LastConfirmedInfo" Foreground="{DynamicResource TextMutedBrush}"/><Run Text="  &#x2014;  "
+                         Foreground="{DynamicResource TextMutedBrush}"/><Hyperlink Click="LastConfirmed_Click"
+                         ToolTip="Open this invoice on the Invoices page, with its lines"><Run Text="Open"/></Hyperlink>
+                  </TextBlock>
                 </StackPanel>
               </Grid>
 
@@ -659,9 +732,15 @@
                      Auto on the right, so the buttons take exactly what they need and the sentence
                      gets the rest. -->
                 <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*"/>
                   <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
+                <!-- Row 1 holds the Next message and the status tabs across the whole card (Nov 2026):
+                     in the heading column they were squeezed to a sliver when the drawer opened. -->
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,12,0">
                   <StackPanel Orientation="Horizontal">
                     <TextBlock Text="Invoice lines" Style="{StaticResource DashHeading}"/>
@@ -689,8 +768,6 @@
                       <TextBlock x:Name="BlockChipText" Style="{StaticResource DashChipText}"/>
                     </Border>
                   </StackPanel>
-                  <TextBlock x:Name="LinesGuide" Style="{StaticResource DashSubheading}" Margin="0,3,0,0"
-                             TextWrapping="Wrap" Text="Start with Add sale."/>
                 </StackPanel>
                 <!-- ONE action area, beside the heading that already draws the eye. Everything
                      that acts on this invoice is here: nothing is per-row any more, which is what
@@ -748,6 +825,17 @@
                   <Button x:Name="MoveToStock" Click="MoveToStock_Click"
                           Visibility="Collapsed" IsTabStop="False" Width="0" Margin="0"
                           AutomationProperties.Name="Move to stock"/>
+                  <!-- CONFIRM READY LINES (Nov 2026): only when some lines are ready and some are not. It ticks
+                       the Added lines and runs the SAME Confirm sale, with no posting logic of its own. -->
+                  <Button x:Name="ConfirmReady" Click="ConfirmReady_Click" Visibility="Collapsed"
+                          Style="{StaticResource DashButton}" Margin="0,0,8,0"
+                          ToolTip="Confirm only the lines marked Added. Drafts stay on this entry."
+                          AutomationProperties.Name="Confirm ready lines">
+                    <StackPanel Orientation="Horizontal">
+                      <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconConfirm}"/>
+                      <TextBlock x:Name="ConfirmReadyLabel" Text="Confirm ready lines" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                  </Button>
                   <Button x:Name="Post" Click="Post_Click" Visibility="Collapsed"
                           Style="{StaticResource DashGoldButton}" Margin="0,0,0,0"
                           ToolTip="Post the ticked lines and take their carats out of stock"
@@ -758,9 +846,129 @@
                     </StackPanel>
                   </Button>
                 </WrapPanel>
+                <StackPanel Grid.Row="1" Grid.ColumnSpan="2">
+                  <!-- The one message, and the action that answers it (Nov 2026): "Finish it" takes the
+                       caret to the missing cell, or opens Deal Details when it is the buyer. -->
+                  <DockPanel Margin="0,3,0,0">
+                    <Button x:Name="FinishDraft" DockPanel.Dock="Right" Click="FinishDraft_Click"
+                            Style="{StaticResource GhostButton}" Padding="10,1" Margin="8,0,0,0" FontSize="12"
+                            FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}" Cursor="Hand"
+                            Visibility="{Binding Visibility, ElementName=LinesGuide}"
+                            Content="Go to missing detail &#x2192;" ToolTip="Takes you to the field this line is missing, or opens Deal Details if it needs a buyer"/>
+                    <TextBlock x:Name="LinesGuide" Style="{StaticResource DashSubheading}" VerticalAlignment="Center"
+                               TextWrapping="Wrap" Text="Start with Add sale."/>
+                  </DockPanel>
+                  <!-- PROGRESS SUMMARY (Nov 2026): the lines counted by Status, each count a link to the first
+                       such line. Written by ShowProgressSummary; hidden while there are no lines. -->
+                  <WrapPanel x:Name="ProgressSummary" Margin="0,4,0,0" Visibility="Collapsed">
+                    <TextBlock x:Name="SumTotal" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <Button x:Name="SumReady" Click="SumReady_Click" Style="{StaticResource GhostButton}" Padding="6,1" Margin="0,0,6,0"
+                            FontSize="12" Foreground="{DynamicResource SuccessBrush}" Cursor="Hand"
+                            ToolTip="Show the first line that is ready to confirm"/>
+                    <Button x:Name="SumDraft" Click="SumDraft_Click" Style="{StaticResource GhostButton}" Padding="6,1" Margin="0,0,6,0"
+                            FontSize="12" Foreground="{DynamicResource WarningBrush}" Cursor="Hand"
+                            ToolTip="Show the first line that is still a draft"/>
+                    <Button x:Name="SumFix" Click="SumFix_Click" Style="{StaticResource GhostButton}" Padding="6,1"
+                            FontSize="12" Foreground="{DynamicResource DangerBrush}" Cursor="Hand"
+                            ToolTip="Show the first line whose figures disagree"/>
+                  </WrapPanel>
+                  <!-- STATUS TABS (Nov 2026): All / Draft / Ready / Confirmed today, with counts written by
+                       ShowProgressSummary. They replace the legend, the summary line and the warning chip. -->
+                  <WrapPanel x:Name="EntryTabs" Margin="0,8,0,0">
+                    <RadioButton x:Name="TabAll" GroupName="EntryTabs" Style="{StaticResource EntryTab}" Tag=""
+                                 IsChecked="True" Click="EntryTab_Click" Content="All"
+                                 ToolTip="Every line on this entry"/>
+                    <RadioButton x:Name="TabDraft" GroupName="EntryTabs" Style="{StaticResource EntryTab}" Tag="DRAFT"
+                                 Click="EntryTab_Click" Content="Draft"
+                                 ToolTip="Lines still missing a detail (Draft) or whose figures disagree (Fix), and the New row"/>
+                    <RadioButton x:Name="TabReady" GroupName="EntryTabs" Style="{StaticResource EntryTab}" Tag="READY"
+                                 Click="EntryTab_Click" Content="Ready"
+                                 ToolTip="Complete lines on this invoice, waiting for Confirm sale"/>
+                    <RadioButton x:Name="TabConfirmed" GroupName="EntryTabs" Style="{StaticResource EntryTab}" Tag="CONFIRMED"
+                                 Click="EntryTab_Click" Content="Confirmed today"
+                                 ToolTip="Sales confirmed today. They have left this entry and are on the Invoices page."/>
+                  </WrapPanel>
+                
+                </StackPanel>
               </Grid>
 
-          <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+              <!-- WHAT JUST HAPPENED, said where the eye is (Nov 2026). Added lines, a saved
+                   draft, a saved deal and a confirmed sale each land here in words: what was done,
+                   where it went, what to do next. It used to be the status bar at the very bottom
+                   of the window, which is where nobody was looking. ShowEntryBanner writes it; it
+                   closes itself after a while, or on the x. -->
+              <Border x:Name="EntryBanner" DockPanel.Dock="Top" Visibility="Collapsed" Margin="0,0,0,10"
+                      Background="{DynamicResource SuccessSoftBrush}" BorderBrush="{DynamicResource SuccessBorderBrush}"
+                      BorderThickness="1" CornerRadius="8" Padding="12,9">
+                <DockPanel>
+                  <Button DockPanel.Dock="Right" Click="EntryBannerClose_Click" Style="{StaticResource GhostButton}"
+                          Width="24" Height="24" Padding="0" VerticalAlignment="Top" Cursor="Hand"
+                          ToolTip="Close" AutomationProperties.Name="Close message">
+                    <Path Data="M 0,0 L 8,8 M 8,0 L 0,8" Stretch="None" StrokeThickness="1.6"
+                          Stroke="{DynamicResource TextMutedBrush}" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                  </Button>
+                  <TextBlock x:Name="EntryBannerIcon" DockPanel.Dock="Left" Text="&#x2713;" FontSize="15" FontWeight="Bold"
+                             Margin="0,0,10,0" VerticalAlignment="Top" Foreground="{DynamicResource SuccessBrush}"/>
+                  <StackPanel>
+                    <TextBlock x:Name="EntryBannerTitle" FontWeight="SemiBold" TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextBrush}"/>
+                    <TextBlock x:Name="EntryBannerText" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextMutedBrush}"/>
+                  </StackPanel>
+                </DockPanel>
+              </Border>
+
+              <!-- CONFIRMED TODAY (Nov 2026): read-only, from the invoices already loaded for the Invoices
+                   page: posted today, or confirmed from this screen this session. Below the table on
+                   All; the whole card on the Confirmed today tab. Written by RefreshConfirmedToday. -->
+              <Border x:Name="ConfirmedPanel" DockPanel.Dock="Bottom" Margin="0,10,0,0" Visibility="Collapsed"
+                      BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                      CornerRadius="{StaticResource RadiusControl}" Padding="12,10">
+                <DockPanel>
+                  <TextBlock x:Name="ConfirmedTitle" DockPanel.Dock="Top" FontWeight="SemiBold" FontSize="11.5"
+                             Margin="0,0,0,6" Foreground="{DynamicResource SuccessBrush}"/>
+                  <TextBlock x:Name="ConfirmedEmpty" DockPanel.Dock="Top" FontSize="12" Visibility="Collapsed"
+                             Foreground="{DynamicResource TextMutedBrush}"
+                             Text="No sales confirmed today yet. Confirmed sales appear here and on the Invoices page."/>
+                  <ScrollViewer x:Name="ConfirmedScroll" VerticalScrollBarVisibility="Auto" MaxHeight="150">
+                    <ItemsControl x:Name="ConfirmedList">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="0,5">
+                            <Grid>
+                              <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="140"/>
+                                <ColumnDefinition Width="*"/><ColumnDefinition Width="70"/>
+                                <ColumnDefinition Width="90"/><ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="80"/><ColumnDefinition Width="Auto"/>
+                              </Grid.ColumnDefinitions>
+                              <Border Grid.Column="0" Width="4" Height="20" CornerRadius="2" Margin="0,0,10,0"
+                                      Background="{DynamicResource SuccessBrush}" VerticalAlignment="Center"/>
+                              <TextBlock Grid.Column="1" FontWeight="SemiBold" VerticalAlignment="Center">
+                                <Run Text="&#x2713; " Foreground="{DynamicResource SuccessBrush}"/><Run Text="{Binding InvoiceNo, Mode=OneWay}"/>
+                              </TextBlock>
+                              <TextBlock Grid.Column="2" Text="{Binding BuyerName}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                              <TextBlock Grid.Column="3" Text="{Binding LineCount, StringFormat='{}{0} line(s)'}" VerticalAlignment="Center"
+                                         Foreground="{DynamicResource TextMutedBrush}"/>
+                              <TextBlock Grid.Column="4" Text="{Binding CaratsSold, StringFormat='{}{0:N2} ct'}" VerticalAlignment="Center"/>
+                              <TextBlock Grid.Column="5" Text="{Binding AmountTotal, Converter={StaticResource Money}}"
+                                         FontWeight="SemiBold" VerticalAlignment="Center"/>
+                              <TextBlock Grid.Column="6" Text="{Binding InvoiceDate, StringFormat=dd MMM}" VerticalAlignment="Center"
+                                         Foreground="{DynamicResource TextMutedBrush}"/>
+                              <Button Grid.Column="7" Content="Open" Tag="{Binding InvoiceNo}" Click="ConfirmedOpen_Click"
+                                      Style="{StaticResource GhostButton}" Padding="10,2" FontSize="12"
+                                      ToolTip="Open this invoice on the Invoices page"/>
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </ScrollViewer>
+                </DockPanel>
+              </Border>
+
+          <Border x:Name="EntryTableFrame" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
                   CornerRadius="{StaticResource RadiusControl}" ClipToBounds="True">
           <DockPanel>
 
@@ -932,7 +1140,7 @@
                  other than under the last line the person could see. -->
             <!-- VisibleLines, not Lines: the filtered page. The SAME SaleLine objects, so a cell
                  edited here edits the invoice; only which of them are on screen changes. -->
-            <DataGrid x:Name="Grid" ItemsSource="{Binding VisibleLines}" IsReadOnly="False"
+            <DataGrid x:Name="Grid" ItemsSource="{Binding VisibleLines}" IsReadOnly="False" CurrentCellChanged="Grid_CurrentCellChanged"
                     Visibility="{Binding Source={x:Static local:Catalogue.Grades}, Path=Count, Converter={StaticResource Empty}, ConverterParameter=Invert}"
                     CanUserAddRows="False" CanUserDeleteRows="False" SelectionUnit="Cell"
                     CanUserSortColumns="False"
@@ -964,12 +1172,52 @@
                 <Setter Property="Background" Value="Transparent"/>
                 <Setter Property="ToolTip" Value="{Binding Error}"/>
                 <Style.Triggers>
+                <!-- The empty New row is a slot, not a line: drawn faded until it is clicked into or typed in. -->
+                <DataTrigger Binding="{Binding EntryStatus}" Value="New">
+                  <Setter Property="Opacity" Value="0.55"/>
+                </DataTrigger>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                  <Setter Property="Opacity" Value="1"/>
+                </Trigger>
                   <DataTrigger Binding="{Binding HasConflict}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
                   </DataTrigger>
                 </Style.Triggers>
               </Style>
             </DataGrid.RowStyle>
+            <!-- GROUPS (Nov 2026): Ready to confirm, Draft, then the New row, by SaleLine.StatusGroup.
+                 Not live: a row moves to its group when the desk leaves it (RegroupIfStale), never
+                 under the caret. Display only; posting and printing still read the entry in typed order. -->
+            <DataGrid.GroupStyle>
+              <GroupStyle>
+                <GroupStyle.HeaderTemplate>
+                  <DataTemplate>
+                    <Border x:Name="GroupHead" Padding="12,9,12,5">
+                      <DockPanel>
+                        <TextBlock VerticalAlignment="Center" FontSize="11.5">
+                          <Run x:Name="GroupLabel" FontWeight="SemiBold"/><Run Text="{Binding ItemCount, Mode=OneWay, StringFormat='  ·  {0} line(s)'}"
+                               Foreground="{DynamicResource TextMutedBrush}"/><Run x:Name="GroupHint" Foreground="{DynamicResource TextMutedBrush}"/>
+                        </TextBlock>
+                      </DockPanel>
+                    </Border>
+                    <DataTemplate.Triggers>
+                      <DataTrigger Binding="{Binding Name}" Value="READY">
+                        <Setter TargetName="GroupLabel" Property="Text" Value="READY TO CONFIRM"/>
+                        <Setter TargetName="GroupLabel" Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                                  </DataTrigger>
+                      <DataTrigger Binding="{Binding Name}" Value="DRAFT">
+                        <Setter TargetName="GroupLabel" Property="Text" Value="DRAFT"/>
+                        <Setter TargetName="GroupLabel" Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+                        <Setter TargetName="GroupHint" Property="Text" Value="  ·  not confirmed until complete"/>
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding Name}" Value="NEW">
+                        <Setter TargetName="GroupHead" Property="Visibility" Value="Collapsed"/>
+                      </DataTrigger>
+                    </DataTemplate.Triggers>
+                  </DataTemplate>
+                </GroupStyle.HeaderTemplate>
+              </GroupStyle>
+            </DataGrid.GroupStyle>
             <DataGrid.Columns>
               <!-- Ticking is for removing several lines at once, and nothing else: it changes no
                    figure and no total. The header box ticks and unticks the lot. -->
@@ -1021,6 +1269,77 @@
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
+              <!-- STATUS (Nov 2026): Draft / Fix / Added, from SaleLine.EntryStatus: the same
+                   checks Confirm sale runs, so the badge and the button agree. Display only. -->
+              <DataGridTemplateColumn Header="Status" Width="86" MinWidth="86" CanUserResize="False">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <StackPanel Orientation="Horizontal">
+                    <!-- The stripe: blue Ready, amber Draft, red Fix, grey New. -->
+                    <Border Width="4" Height="22" CornerRadius="2" Margin="0,0,8,0" VerticalAlignment="Center">
+                      <Border.Style>
+                        <Style TargetType="Border">
+                          <Setter Property="Background" Value="{DynamicResource BorderBrush}"/>
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding EntryStatus}" Value="Added">
+                              <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding EntryStatus}" Value="Draft">
+                              <Setter Property="Background" Value="{DynamicResource WarningBrush}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding EntryStatus}" Value="Fix">
+                              <Setter Property="Background" Value="{DynamicResource DangerBrush}"/>
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </Border.Style>
+                    </Border>
+                    <Border CornerRadius="9" Padding="7,1" HorizontalAlignment="Left" VerticalAlignment="Center"
+                            ToolTip="{Binding EntryStatusTip}">
+                      <Border.Style>
+                        <Style TargetType="Border">
+                          <Setter Property="Background" Value="Transparent"/>
+                          <Setter Property="BorderThickness" Value="0"/>
+                          <Style.Triggers>
+                              <DataTrigger Binding="{Binding EntryStatus}" Value="New">
+                                <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+                                <Setter Property="BorderThickness" Value="1"/>
+                              </DataTrigger>
+                              <DataTrigger Binding="{Binding EntryStatus}" Value="Added">
+                                <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+                              </DataTrigger>
+                              <DataTrigger Binding="{Binding EntryStatus}" Value="Draft">
+                                <Setter Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
+                              </DataTrigger>
+                              <DataTrigger Binding="{Binding EntryStatus}" Value="Fix">
+                                <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
+                              </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </Border.Style>
+                      <TextBlock Text="{Binding EntryStatus}" FontSize="11" FontWeight="SemiBold">
+                        <TextBlock.Style>
+                          <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+                            <Style.Triggers>
+                              <DataTrigger Binding="{Binding EntryStatus}" Value="Added">
+                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                              </DataTrigger>
+                              <DataTrigger Binding="{Binding EntryStatus}" Value="Draft">
+                                <Setter Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+                              </DataTrigger>
+                              <DataTrigger Binding="{Binding EntryStatus}" Value="Fix">
+                                <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+                              </DataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </TextBlock.Style>
+                      </TextBlock>
+                    </Border>
+                  </StackPanel>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
               <!-- CellComboBox, not a bare ComboBox: the default field style is 32px and these sat a
                    visible 4px taller than every other control in a 36px row. Same defect the
                    Disposition dropdown had (docs/12 §3c). -->
@@ -1032,7 +1351,7 @@
                    2. These headers are Title Case; every other grid uses UPPERCASE. Purely
                       visual, and equally a design decision.
                    Neither affects what is saved. -->
-              <DataGridTemplateColumn Header="Size" Width="92*" MinWidth="88" CellStyle="{StaticResource ComboCell}">
+              <DataGridTemplateColumn Header="Size" Width="96*" MinWidth="96" CellStyle="{StaticResource ComboCell}">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <!-- ItemTemplate, not DisplayMemberPath. The design's combo template draws its
@@ -1042,6 +1361,17 @@
                     <!-- An unset combo draws nothing but a chevron, so a fresh line looked broken
                          rather than unfilled. The hint sits behind the drop-down and disappears
                          the moment a size is chosen. -->
+                    <Border CornerRadius="4" BorderThickness="1" ToolTip="{Binding EntryStatusTip}">
+                      <Border.Style>
+                        <Style TargetType="Border">
+                          <Setter Property="BorderBrush" Value="Transparent"/>
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding MissingSize}" Value="True">
+                              <Setter Property="BorderBrush" Value="{DynamicResource WarningBrush}"/>
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </Border.Style>
                     <Grid>
                       <!-- SizeChoices, not AllowedSizes: the list narrows to what has been typed,
                            and it is PER LINE because WPF hands every combo bound to one collection
@@ -1061,12 +1391,24 @@
                       <TextBlock Text="Size" Style="{StaticResource CellPlaceholder}"
                                  Visibility="{Binding SizePlaceholder, Converter={StaticResource Bool}}"/>
                     </Grid>
+                    </Border>
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTemplateColumn Header="Grade" Width="120*" MinWidth="100" CellStyle="{StaticResource ComboCell}">
+              <DataGridTemplateColumn Header="Grade" Width="124*" MinWidth="124" CellStyle="{StaticResource ComboCell}">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
+                    <Border CornerRadius="4" BorderThickness="1" ToolTip="{Binding EntryStatusTip}">
+                      <Border.Style>
+                        <Style TargetType="Border">
+                          <Setter Property="BorderBrush" Value="Transparent"/>
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding MissingGrade}" Value="True">
+                              <Setter Property="BorderBrush" Value="{DynamicResource WarningBrush}"/>
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </Border.Style>
                     <Grid>
                       <!-- SellableGrades, not Grades: ZZ TEST is test data, and Unknown Grade is
                            0039's landing place for a sheet row that printed no grade name. Neither
@@ -1089,19 +1431,53 @@
                       <TextBlock Text="Grade" Style="{StaticResource CellPlaceholder}"
                                  Visibility="{Binding GradePlaceholder, Converter={StaticResource Bool}}"/>
                     </Grid>
+                    </Border>
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTextColumn Header="Weight ct" Width="80*" MinWidth="76" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
-                                  Binding="{Binding GrossWeightCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Selection" Width="88*" MinWidth="76" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
-                                  Binding="{Binding SelectionCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}"/>
+              <DataGridTextColumn Header="Wt ct" Width="80*" MinWidth="62" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding GrossWeightCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}">
+                <DataGridTextColumn.HeaderStyle>
+                  <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource AppNumericHeader}">
+                    <Setter Property="ToolTip" Value="Weight (carats)"/>
+                  </Style>
+                </DataGridTextColumn.HeaderStyle>
+                <DataGridTextColumn.ElementStyle>
+                  <Style TargetType="TextBlock" BasedOn="{StaticResource Num}">
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding MissingWeight}" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
+                        <Setter Property="ToolTip" Value="Enter the weight"/>
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </DataGridTextColumn.ElementStyle>
+              </DataGridTextColumn>
+              <DataGridTextColumn Header="Sel ct" Width="88*" MinWidth="62" ElementStyle="{StaticResource Num}" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding SelectionCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}">
+                <DataGridTextColumn.HeaderStyle>
+                  <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource AppNumericHeader}">
+                    <Setter Property="ToolTip" Value="Selection (carats sold)"/>
+                  </Style>
+                </DataGridTextColumn.HeaderStyle>
+              </DataGridTextColumn>
               <!-- Read-only and never wider than "999.99", so it can afford the floor that the two
                    Less columns need. -->
-              <DataGridTextColumn Header="Rejection" Width="80*" MinWidth="72" IsReadOnly="True" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"
-                                  Binding="{Binding RejectionCt, StringFormat=N2, Mode=OneWay}" Foreground="{DynamicResource TextMutedBrush}"/>
-              <DataGridTextColumn Header="Price/ct" Width="128*" MinWidth="80" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
+              <DataGridTextColumn Header="Rej ct" Width="80*" MinWidth="56" IsReadOnly="True" ElementStyle="{StaticResource Num}"
+                                  Binding="{Binding RejectionCt, StringFormat=N2, Mode=OneWay}" Foreground="{DynamicResource TextMutedBrush}">
+                <DataGridTextColumn.HeaderStyle>
+                  <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource AppNumericHeader}">
+                    <Setter Property="ToolTip" Value="Rejection (carats) = weight - selection"/>
+                  </Style>
+                </DataGridTextColumn.HeaderStyle>
+              </DataGridTextColumn>
+              <DataGridTextColumn Header="Price/ct" Width="128*" MinWidth="80" EditingElementStyle="{StaticResource NumEdit}"
                                   Binding="{Binding PricePerCt, StringFormat=N2, UpdateSourceTrigger=LostFocus}">
+                <DataGridTextColumn.HeaderStyle>
+                  <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource AppNumericHeader}">
+                    <Setter Property="ToolTip" Value="Price per carat"/>
+                  </Style>
+                </DataGridTextColumn.HeaderStyle>
                 <DataGridTextColumn.ElementStyle>
                   <Style TargetType="TextBlock" BasedOn="{StaticResource Num}">
                     <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
@@ -1109,17 +1485,40 @@
                   </Style>
                 </DataGridTextColumn.ElementStyle>
               </DataGridTextColumn>
-              <DataGridTextColumn Header="Ex Rate" Width="66*" MinWidth="62" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
-                                  Binding="{Binding ExRate, UpdateSourceTrigger=LostFocus}"/>
+              <DataGridTextColumn Header="Ex" Width="66*" MinWidth="42" ElementStyle="{StaticResource Num}" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding ExRate, UpdateSourceTrigger=LostFocus}">
+                <DataGridTextColumn.HeaderStyle>
+                  <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource AppNumericHeader}">
+                    <Setter Property="ToolTip" Value="Exchange rate"/>
+                  </Style>
+                </DataGridTextColumn.HeaderStyle>
+              </DataGridTextColumn>
               <!-- 52*/46 gave the editor 13px of text room — one character — so a percentage like
                    12.5 scrolled out of sight as it was typed and the field looked dead. These two
                    hold the same shape of figure as Ex Rate and are sized to match it. -->
-              <DataGridTextColumn Header="Less 1" Width="62*" MinWidth="56" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
-                                  Binding="{Binding Less1Pct, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Less 2" Width="62*" MinWidth="56" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}" EditingElementStyle="{StaticResource NumEdit}"
-                                  Binding="{Binding Less2Pct, UpdateSourceTrigger=LostFocus}"/>
-              <DataGridTextColumn Header="Amount" Width="144*" MinWidth="92" IsReadOnly="True" HeaderStyle="{StaticResource AppNumericHeader}"
+              <DataGridTextColumn Header="L1 %" Width="62*" MinWidth="46" ElementStyle="{StaticResource Num}" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding Less1Pct, UpdateSourceTrigger=LostFocus}">
+                <DataGridTextColumn.HeaderStyle>
+                  <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource AppNumericHeader}">
+                    <Setter Property="ToolTip" Value="Less 1 (discount %)"/>
+                  </Style>
+                </DataGridTextColumn.HeaderStyle>
+              </DataGridTextColumn>
+              <DataGridTextColumn Header="L2 %" Width="62*" MinWidth="46" ElementStyle="{StaticResource Num}" EditingElementStyle="{StaticResource NumEdit}"
+                                  Binding="{Binding Less2Pct, UpdateSourceTrigger=LostFocus}">
+                <DataGridTextColumn.HeaderStyle>
+                  <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource AppNumericHeader}">
+                    <Setter Property="ToolTip" Value="Less 2 (discount %)"/>
+                  </Style>
+                </DataGridTextColumn.HeaderStyle>
+              </DataGridTextColumn>
+              <DataGridTextColumn Header="Amount" Width="144*" MinWidth="90" IsReadOnly="True"
                                   Binding="{Binding Amount, StringFormat=N2, Mode=OneWay}" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}">
+                <DataGridTextColumn.HeaderStyle>
+                  <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource AppNumericHeader}">
+                    <Setter Property="ToolTip" Value="Amount after discounts and broker"/>
+                  </Style>
+                </DataGridTextColumn.HeaderStyle>
                 <DataGridTextColumn.ElementStyle>
                   <Style TargetType="TextBlock" BasedOn="{StaticResource Num}">
                     <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
@@ -1150,7 +1549,7 @@
                    the row's height with it. 200* and a floor of 150. The star weight only shares
                    out spare width, so it costs no other column anything; the floor adds 70px to
                    the table's total, which the horizontal scrollbar already handles. -->
-              <DataGridTemplateColumn Header="Remark" Width="200*" MinWidth="90">
+              <DataGridTemplateColumn Header="Remark" Width="200*" MinWidth="106">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <Grid>
@@ -1165,14 +1564,14 @@
                            AcceptsReturn stays FALSE: Enter belongs to the grid, where it adds the
                            next line. LostFocus still goes home, which now only matters for a remark
                            too long even to wrap inside the row. -->
-                      <TextBox Text="{Binding Remark, UpdateSourceTrigger=PropertyChanged}"
+                      <TextBox Text="{Binding Remark, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center"
                                Style="{StaticResource CellTextBox}"
                                TextWrapping="Wrap" AcceptsReturn="False"
                                Height="Auto" MinHeight="28" VerticalContentAlignment="Center"
                                LostFocus="RemarkBox_LostFocus"
                                AutomationProperties.Name="Remark"
                                ToolTip="{Binding Remark}"/>
-                      <TextBlock Text="remark" Style="{StaticResource CellPlaceholder}"
+                      <TextBlock Text="Add a remark" Style="{StaticResource CellPlaceholder}" Margin="9,0,0,0"
                                  Visibility="{Binding Remark, Converter={StaticResource Empty}}"/>
                     </Grid>
                   </DataTemplate>
@@ -1191,7 +1590,7 @@
                    The buyer line turns red and reads "No buyer" when there is none: sales_invoice
                    .buyer_id is NOT NULL, so that row cannot be written at all, and a blank cell
                    would have looked merely unfilled rather than blocking. -->
-              <DataGridTemplateColumn Header="Deal Details" Width="140" MinWidth="140"
+              <DataGridTemplateColumn Header="Deal Details" Width="132" MinWidth="132"
                                       CanUserResize="False" SortMemberPath="DealSummary">
                 <DataGridTemplateColumn.CellStyle>
                   <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
@@ -1226,6 +1625,10 @@
                                 <DataTrigger Binding="{Binding HasBuyer}" Value="False">
                                   <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
                                 </DataTrigger>
+                                <!-- Not on the empty New row: nothing typed yet is not a missing buyer. Later, so it wins. -->
+                                <DataTrigger Binding="{Binding EntryStatus}" Value="New">
+                                  <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+                                </DataTrigger>
                               </Style.Triggers>
                             </Style>
                           </TextBlock.Style>
@@ -1239,12 +1642,29 @@
                       <!-- Tag, not CommandParameter: these rows are a plain ObservableCollection
                            with no command surface, and Tag is what every other row action on this
                            grid already uses to say which line it belongs to. -->
-                      <Button Grid.Column="1" Content="Edit" Tag="{Binding}"
+                      <Button Grid.Column="1" Tag="{Binding}"
                               Click="EditDeal_Click" VerticalAlignment="Center" Margin="6,0,0,0"
                               Padding="8,2" MinWidth="42" FontSize="11"
-                              Style="{StaticResource GhostButton}"
                               AutomationProperties.Name="Edit deal details for this line"
-                              ToolTip="Date, buyer, broker, terms and type for THIS line only"/>
+                              ToolTip="Date, buyer, broker, terms and type for THIS line only">
+                        <!-- "Set buyer" where a typed line has none (Nov 2026); "Edit" everywhere else. -->
+                        <Button.Style>
+                          <Style TargetType="Button" BasedOn="{StaticResource GhostButton}">
+                            <Setter Property="Content" Value="Edit"/>
+                            <Style.Triggers>
+                              <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                  <Condition Binding="{Binding HasBuyer}" Value="False"/>
+                                  <Condition Binding="{Binding StatusGroup}" Value="DRAFT"/>
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="Content" Value="Set buyer"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                              </MultiDataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </Button.Style>
+                      </Button>
                     </Grid>
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
@@ -1253,7 +1673,7 @@
               <!-- ACTION, back on request (Nov 2026): Print memo, Confirm and Remove for THIS row,
                    as compact icons with tooltips. The header buttons stay for the ticked lines (or
                    all lines). 90px with 26px icons so the table still fits the card. -->
-              <DataGridTemplateColumn Header="Action" Width="88" MinWidth="88"
+              <DataGridTemplateColumn Header="" Width="46" MinWidth="46"
                                       CanUserResize="False">
                 <DataGridTemplateColumn.CellStyle>
                   <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
@@ -1262,44 +1682,22 @@
                 </DataGridTemplateColumn.CellStyle>
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"
-                                VerticalAlignment="Center">
-                      <!-- Tag="{Binding}" is what makes these THIS ROW's actions. Without it both
-                           handlers fell through to the ticked rows, so a row icon did whatever the
-                           ticks said and ignored the row it was sitting on. -->
-                      <Button Click="PrintMemo_Click" Tag="{Binding}" Style="{StaticResource DashButton}"
-                              Height="26" Width="26" MinWidth="0" Padding="0" Margin="1,0"
-                              ToolTip="Print a memo for this line"
-                              AutomationProperties.Name="Print memo for this line">
-                        <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconMemo}"/>
-                      </Button>
-                      <!-- The row's Move to stock icon goes with the header button above. Three
-                           actions per row now, not four, so the column is 108px rather than 136. -->
-                      <Button Click="Post_Click" Tag="{Binding}" Style="{StaticResource DashGoldButton}"
-                              Height="26" Width="26" MinWidth="0" Padding="0" Margin="1,0"
-                              ToolTip="Confirm this line — posts it and takes the stock"
-                              AutomationProperties.Name="Confirm this line">
-                        <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconConfirm}"/>
-                      </Button>
-                      <!-- On EVERY row, with no gate at all. Removable hid it whenever a single
-                           row was left, so the one row you most often want to clear was the one
-                           row that offered no way to clear it. Taking the last line off is not a
-                           special case: RemoveLine_Click puts a fresh blank row back, so the grid
-                           still always has one to type into. -->
-                      <!-- Icon AND the word, matching "Remove n lines" in the header: same
-                           IconRemove, same DangerBrush. Removing a line is the one thing in this
-                           column that cannot be undone, so it is the one that should not be left
-                           to a glyph. The other three are reversible or write nothing, which is
-                           why they stay icon-only and the column still fits. -->
-                      <Button Click="RemoveLine_Click" Tag="{Binding}"
-                              Style="{StaticResource DashButton}"
-                              Height="26" Width="26" MinWidth="0" Padding="0" Margin="1,0"
-                              Foreground="{DynamicResource DangerBrush}"
-                              ToolTip="Remove this line"
-                              AutomationProperties.Name="Remove this line">
-                        <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconRemove}"/>
-                      </Button>
-                    </StackPanel>
+                    <!-- ONE MENU PER ROW (Nov 2026): Print memo, Confirm and Remove for THIS line, the same
+                         handlers the three icons used (Tag is the line). The header buttons stay. -->
+                    <Button Click="RowMenu_Click" Style="{StaticResource DashButton}" Height="26" Width="34"
+                            MinWidth="0" Padding="0" HorizontalAlignment="Center" VerticalAlignment="Center"
+                            ToolTip="Actions for this line" AutomationProperties.Name="Actions for this line">
+                      <TextBlock Text="&#x22EF;" FontSize="16" FontWeight="Bold" Margin="0,-4,0,0"/>
+                      <Button.ContextMenu>
+                        <ContextMenu>
+                          <MenuItem Header="Print memo for this line" Tag="{Binding}" Click="PrintMemo_Click"/>
+                          <MenuItem Header="Confirm this line" Tag="{Binding}" Click="Post_Click"/>
+                          <Separator/>
+                          <MenuItem Header="Remove this line" Tag="{Binding}" Click="RemoveLine_Click"
+                                    Foreground="{DynamicResource DangerBrush}"/>
+                        </ContextMenu>
+                      </Button.ContextMenu>
+                    </Button>
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
@@ -1331,7 +1729,7 @@
             <TextBlock Style="{StaticResource EmptyHint}"
                        VerticalAlignment="Top" Margin="12,96,12,0"
                        Visibility="{Binding EntriesStarted, Converter={StaticResource Empty}}"
-                       Text="Press Add sale to pick the buyer and type the lines — or type into the row above and press Edit to set its deal.&#10;Enter adds a line · tick lines only to act on some of them · Delete removes a line · Ctrl+P prints a memo"/>
+                       Text="Press Add sale to pick the buyer and type the lines — or type straight into the New row above and press Edit to set its buyer.&#10;Enter adds a line · tick lines only to act on some of them · Delete removes a line · Ctrl+P prints a memo"/>
 
             <!-- With no catalogue the Grade and Size dropdowns open onto nothing, which reads as
                  "this app is broken" rather than "it could not reach the database" — and a line can
@@ -1367,15 +1765,23 @@
 
                  Pressing Edit on another row while it is open just re-points it at that row; the
                  title says which line, so there is no question which one is being changed. -->
-            <Border x:Name="DealDrawer" Grid.Column="2" Style="{StaticResource DashCard}"
+            <!-- OVER the table's right-hand side, not beside it (Nov 2026). Beside, it took 360px from
+                 a table that needs ~1110 and cut it off ("AMO..."), wrapping the toolbar. Over, the
+                 table keeps its width; the drawer covers Remark / Deal Details / the menu, which are
+                 the columns this drawer is editing anyway, and the line's own figures stay in view. -->
+            <Border x:Name="DealDrawer" Grid.Column="0" Grid.ColumnSpan="3" HorizontalAlignment="Right"
+                    Width="380" Panel.ZIndex="10" Style="{StaticResource DashCard}"
                     Visibility="Collapsed" DataContext="{Binding DealDraft, RelativeSource={RelativeSource AncestorType=Window}}">
+              <Border.Effect>
+                <DropShadowEffect BlurRadius="24" ShadowDepth="4" Direction="270" Opacity="0.22"/>
+              </Border.Effect>
               <DockPanel>
                 <Grid DockPanel.Dock="Top" Margin="0,0,0,14">
                   <StackPanel>
                     <TextBlock x:Name="DealDrawerTitle" Text="Deal Details"
                                Style="{StaticResource DashHeading}"/>
-                    <TextBlock Text="Applies to this line only. Lines sharing a deal are billed together."
-                               Style="{StaticResource DashSubheading}" TextWrapping="Wrap"/>
+                    <TextBlock Text="Who this line is sold to, and on what terms. Save details writes them onto this line (and onto any line that has no buyer yet). Lines with the same deal become one invoice."
+                               Style="{StaticResource DashSubheading}" TextWrapping="Wrap" Margin="0,2,0,0"/>
                   </StackPanel>
                   <Button x:Name="DealDrawerClose" Click="CancelDeal_Click"
                           Style="{StaticResource GhostButton}" FocusVisualStyle="{x:Null}"
@@ -1421,14 +1827,19 @@
                          simply a different invoice — nothing had to change to express it. The
                          header's Date still seeds every new row, so an entry written on one day
                          goes on behaving as one date unless a line is deliberately moved. -->
-                    <TextBlock Text="DATE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
-                    <DatePicker x:Name="DealDatePicker" Height="34" Margin="0,0,0,12" TabIndex="0"
+                    <TextBlock Text="WHO AND WHEN" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,10"
+                               Foreground="{DynamicResource TextBrush}"/>
+                    <TextBlock Text="DATE (the invoice date)" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                    <DatePicker x:Name="DealDatePicker" Height="34" Margin="0,0,0,4" TabIndex="0"
                                 SelectedDate="{Binding DealDate}"
                                 Style="{StaticResource AppDatePicker}"
                                 CalendarClosed="DatePicker_CalendarClosed"
+                                DateValidationError="DealDate_Invalid"
                                 AutomationProperties.Name="Invoice date for this line"/>
+                    <TextBlock Text="Today or later. Past dates are not allowed." FontSize="11" Margin="0,0,0,12"
+                               Foreground="{DynamicResource TextMutedBrush}"/>
 
-                    <TextBlock Text="BUYER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                    <TextBlock Text="BUYER *" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
                     <Grid Margin="0,0,0,12">
                       <!-- ItemsSource is FILLED FROM CODE, in EditDeal_Click, like every other picker
                            in this app. It used to be bound to the window's entry — and
@@ -1459,7 +1870,7 @@
 
                     <TextBlock Text="BROKER" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
                     <Grid Margin="0,0,0,12">
-                      <ComboBox x:Name="BrokerPicker" Height="34"
+                      <ComboBox x:Name="BrokerPicker" Height="34" SelectionChanged="BrokerPicker_Changed"
                                 SelectedItem="{Binding DealBroker}"
                                 ItemContainerStyle="{StaticResource PartyItemContainer}"
                                 ui:PickerSearch.On="True" PreviewMouseWheel="NoWheelChange" TabIndex="2"
@@ -1469,6 +1880,9 @@
                                                       Converter={StaticResource Empty}}"/>
                     </Grid>
 
+                    <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Margin="0,4,0,12"/>
+                    <TextBlock Text="TERMS" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,10"
+                               Foreground="{DynamicResource TextBrush}"/>
                     <Grid Margin="0,0,0,12">
                       <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/><ColumnDefinition Width="12"/>

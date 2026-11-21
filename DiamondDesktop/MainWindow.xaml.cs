@@ -6,6 +6,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
+using System.Windows.Data;
 using System.Windows.Threading;
 using DiamondDesktop.Data;
 
@@ -488,7 +489,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
     private void RemoveLine_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: SaleLine line }) return;
+        if ((sender as FrameworkElement)?.Tag is not SaleLine line) return;
 
         // Only asked when there is typing to lose. Clearing a row that is entirely empty is not a
         // decision worth interrupting for, and now that Remove is on every row it is the commonest
@@ -508,7 +509,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // The grid always keeps one row to type into, so taking the last line off is not a special
         // case -- it clears that row rather than emptying the table. Same rule the screen opens
         // with, and the same one OpenInvoiceAsync applies to an invoice that came back with none.
-        if (_invoice.Lines.Count == 0) AddLine();
+        EnsureTypingRow();       // removing the last line, or the New row itself, leaves one to type into
         TickCountChanged();
     }
 
@@ -523,9 +524,22 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// A blank row's icon falls through to the ticks rather than acting on a row with nothing on
     /// it — the same rule RealLines uses everywhere else.
     /// </summary>
-    private IReadOnlyList<SaleLine> ActOn(object sender) =>
-        (sender as FrameworkElement)?.Tag is SaleLine row && !row.IsBlank
-            ? [row]
+    /// Set by Confirm ready lines for exactly one Confirm sale, so it acts on the ready lines
+    /// without ticking them (ticks left behind read as a selection nobody made).
+    private IReadOnlyList<SaleLine>? _actOnOnce;
+
+    private IReadOnlyList<SaleLine> ActOn(object sender)
+    {
+        if (_actOnOnce is { } once) { _actOnOnce = null; return once; }
+        return ActOnRow(sender);
+    }
+
+    private IReadOnlyList<SaleLine> ActOnRow(object sender) =>
+        (sender as FrameworkElement)?.Tag is SaleLine row
+            // A ROW's own action acts on that row and nothing else. On the empty New row that is
+            // nothing at all -- it used to fall through to the header's scope, so "Confirm this
+            // line" on the empty row offered to confirm every line on the entry.
+            ? (row.IsBlank ? [] : [row])
             : HeaderScope();
 
     /// <summary>
@@ -602,9 +616,11 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             return;
 
         foreach (var line in doomed) _invoice.Lines.Remove(line);
+        EnsureTypingRow();
 
         TickCountChanged();
         Say($"Removed {doomed.Count} line(s)", ok: true);
+        ShowEntryBanner($"Removed {doomed.Count} line(s)", "Nothing was sold. Any stock they were holding has been released.", neutral: true);
     }
 
     /// <summary>
@@ -655,7 +671,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         var dialog = new AddSaleDialog(_invoice, AddLine) { Owner = this };
         dialog.ShowDialog();
         if (dialog.Added > 0)
+        {
             Say($"{dialog.Added} line(s) added for {dialog.BuyerName}", ok: true, popup: false);
+            ShowEntryBanner($"{dialog.Added} line(s) added to the invoice for {dialog.BuyerName}",
+                "They are in the table below with status Added, holding their stock. Nothing is sold yet — "
+                + "press Confirm sale to post the invoice, or Add sale again for another buyer.");
+            EnsureTypingRow();
+            if (_invoice.RealLines.LastOrDefault() is { } last) ShowRow(last);
+        }
     }
 
     /// <summary>
@@ -689,6 +712,19 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if ((sender as FrameworkElement)?.Tag is int number) _invoice.Page = number - 1;
     }
 
+    /// <summary>
+    /// One empty "New" row at the bottom to type into, always: after Add sale, a removal, a
+    /// confirmed sale and a restart alike. A restored entry used to come back with none, so typing
+    /// a line straight into the table worked before a restart and not after. Display only -- an
+    /// empty row is never saved, held or posted (RealLines skips it).
+    /// </summary>
+    private void EnsureTypingRow() => EnsureTypingRow(_invoice);
+
+    public static void EnsureTypingRow(InvoiceEntry entry)
+    {
+        if (entry.Lines.Count == 0 || !entry.Lines[^1].IsBlank) entry.Lines.Add(new SaleLine());
+    }
+
     private void AddLine() => AddLine(new SaleLine());
 
     private void AddLine(SaleLine line)
@@ -697,7 +733,15 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // on every new line, so the deal is put back on afterwards.
         var deal = line.HasBuyer ? new SaleLine() : null;
         deal?.TakeDealFrom(line);
-        _invoice.Lines.Add(line);
+
+        // THE TYPING ROW STAYS LAST (Nov 2026). A line that arrives filled in -- Add sale -- goes in
+        // above the empty "New" row, so real lines come first and the row to type into is always at
+        // the bottom. It used to be appended after it, which left the empty row stranded at the top
+        // looking like a stray. A blank line (Enter) still appends, as it always did.
+        if (!line.IsBlank && _invoice.Lines.LastOrDefault() is { IsBlank: true })
+            _invoice.Lines.Insert(_invoice.Lines.Count - 1, line);
+        else
+            _invoice.Lines.Add(line);
         if (deal is not null) line.TakeDealFrom(deal);
 
         // A line that arrives already filled in (Add sale) holds its carats now, exactly as typing
@@ -745,6 +789,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // answer can move: a line added, a weight edited, a line removed, a buyer picked.
         if (previous is not null) previous.PropertyChanged -= OnEntryChanged;
         current.PropertyChanged += OnEntryChanged;
+        ApplyGrouping(current);
     }
 
     private void OnEntryChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) =>
@@ -848,6 +893,63 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         else                                            line.SizeFilter  = line.Size?.ShortName  ?? "";
     }
 
+    /// The invoice number(s) of the last sale confirmed in this session, for the "Last confirmed" link.
+    private List<string> _lastConfirmed = [];
+
+    /// <summary>
+    /// "Last confirmed: INV-2026-00039 · ABC Company · 4,950.00 — Open", under the Sales entry
+    /// heading. Unlike the green message it does not time out: it stays until the next sale is
+    /// confirmed, so where the last one went is always one click away. Session only.
+    /// </summary>
+    private void ShowLastConfirmed(IReadOnlyList<string> invoiceNos, IReadOnlyList<string> buyers, decimal amount)
+    {
+        if (LastConfirmed is null || invoiceNos.Count == 0) return;
+        _lastConfirmed = [.. invoiceNos];
+        foreach (var no in invoiceNos) _confirmedThisSession.Add(no);
+        LastConfirmedNo.Text = string.Join(", ", invoiceNos);
+        LastConfirmedInfo.Text = $"  ·  {string.Join(", ", buyers)}  ·  {Money.Exact(amount)}  ·  {DateTime.Now:HH:mm}";
+        // The "Confirmed today" list now shows this (and the rest of today); the line stays hidden.
+        LastConfirmed.Visibility = Visibility.Collapsed;
+    }
+
+    private async void LastConfirmed_Click(object sender, RoutedEventArgs e)
+    {
+        if (_lastConfirmed.Count > 0) await ShowPostedInvoicesAsync(_lastConfirmed);
+    }
+
+    private readonly System.Windows.Threading.DispatcherTimer _bannerTimer = new() { Interval = TimeSpan.FromSeconds(10) };
+
+    /// <summary>
+    /// The Sales entry's outcome message: what just happened, where it went, what to do next. Green
+    /// for a success, grey for something neutral. Closes itself after 20 s, or on its x.
+    /// </summary>
+    private void ShowEntryBanner(string title, string detail, bool neutral = false)
+    {
+        if (EntryBanner is null) return;
+        EntryBannerTitle.Text = title;
+        EntryBannerText.Text = detail;
+        EntryBanner.SetResourceReference(Border.BackgroundProperty, neutral ? "SurfaceBrush" : "SuccessSoftBrush");
+        EntryBanner.SetResourceReference(Border.BorderBrushProperty, neutral ? "BorderBrush" : "SuccessBorderBrush");
+        EntryBannerIcon.Text = neutral ? "i" : "\u2713";
+        EntryBannerIcon.SetResourceReference(TextBlock.ForegroundProperty, neutral ? "TextMutedBrush" : "SuccessBrush");
+        EntryBanner.Visibility = Visibility.Visible;
+
+        _bannerTimer.Stop();
+        _bannerTimer.Tick -= BannerTimer_Tick;
+        _bannerTimer.Tick += BannerTimer_Tick;
+        _bannerTimer.Start();
+    }
+
+    private void BannerTimer_Tick(object? sender, EventArgs e)
+    {
+        // Not while it is being read: the mouse on it keeps it open, and it closes 10 s after leaving.
+        if (sender is not null && EntryBanner?.IsMouseOver == true) return;
+        _bannerTimer.Stop();
+        if (EntryBanner is not null) EntryBanner.Visibility = Visibility.Collapsed;
+    }
+
+    private void EntryBannerClose_Click(object sender, RoutedEventArgs e) => BannerTimer_Tick(null, EventArgs.Empty);
+
     /// <summary>
     /// Lights the header's step strip: steps before <paramref name="current"/> are done (green tick),
     /// the current one is the accent colour, later ones are muted. Display only. Brushes are set as
@@ -855,7 +957,8 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// </summary>
     private void SetEntryStep(int current)
     {
-        var steps = new[] { (Step1Dot, Step1Num, Step1Title), (Step2Dot, Step2Num, Step2Title), (Step3Dot, Step3Num, Step3Title) };
+        var steps = new[] { (Step1Dot, Step1Num, Step1Title), (Step2Dot, Step2Num, Step2Title),
+                            (Step3Dot, Step3Num, Step3Title), (Step4Dot, Step4Num, Step4Title) };
         for (int i = 0; i < steps.Length; i++)
         {
             var (dot, num, title) = steps[i];
@@ -868,9 +971,238 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             num.Text = done ? "✓" : n.ToString();
             if (done || now) num.Foreground = Brushes.White;
             else num.SetResourceReference(TextBlock.ForegroundProperty, "TextMutedBrush");
-            title.SetResourceReference(TextBlock.ForegroundProperty, now ? "TextBrush" : "TextMutedBrush");
+            title.SetResourceReference(TextBlock.ForegroundProperty, now || current == 0 ? "TextBrush" : "TextMutedBrush");
             title.FontWeight = now ? FontWeights.SemiBold : FontWeights.Normal;
         }
+    }
+
+    /// <summary>
+    /// The lines counted by Status (Added / Draft / Fix), the Next line, and Confirm ready lines.
+    /// Display only: it reads the same EntryStatus the badges show.
+    /// </summary>
+    private void ShowProgressSummary()
+    {
+        if (LinesGuide is null || TabAll is null) return;
+
+        var real = _invoice.RealLines;
+        var ready = real.Where(l => l.EntryStatus == "Added").ToList();
+        var open = real.Where(l => l.EntryStatus is "Draft" or "Fix").ToList();
+        int No(SaleLine l) => _invoice.Lines.IndexOf(l) + 1;
+
+        // The tabs carry the counts (Nov 2026); the old summary line, legend and chip are retired.
+        if (ProgressSummary is not null) ProgressSummary.Visibility = Visibility.Collapsed;
+        if (ConfirmReady is not null)
+        {
+            // Retired: the one Confirm button says "Confirm N ready lines" in this case (Nov 2026).
+            ConfirmReady.Visibility = Visibility.Collapsed;
+            ConfirmReadyLabel.Text = ready.Count == 1 ? "Confirm 1 ready line" : $"Confirm {ready.Count} ready lines";
+        }
+        TabAll.Content = $"All  {real.Count}";
+        TabDraft.Content = $"\u25CF Draft  {open.Count}";
+        TabReady.Content = $"\u25CF Ready  {ready.Count}";
+        TabConfirmed.Content = $"\u2713 Confirmed today  {_confirmedToday.Count}";
+
+        if (!_confirmedTab)
+            (_invoice.FilterStatus switch { "READY" => TabReady, "DRAFT" => TabDraft, _ => TabAll }).IsChecked = true;
+
+        // ONE message, and only when something blocks: the first unfinished line and what it needs.
+        var first = open.FirstOrDefault();
+        LinesGuide.Visibility = first is null ? Visibility.Collapsed : Visibility.Visible;
+        LinesGuide.SetResourceReference(TextBlock.ForegroundProperty, first?.EntryStatus == "Fix" ? "DangerBrush" : "WarningBrush");
+        string What(SaleLine l) =>
+            $"{l.Grade?.ShortName ?? "No grade"} \u00D7 {(l.Size is { } z ? SizeNames.Short(z.Code) : "no size")}";
+        LinesGuide.Text = first is null ? ""
+            : $"To finish: {What(first)} \u2014 {first.StatusReason}"
+              + (open.Count > 1 ? $"  (+{open.Count - 1} more under Draft)" : "")
+              + (ready.Count > 0 ? ".  Confirm posts the ready lines; drafts stay here." : ".");
+    }
+
+    /// <summary>
+    /// Ticks exactly the lines marked Added and runs the ordinary Confirm sale on them -- the same
+    /// handler, the same checks, the same posting and stock deduction as ticking them by hand.
+    /// Draft and Fix lines stay on the entry, holding their stock.
+    /// </summary>
+    private void ConfirmReady_Click(object sender, RoutedEventArgs e)
+    {
+        if (_inFlight > 0) return;                       // a post is already running
+        var ready = _invoice.RealLines.Where(l => l.EntryStatus == "Added").ToList();
+        if (ready.Count == 0) return;
+        _actOnOnce = ready;                              // these lines, this once -- nothing ticked
+        Post_Click(Post, e);                             // the Confirm sale button's own path
+    }
+
+    // ── Status tabs, grouping and the Confirmed today list (Nov 2026). Display only. ─────────
+
+    private bool _confirmedTab;
+    private List<VInvoice> _confirmedToday = [];
+    private readonly HashSet<string> _confirmedThisSession = new(StringComparer.Ordinal);
+
+    private void EntryTab_Click(object sender, RoutedEventArgs e)
+    {
+        string tag = (sender as FrameworkElement)?.Tag as string ?? "";
+        _confirmedTab = tag == "CONFIRMED";
+
+        EntryTableFrame.Visibility = _confirmedTab ? Visibility.Collapsed : Visibility.Visible;
+        if (!_confirmedTab) _invoice.FilterStatus = tag.Length == 0 ? null : tag;
+        ShowConfirmedPanel();
+        RefreshActionStates();
+    }
+
+    /// <summary>
+    /// Today's confirmed sales, from the invoices the Invoices page already loads: posted and dated
+    /// today, or confirmed from this screen this session (a line dated earlier still shows here).
+    /// </summary>
+    private void RefreshConfirmedToday()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        _confirmedToday = (_invoices ?? [])
+            .Where(i => i.Status == InvoiceStatus.POSTED
+                     && (i.InvoiceDate == today || _confirmedThisSession.Contains(i.InvoiceNo ?? "")))
+            .OrderByDescending(i => i.InvoiceId)
+            .ToList();
+        ShowConfirmedPanel();
+        RefreshActionStates();
+    }
+
+    private async Task LoadConfirmedTodayAsync()
+    {
+        await LoadInvoicesAsync();
+        RefreshConfirmedToday();
+    }
+
+    private void ShowConfirmedPanel()
+    {
+        if (ConfirmedPanel is null) return;
+        int n = _confirmedToday.Count;
+        ConfirmedList.ItemsSource = _confirmedToday;
+        ConfirmedTitle.Text = n == 1 ? "CONFIRMED TODAY  \u00B7  1 sale" : $"CONFIRMED TODAY  \u00B7  {n} sales";
+        ConfirmedEmpty.Visibility = n == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        // All: under the table, when there is something to show. Confirmed today: the whole card.
+        bool show = _confirmedTab || (n > 0 && _invoice.FilterStatus is null);
+        ConfirmedPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        DockPanel.SetDock(ConfirmedPanel, _confirmedTab ? Dock.Top : Dock.Bottom);
+        ConfirmedScroll.MaxHeight = _confirmedTab ? double.PositiveInfinity : 150;
+    }
+
+    private async void ConfirmedOpen_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is string no && no.Length > 0)
+            await ShowPostedInvoicesAsync([no]);
+    }
+
+    /// The row's ⋯ button opens its menu on a plain click.
+    private void RowMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { ContextMenu: { } menu } b)
+        {
+            // PINNED TO THIS ROW. A menu opened from code does not reliably inherit its row's data,
+            // and a MenuItem whose Tag is not a line falls through ActOn to the header's scope --
+            // "Confirm this line" would then confirm every line. Set it before the items bind.
+            menu.DataContext = b.DataContext;
+            menu.PlacementTarget = b;
+            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+            menu.IsOpen = true;
+        }
+    }
+
+    /// Ready first, then drafts, the New row last; inside a group, the order the lines were typed.
+    private sealed class StatusThenTyped(InvoiceEntry entry) : System.Collections.IComparer
+    {
+        public int Compare(object? x, object? y)
+        {
+            if (x is not SaleLine a || y is not SaleLine b) return 0;
+            int byStatus = a.StatusOrder.CompareTo(b.StatusOrder);
+            return byStatus != 0 ? byStatus : entry.Lines.IndexOf(a).CompareTo(entry.Lines.IndexOf(b));
+        }
+    }
+
+    /// Groups the table by status. Not live: see RegroupIfStale.
+    private static void ApplyGrouping(InvoiceEntry entry)
+    {
+        if (CollectionViewSource.GetDefaultView(entry.VisibleLines) is not ListCollectionView view) return;
+        view.GroupDescriptions.Clear();
+        view.GroupDescriptions.Add(new PropertyGroupDescription(nameof(SaleLine.StatusGroup)));
+        view.CustomSort = new StatusThenTyped(entry);
+    }
+
+    private object? _lastRowItem;
+
+    /// Moving to another row lets a line that changed status move to its new group -- never while
+    /// the caret is still in it, so typing is never interrupted by a row jumping away.
+    private void Grid_CurrentCellChanged(object? sender, EventArgs e)
+    {
+        var item = Grid.CurrentItem;
+        if (ReferenceEquals(item, _lastRowItem)) return;
+        _lastRowItem = item;
+        RegroupIfStale();
+    }
+
+    private void RegroupIfStale()
+    {
+        if (CollectionViewSource.GetDefaultView(_invoice.VisibleLines) is not ListCollectionView view) return;
+        bool stale = view.Groups?.OfType<CollectionViewGroup>()
+            .Any(g => g.Items.OfType<SaleLine>().Any(l => l.StatusGroup != g.Name as string)) == true;
+        if (!stale) return;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            var cell = Grid.CurrentCell;
+            if (Grid.IsKeyboardFocusWithin) Grid.CommitEdit(DataGridEditingUnit.Row, true);
+            view.Refresh();
+            if (cell.Item is not null && cell.Column is not null && view.Contains(cell.Item))
+                Grid.CurrentCell = new DataGridCellInfo(cell.Item, cell.Column);
+            RefreshActionStates();
+        }, DispatcherPriority.Background);
+    }
+
+    /// <summary>
+    /// "Go to missing detail": the first Draft or Fix line, and the caret in the cell it is missing -- Size,
+    /// Grade, Wt ct, Sel ct or Price/ct -- or Deal Details when what it lacks is the buyer or terms.
+    /// </summary>
+    private void FinishDraft_Click(object sender, RoutedEventArgs e)
+    {
+        var line = _invoice.RealLines.FirstOrDefault(l => l.EntryStatus == "Fix")
+                ?? _invoice.RealLines.FirstOrDefault(l => l.EntryStatus == "Draft");
+        if (line is null) return;
+
+        if (line.Error is null && line.DealProblem is not null)
+        {
+            EditDeal_Click(new FrameworkElement { Tag = line }, e);    // the buyer or the terms
+            return;
+        }
+
+        string reason = line.StatusReason ?? "";
+        int column = line.MissingSize ? 2
+                   : line.MissingGrade ? 3
+                   : line.MissingWeight || reason.Contains("Weight") ? 4
+                   : reason.Contains("Selection") || reason.Contains("selection") ? 5
+                   : reason.Contains("Price") ? 7
+                   : 2;
+        if (!_invoice.FilteredLines.Contains(line)) _invoice.ClearFilters();
+        int at = _invoice.FilteredLines.ToList().IndexOf(line);
+        if (at >= 0) _invoice.Page = at / _invoice.PageSize;
+        ShowRow(line);
+        Grid.CurrentCell = new DataGridCellInfo(line, Grid.Columns[column]);
+        Grid.Focus();
+        if (Grid.Columns[column] is DataGridTextColumn) Grid.BeginEdit();
+    }
+
+    private void SumReady_Click(object sender, RoutedEventArgs e) => JumpToStatus("Added");
+    private void SumDraft_Click(object sender, RoutedEventArgs e) => JumpToStatus("Draft");
+    private void SumFix_Click(object sender, RoutedEventArgs e) => JumpToStatus("Fix");
+
+    /// The first line with this status, on screen with the caret in its Size cell.
+    private void JumpToStatus(string status)
+    {
+        var line = _invoice.RealLines.FirstOrDefault(l => l.EntryStatus == status);
+        if (line is null) return;
+        if (!_invoice.FilteredLines.Contains(line)) _invoice.ClearFilters();
+        int at = _invoice.FilteredLines.ToList().IndexOf(line);
+        if (at >= 0) _invoice.Page = at / _invoice.PageSize;
+        ShowRow(line);
+        Grid.CurrentCell = new DataGridCellInfo(line, Grid.Columns[2]);
+        Grid.Focus();
     }
 
     /// <summary>Print memo and Confirm sale: shown once there is a line, labelled with what they act on.</summary>
@@ -887,7 +1219,16 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         string rows = ticked > 0 ? (ticked == 1 ? "1 ticked line" : $"{ticked} ticked lines")
                                  : (all == 1 ? "1 line" : $"all {all} lines");
         SaveDraftLabel.Text = $"Print memo · {rows}";
-        PostLabel.Text = $"Confirm sale · {rows}";
+
+        // ONE CONFIRM (Nov 2026). Its label is what it will post: the ticked lines; or every line
+        // when all are ready; or, when some are still drafts, just the ready ones -- drafts are never
+        // confirmed and stay here. ReadyOnlyScope decides the same thing when it is pressed.
+        int ready = _invoice.RealLines.Count(l => l.EntryStatus == "Added");
+        PostLabel.Text =
+            ticked > 0 ? $"Confirm sale · {rows}"
+            : ready == all ? $"Confirm sale · {rows}"
+            : ready > 0 ? (ready == 1 ? "Confirm 1 ready line" : $"Confirm {ready} ready lines")
+            : "Confirm sale";
 
         // ONE MAIN BUTTON AT A TIME. Add sale is the step on an empty screen; once there are lines
         // the next step is Confirm sale, so Add sale steps back to a plain button.
@@ -981,18 +1322,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             // before anything had been typed, a warning for not having started. The empty-state
             // hint already says what to do; the chip speaks once there is a line to be wrong.
             bool started = _invoice.LineCount > 0;
-            BlockChip.Visibility = why is null || !started ? Visibility.Collapsed : Visibility.Visible;
+            // Replaced by the one Next message under the heading (Nov 2026); kept, collapsed.
+            BlockChip.Visibility = Visibility.Collapsed;
 
-            // Where the desk is, in the header strip and in words under the table heading.
-            int step = !started ? 1 : why is null ? 3 : 2;
-            SetEntryStep(step);
-            if (LinesGuide is not null)
-                LinesGuide.Text = step switch
-                {
-                    1 => "Start with Add sale: choose the buyer, then type each parcel's size, grade, weight and price.",
-                    2 => "Fix the item shown in the warning (use Edit for buyer, broker and terms), then confirm.",
-                    _ => "Ready. Confirm sale posts the invoice and takes the stock — tick lines first to confirm only some.",
-                };
+            // A GUIDE in the header, progress per line (Nov 2026). One bar cannot show line 1 ready
+            // and line 2 a draft at the same time, so the strip no longer lights up; the summary
+            // and the Next line under Invoice lines say where each line is and what to do.
+            SetEntryStep(0);
+            ShowProgressSummary();
             BlockChipText.Text = problems.Count > 1 ? $"{why} (+{problems.Count - 1} more)" : why ?? "";
         }
     }
@@ -1099,7 +1436,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         //
         // Only when the file held nothing at all does one go in, because a grid with no rows has
         // nowhere to start typing and no way to get a row except the button.
-        if (entry.Lines.Count == 0) entry.Lines.Add(new SaleLine());
+        EnsureTypingRow(entry);   // the New row at the bottom, here as on a fresh entry
 
         _invoice = entry;
         WatchHolds(leaving, _invoice);
@@ -1445,7 +1782,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         }
 
         using (Busy(SaveDraft, "Saving…", AddLineButton, SaveDraft, MoveToStock, Post))
-            await SaveDraftAsync();
+            if (await SaveDraftAsync())
+                ShowEntryBanner("Draft saved",
+                    "Saved as a draft invoice: it is not confirmed and has not moved stock. The lines stay "
+                    + "here; press Confirm sale when the deal is final.");
     }
 
     /// <summary>
@@ -1846,7 +2186,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                         : ""),
             listTitle: n == 1 ? "The line" : $"The {n} lines",
             bullets: bullets,
-            primaryText: "Confirm & move to stock",
+            primaryText: "Confirm sale",      // it takes the stones OUT of stock; "move to stock" said the opposite
             secondaryText: "Cancel");
     }
 
@@ -2035,9 +2375,21 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             return;
         }
 
+        // THE ONE CONFIRM BUTTON, with drafts on the entry and nothing ticked: it posts the ready
+        // lines and leaves the drafts, exactly as its label says. Same path as Confirm ready lines.
+        if (ReferenceEquals(sender, Post) && _actOnOnce is null && _invoice.SelectedLines.Count == 0)
+        {
+            var ready = _invoice.RealLines.Where(l => l.EntryStatus == "Added").ToList();
+            if (ready.Count > 0 && ready.Count < _invoice.RealLines.Count) _actOnOnce = ready;
+        }
+
         // THE TICKED ROWS, or the row this icon sits on. Two of four ticked confirms those two and
         // leaves the other two — typing, holds and all — where they are.
         var chosen = ActOn(sender);
+
+        // The empty New row's own Confirm: nothing to confirm, said plainly.
+        if (chosen.Count == 0 && (sender as FrameworkElement)?.Tag is SaleLine)
+        { Refuse("This row is empty — type a line in it first"); return; }
 
         // Validated BEFORE the summary, not after. A summary built from figures that cannot post
         // shows the desk a sale it is about to make and then refuses it, which reads as the app
@@ -2164,7 +2516,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         {
             // The grid always keeps one row to type into, and what is left must survive a restart:
             // those rows are still holding stock, and the file is the only thing that knows it.
-            if (_invoice.Lines.Count == 0) AddLine();
+            EnsureTypingRow();
             SaveEntry();
             TickCountChanged();
             RefreshActionStates();
@@ -2223,18 +2575,24 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (anyLeft)
             where.Add($"{_invoice.RealLines.Count} line(s) were not included and are still on this entry, still holding stock.");
 
-        bool open = AppDialog.Confirm(this,
+        // Done, not Confirm: this reports a success, so it wears the green tick, not the amber warning.
+        bool open = AppDialog.Done(this,
             title: posted.Count == 1 ? "Sale confirmed" : "Sales confirmed",
             headline: posted.Count == 1 ? $"Recorded as sale {posted[0]}" : $"Recorded as {posted.Count} sales",
             subhead: "The confirmed lines have left this entry",
             facts: facts,
-            emphasis: null,
             listTitle: "Where to find it now",
             bullets: where,
             primaryText: "Open in Invoices",
             secondaryText: "Stay on Sales entry");
 
         if (!anyLeft) NewInvoice_Click(sender, e);
+        ShowEntryBanner(posted.Count == 1 ? $"Sale {posted[0]} confirmed" : $"{posted.Count} sales confirmed: {string.Join(", ", posted)}",
+            $"{soldLines} line(s), {soldCt:N2} ct, {Money.Exact(soldAmount)} for {string.Join(", ", soldTo)}. "
+            + "Status Confirmed — it is now on the Invoices page, counted in the Sales report, and its stock is deducted."
+            + (anyLeft ? $" {_invoice.RealLines.Count} line(s) were not included and are still here." : ""));
+        ShowLastConfirmed(posted, soldTo, soldAmount);
+        RefreshConfirmedToday();          // _invoices was reloaded a few lines above
         if (open) await ShowPostedInvoicesAsync(posted);
     }
 
@@ -2589,6 +2947,30 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// 420px: two fields side by side, and the eleven-column table still readable beside it.
     private const double DealDrawerWidth = 360;   // was 420: the table beside it keeps more of its columns
 
+    /// <summary>
+    /// The drawer's broker list: "No broker" first, then the brokers. One collection, kept and only
+    /// refilled when the brokers change, so PickerSearch's wrap over it is never undone (PointAt).
+    /// </summary>
+    private readonly System.Collections.ObjectModel.ObservableCollection<PartyRef> _brokerChoices = [];
+
+    private System.Collections.ObjectModel.ObservableCollection<PartyRef> BrokerChoices()
+    {
+        var want = new[] { PartyRef.NoBroker }.Concat(_invoice.Brokers).ToList();
+        if (!_brokerChoices.SequenceEqual(want))
+        {
+            _brokerChoices.Clear();
+            foreach (var b in want) _brokerChoices.Add(b);
+        }
+        return _brokerChoices;
+    }
+
+    /// "No broker" means no broker's cut either: the percentage goes to 0 with it.
+    private void BrokerPicker_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (BrokerPicker.SelectedItem is PartyRef { IsNoBroker: true } && DealDraft is { } draft)
+            draft.DealBrokerPct = 0;
+    }
+
     private void EditDeal_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as FrameworkElement)?.Tag is not SaleLine line) return;
@@ -2611,7 +2993,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // Re-pointing on every open costs nothing and means the lists can never be a screen behind
         // the entry they belong to.
         PointAt(BuyerPicker, _invoice.Buyers);
-        PointAt(BrokerPicker, _invoice.Brokers);
+        PointAt(BrokerPicker, BrokerChoices());
         PointAt(DocTypePicker, _invoice.DocTypes);
 
         // FORGET THE LAST LINE. One drawer serves every row, so these controls carry state that
@@ -2624,7 +3006,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         var draft = new SaleLine();
         draft.TakeDealFrom(line);
+        DealDatePicker.BlackoutDates.Clear();
         DealDraft = draft;
+        BlockPastDates(DealDatePicker, draft.DealDate);
 
         DealDrawerTitle.Text = $"Line #{_invoice.Lines.IndexOf(line) + 1} — Deal Details";
         ShowDealProblem(null);
@@ -2633,6 +3017,26 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // Keyboard-first: the drawer opens with the caret in the field that is required and most
         // often the reason it was opened at all.
         BuyerPicker.Focus();
+    }
+
+    /// <summary>
+    /// Greys out every day before today in a date picker's calendar (Nov 2026: no past dates on a
+    /// sale). A line that already carries a past date keeps it visible -- WPF refuses a selected date
+    /// inside a blackout range -- and is refused on save instead, with the reason.
+    /// </summary>
+    public static void BlockPastDates(DatePicker picker, DateTime current)
+    {
+        picker.BlackoutDates.Clear();
+        var lastBlocked = (current.Date < DateTime.Today ? current.Date : DateTime.Today).AddDays(-1);
+        if (lastBlocked >= DateTime.MinValue.AddDays(1))
+            picker.BlackoutDates.Add(new CalendarDateRange(DateTime.MinValue, lastBlocked));
+    }
+
+    /// A date typed by hand that is past, or not a date at all.
+    private void DealDate_Invalid(object? sender, DatePickerDateValidationErrorEventArgs e)
+    {
+        ShowDealProblem($"\"{e.Text}\" cannot be used: choose today or a later date.");
+        e.ThrowException = false;
     }
 
     private void CancelDeal_Click(object sender, RoutedEventArgs e)
@@ -2690,6 +3094,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         // Checked HERE as well as on the line, because a drawer that accepts a value and then
         // leaves a red row behind has explained nothing. Same rules, said where the field is.
+        if (draft.DealDate.Date < DateTime.Today)
+        {
+            ShowDealProblem($"The date {draft.DealDate:dd-MM-yyyy} is in the past. Choose today or a later date.");
+            DealDatePicker.Focus();
+            return;
+        }
         if (draft.DealBuyer is null)
         { ShowDealProblem("Pick a buyer. Every line has to say who it is sold to."); BuyerPicker.Focus(); return; }
         if (draft.DealTermsDays is < 0 or > 365)
@@ -2697,6 +3107,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (draft.DealBrokerPct is < 0 or > 100)
         { ShowDealProblem("Broker % must be between 0 and 100."); BrokerPctBox.Focus(); return; }
 
+        if (draft.DealBroker?.IsNoBroker == true) draft.DealBroker = null;   // a choice, never stored
         line.TakeDealFrom(draft);
 
         // The same deal goes to every line that has NO BUYER YET, on request: several lines typed
@@ -2723,7 +3134,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         Say($"Line {n} saved · {line.DealBuyerName} · {line.DealTerms}"
             + (alsoFilled > 0 ? $" · also applied to {alsoFilled} line(s) with no buyer" : "")
             + (deals > 1 ? $" — this entry now writes {deals} invoices" : ""), ok: true);
+        ShowEntryBanner($"Deal details saved for line {n} — {line.DealBuyerName}",
+            $"{line.DealSummary}"
+            + (alsoFilled > 0 ? $". Also applied to {alsoFilled} line(s) that had no buyer" : "")
+            + (deals > 1 ? $". This entry will create {deals} invoices, one per deal" : "") + ".");
 
+        RegroupIfStale();
         FocusGrid();
     }
 
@@ -2777,12 +3193,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         bool room = width - DealDrawerWidth - 16 >= 720;
         bool showing = open && room;
 
-        DealDrawerCol.Width = new GridLength(showing ? DealDrawerWidth : 0);
-        DealDrawerGap.Width = new GridLength(showing ? 16 : 0);
+        DealDrawerCol.Width = new GridLength(0);   // the drawer floats over the table now (Nov 2026)
+        DealDrawerGap.Width = new GridLength(0);
 
         // OPEN BUT WITH NOWHERE TO GO. Collapsing it silently would make Edit look broken, so it
         // says why, once, and the drawer stays "open" so widening the window brings it back.
-        if (open && !room) Say("Not enough width for the deal drawer — widen the window");
+        _ = showing;                               // no column to give, so nothing to refuse
     }
 
     /// The caret goes back to the table after the drawer closes: this screen is keyboard-first and
@@ -3418,7 +3834,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         }
 
         // Never leave the grid with no row at all: the screen has no way to start one.
-        if (entry.Lines.Count == 0) entry.Lines.Add(new SaleLine());
+        EnsureTypingRow(entry);   // the New row at the bottom, here as on a fresh entry
 
         return entry;
     }
@@ -7939,6 +8355,16 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         decimal SheetRate(string grade, string size) =>
             _reportSheetRates?.GetValueOrDefault((grade, size)) ?? 0m;
 
+        // ONLY THE GRADES ON THE CLIENT'S PAPER (Nov 2026, on request): the report ends at MIX.
+        // set_grade_order.sql numbers the paper's grades 1..99 and puts every other grade at 100+
+        // (NO 1, NO 2 BB, LC 3, EXTRA, -2 MB ...), so those rows go. Display only -- the grades
+        // stay in the catalogue, the pickers, Stock and Sales. One exception, so carats can never
+        // vanish from this report's totals: a grade off the paper that HOLDS stock still shows.
+        grades = grades.Where(g => OnStockReport(
+                                Catalogue.Grades.FirstOrDefault(x => x.Code == g)?.SortOrder,
+                                _reportRows.Any(r => r.GradeCode == g && r.LedgerCt != 0)))
+                       .ToList();
+
         var everyGrade = grades;      // before "hide empty": a combined row still names all its members
         if (ReportHideEmpty.IsChecked == true)
             grades = grades.Where(g => sizes.Any(s => Weight(g, s) != 0m)).ToList();
@@ -8272,6 +8698,13 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// </summary>
     // COL is NOT a member since 0063: Color is its own grade and its own row, never added into II.
     public static readonly IReadOnlyList<string> ReportRomanTwo = ["FL", "NO II"];
+
+    /// Sort orders from here up are grades that are not on the client's printed sheet (set_grade_order.sql).
+    public const int OffSheetSortOrder = 100;
+
+    /// Whether a grade gets a row on the Stock report: it is on the paper, or it holds stock.
+    public static bool OnStockReport(int? sortOrder, bool holdsStock) =>
+        (sortOrder ?? int.MaxValue) < OffSheetSortOrder || holdsStock;
 
     public static List<(string Label, List<string> Members)> ReportRows(IReadOnlyList<string> grades, bool editing,
                                                                          IReadOnlyList<string>? pool = null)
@@ -10297,6 +10730,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             // value that is already correct. Focus belongs where the work starts.
             case "Sales entry":
                 FocusWhereEntryResumes();
+                _ = LoadConfirmedTodayAsync();
                 break;
             case "Invoices": LoadInvoices_Click(this, e); break;
             case "Sales report": _ = LoadSalesReportAsync(); break;
@@ -10374,7 +10808,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
             _ when message.Contains("Size is required") => "Size",
             _ when message.Contains("does not use size") => "Size",
-            _ when message.Contains("Weight") => "Weight",
+            _ when message.Contains("Weight") => "Wt ct",
             _ when message.Contains("Price") => "Price/ct",
             _ => "",
         };
@@ -10514,6 +10948,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         _statusTimer.Stop();
         if (ok) { _statusTimer.Interval = ConfirmationLinger; _statusTimer.Start(); }
         else if (!Friendly.Translates(message)) { _statusTimer.Interval = PromptLinger; _statusTimer.Start(); }
+        // Errors used to stay until clicked. On request every message now goes by itself -- an error
+        // after 15 s, long enough to read -- and the X beside it closes it at once.
+        else { _statusTimer.Interval = ErrorLinger; _statusTimer.Start(); }
 
         // AND IN A BOX, on request. See the popup parameter above for the cases that opt out.
         // Last, so the bar is already written when the modal goes up and is still there behind it.
@@ -10598,6 +11035,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     /// the current state of the screen. The interval is set per message — see Say.
     private static readonly TimeSpan ConfirmationLinger = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan PromptLinger = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan ErrorLinger = TimeSpan.FromSeconds(15);
+
+    private void StatusClose_Click(object sender, RoutedEventArgs e)
+    {
+        _statusTimer.Stop();
+        Status.Text = "";
+        Status.ToolTip = null;
+    }
     private readonly DispatcherTimer _statusTimer = new() { Interval = ConfirmationLinger };
 }
 

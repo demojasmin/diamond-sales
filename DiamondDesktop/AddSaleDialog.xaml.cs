@@ -36,11 +36,12 @@ public partial class AddSaleDialog : Window
         // typed on (03-09-2026 on Demo), so a new sale opened silently back-dated. A different
         // date is still one click away in the box.
         _deal.SetInvoiceDate(DateTime.Today);
+        MainWindow.BlockPastDates(DealDate, DateTime.Today);    // past days greyed out (Nov 2026)
         DealFields.DataContext = _deal;
 
         // Filled from code, as every picker in this app is: PickerSearch wraps a local ItemsSource.
         BuyerBox.ItemsSource = entry.Buyers;
-        BrokerBox.ItemsSource = entry.Brokers;
+        BrokerBox.ItemsSource = new[] { PartyRef.NoBroker }.Concat(entry.Brokers).ToList();
         TypeBox.ItemsSource = entry.DocTypes;
 
         // The scratch entry opens with one row to type into, like the Sales entry screen.
@@ -60,9 +61,45 @@ public partial class AddSaleDialog : Window
     {
         foreach (var line in _draft.Lines) line.TakeDealFrom(_deal);
         _draft.Recalculate();
+        ShowReady();                          // the guide line moves on once a buyer is picked
     }
 
-    private void ShowReady() => AddedText.Text = $"{_draft.RealLines.Count} line(s) ready";
+    /// <summary>
+    /// The footer, the button and the guide line, from what is typed. Display only: Save_Click still
+    /// runs Problem() and refuses on its own, exactly as before.
+    /// </summary>
+    private void ShowReady()
+    {
+        var lines = _draft.RealLines;
+        var ready = lines.Where(l => LineIssue(l) is null).ToList();
+        decimal ct = ready.Sum(l => l.SelectionCt), amount = ready.Sum(l => l.Amount);
+
+        AddedText.Text = ready.Count == 0
+            ? "No line ready yet"
+            : $"{ready.Count} line(s) ready · {ct:N2} ct · {Money.Exact(amount)}";
+        SaveButton.Content = ready.Count > 0 && ready.Count == lines.Count
+            ? (ready.Count == 1 ? "Add 1 line to invoice" : $"Add {ready.Count} lines to invoice")
+            : "Add to invoice";
+
+        var unfinished = lines.FirstOrDefault(l => LineIssue(l) is not null);
+        GuideText.Text =
+            _deal.DealBuyer is null
+                ? "Step 1 — choose the buyer (required). Broker, broker %, terms and type are optional; the due date follows from the terms."
+            : lines.Count == 0
+                ? $"Step 2 — type the first parcel for {_deal.DealBuyerName}: size, grade, weight, selection and price/ct. Add Line gives another row."
+            : unfinished is not null
+                ? $"Step 2 — line {_draft.Lines.IndexOf(unfinished) + 1}: {LineIssue(unfinished)}."
+            : $"Step 3 — press Add to invoice. {ready.Count} line(s) for {_deal.DealBuyerName} will appear on the Sales entry, ready to confirm.";
+    }
+
+    /// What still stops one line being added, or null. The same rules Problem() applies on Save.
+    private static string? LineIssue(SaleLine l) =>
+        l.Size is null ? "pick the size"
+        : l.Grade is null ? "pick the grade"
+        : l.GrossWeightCt <= 0 ? "enter the weight"
+        : l.SelectionCt < 0 || l.SelectionCt > l.GrossWeightCt ? "selection must be between 0 and the weight"
+        : l.PricePerCt < 0 ? "price per carat cannot be negative"
+        : null;
 
     /// The buyer's usual terms and the broker's usual percentage, when nothing is typed yet -- the
     /// same defaults the entry's own deal applies.
@@ -74,6 +111,8 @@ public partial class AddSaleDialog : Window
 
     private void Broker_Changed(object sender, SelectionChangedEventArgs e)
     {
+        // "No broker": no broker's cut either.
+        if (BrokerBox.SelectedItem is PartyRef { IsNoBroker: true }) { _deal.DealBrokerPct = 0; return; }
         if (BrokerBox.SelectedItem is PartyRef { DefaultBrokerPct: { } pct } && _deal.DealBrokerPct == 0)
             _deal.DealBrokerPct = pct;
     }
@@ -110,6 +149,8 @@ public partial class AddSaleDialog : Window
 
     private string? Problem()
     {
+        if (_deal.DealDate.Date < DateTime.Today)
+        { DealDate.Focus(); return $"The date {_deal.DealDate:dd-MM-yyyy} is in the past. Choose today or a later date."; }
         if (_deal.DealBuyer is null) { BuyerBox.Focus(); return "Pick a buyer. Every line has to say who it is sold to."; }
         if (_deal.DealTermsDays is < 0 or > 365) { TermsBox.Focus(); return "Terms must be between 0 and 365 days."; }
         if (_deal.DealBrokerPct is < 0 or > 100) { PctBox.Focus(); return "Broker % must be between 0 and 100."; }
@@ -120,13 +161,7 @@ public partial class AddSaleDialog : Window
         foreach (var l in lines)
         {
             int n = _draft.Lines.IndexOf(l) + 1;
-            string? bad = l.Size is null ? "pick the size"
-                        : l.Grade is null ? "pick the grade"
-                        : l.GrossWeightCt <= 0 ? "enter the weight"
-                        : l.SelectionCt < 0 || l.SelectionCt > l.GrossWeightCt ? "selection must be between 0 and the weight"
-                        : l.PricePerCt < 0 ? "price per carat cannot be negative"
-                        : null;
-            if (bad is not null) return $"Line {n}: {bad}.";
+            if (LineIssue(l) is { } bad) return $"Line {n}: {bad}.";
         }
         return null;
     }
@@ -153,6 +188,7 @@ public partial class AddSaleDialog : Window
                 Less1Pct = l.Less1Pct, Less2Pct = l.Less2Pct, Remark = l.Remark,
             };
             line.TakeDealFrom(_deal);
+            if (line.DealBroker?.IsNoBroker == true) line.DealBroker = null;   // a choice, never stored
             _addLine(line);
             _added++;
         }
@@ -160,4 +196,12 @@ public partial class AddSaleDialog : Window
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
+
+    /// A date typed by hand that is past, or not a date at all: said in the window, not swallowed.
+    private void DealDate_Invalid(object? sender, DatePickerDateValidationErrorEventArgs e)
+    {
+        ErrorText.Text = $"\"{e.Text}\" cannot be used as the date: choose today or a later date.";
+        ErrorBox.Visibility = Visibility.Visible;
+        e.ThrowException = false;
+    }
 }

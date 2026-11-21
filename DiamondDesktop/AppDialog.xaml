@@ -34,6 +34,10 @@
     <Border DockPanel.Dock="Bottom" Background="{DynamicResource SurfaceBrush}"
             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
             Padding="22,14">
+      <DockPanel>
+      <!-- "Closes in 10 s" on a notification (AutoClose in the code). Empty on a question. -->
+      <TextBlock x:Name="AutoCloseText" DockPanel.Dock="Left" VerticalAlignment="Center" FontSize="12"
+                 Foreground="{DynamicResource TextMutedBrush}"/>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
         <!-- Cancel sits furthest from the two real answers, not between them. The two choices are a
              pair — replace or add, both of which import — and separating them with the way out read
@@ -49,6 +53,7 @@
         <Button x:Name="PrimaryButton" MinWidth="124" Height="34"
                 Style="{StaticResource AppPrimaryButton}" Click="Primary_Click" IsDefault="True"/>
       </StackPanel>
+      </DockPanel>
     </Border>
 
     <!-- Header -->
