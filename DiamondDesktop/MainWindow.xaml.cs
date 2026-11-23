@@ -363,6 +363,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             // LAST, and only here: a stored line names its grade and size by id, and until the
             // catalogue is loaded there is nothing to resolve them against.
             await RestoreEntryAsync();
+            _ = LoadImportedSalesAsync();
         }
         catch (Exception ex)
         {
@@ -414,7 +415,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         // Inside an editor, Delete belongs to the text being typed, not to the invoice.
         if (Keyboard.FocusedElement is TextBox) return;
-        if (Grid.CurrentItem is not SaleLine line) return;
+        if (Grid.CurrentItem is not SaleLine line || line.IsConfirmedSale) return;
 
         e.Handled = true;
 
@@ -424,8 +425,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         string what = line.Grade is null ? $"line {_invoice.Lines.IndexOf(line) + 1}"
                                          : $"{line.Grade.ShortName} · {line.GrossWeightCt:N2} ct";
 
-        if (MessageBox.Show(this, $"Remove {what}?", "Remove line",
-                            MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+        if (AskRemove($"Remove {what}?"))
         {
             _invoice.Lines.Remove(line);
         }
@@ -445,7 +445,11 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         TickCountChanged();
     }
 
-    private void TickLine_Click(object sender, RoutedEventArgs e) => TickCountChanged();
+    private void TickLine_Click(object sender, RoutedEventArgs e)
+    {
+        TickCountChanged();
+        ShowHeaderActions();          // the Print memo count follows every tick (Nov 2026)
+    }
 
     /// <summary>
     /// All or nothing. The box shows "some" when the rows disagree, but a CLICK never lands on
@@ -490,6 +494,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private void RemoveLine_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as FrameworkElement)?.Tag is not SaleLine line) return;
+        if (line.IsConfirmedSale) { HideImported(line); return; }
 
         // Only asked when there is typing to lose. Clearing a row that is entirely empty is not a
         // decision worth interrupting for, and now that Remove is on every row it is the commonest
@@ -499,9 +504,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             string what = line.Grade is null ? $"line {_invoice.Lines.IndexOf(line) + 1}"
                                              : $"{line.Grade.ShortName} · {line.GrossWeightCt:N2} ct";
 
-            if (MessageBox.Show(this, $"Remove {what}?", "Remove line",
-                    MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
-                return;
+            if (!AskRemove($"Remove {what}?")) return;
         }
 
         _invoice.Lines.Remove(line);
@@ -539,7 +542,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             // A ROW's own action acts on that row and nothing else. On the empty New row that is
             // nothing at all -- it used to fall through to the header's scope, so "Confirm this
             // line" on the empty row offered to confirm every line on the entry.
-            ? (row.IsBlank ? [] : [row])
+            ? (row.IsBlank || row.IsConfirmedSale ? [] : [row])
             : HeaderScope();
 
     /// <summary>
@@ -608,11 +611,8 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // Only asked when there is typing to lose. Removing rows that are entirely empty is not
         // a decision worth interrupting for.
         if (doomed.Any(l => !l.IsBlank)
-            && MessageBox.Show(this,
-                   doomed.Count == 1 ? "Remove 1 line from this invoice?"
-                                     : $"Remove {doomed.Count} lines from this invoice?",
-                   "Remove lines", MessageBoxButton.YesNo, MessageBoxImage.Question)
-               != MessageBoxResult.Yes)
+            && !AskRemove(doomed.Count == 1 ? "Remove 1 line from this invoice?"
+                                            : $"Remove {doomed.Count} lines from this invoice?"))
             return;
 
         foreach (var line in doomed) _invoice.Lines.Remove(line);
@@ -668,8 +668,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             return;
         }
 
-        var dialog = new AddSaleDialog(_invoice, AddLine) { Owner = this };
+        var dialog = new AddSaleDialog(_invoice, AddLine, SaveDealDraftAsync) { Owner = this };
         dialog.ShowDialog();
+        if (dialog.SavedAsDraft) { SaidDraftSaved(dialog.BuyerName); return; }
         if (dialog.Added > 0)
         {
             Say($"{dialog.Added} line(s) added for {dialog.BuyerName}", ok: true, popup: false);
@@ -725,7 +726,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (entry.Lines.Count == 0 || !entry.Lines[^1].IsBlank) entry.Lines.Add(new SaleLine());
     }
 
-    private void AddLine() => AddLine(new SaleLine());
+    /// Enter adds a row to type into -- unless one is already waiting (it is not shown, Nov 2026).
+    private void AddLine()
+    {
+        if (_invoice.Lines.Any(l => l.IsBlank)) return;
+        AddLine(new SaleLine());
+    }
 
     private void AddLine(SaleLine line)
     {
@@ -755,12 +761,14 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         //
         // The filters go first because a hidden row cannot be paged to. Said out loud rather than
         // done quietly: filters vanishing on their own is worse than filters that stayed.
+        if (line.IsBlank) { TickCountChanged(); return; }      // the New row is not shown (Nov 2026)
         if (!_invoice.FilteredLines.Contains(line))
         {
             _invoice.ClearFilters();
             Say("Filters cleared so the new line is visible", ok: true, popup: false);
         }
-        _invoice.Page = _invoice.PageCount - 1;      // the new row is always the last one
+        // The page it is ON: confirmed lines now follow the typed ones, so "the last page" is theirs.
+        _invoice.Page = Math.Max(0, _invoice.FilteredLines.ToList().IndexOf(line)) / _invoice.PageSize;
         TickCountChanged();
         ShowRow(line);
         Grid.CurrentCell = new DataGridCellInfo(line, Grid.Columns[0]);
@@ -789,6 +797,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // answer can move: a line added, a weight edited, a line removed, a buyer picked.
         if (previous is not null) previous.PropertyChanged -= OnEntryChanged;
         current.PropertyChanged += OnEntryChanged;
+        current.SetConfirmedLines(_importedSales ?? []);
         ApplyGrouping(current);
     }
 
@@ -906,6 +915,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (LastConfirmed is null || invoiceNos.Count == 0) return;
         _lastConfirmed = [.. invoiceNos];
         foreach (var no in invoiceNos) _confirmedThisSession.Add(no);
+        _ = LoadImportedSalesAsync();        // the confirmed lines appear on Confirmed (Nov 2026)
         LastConfirmedNo.Text = string.Join(", ", invoiceNos);
         LastConfirmedInfo.Text = $"  ·  {string.Join(", ", buyers)}  ·  {Money.Exact(amount)}  ·  {DateTime.Now:HH:mm}";
         // The "Confirmed today" list now shows this (and the rest of today); the line stays hidden.
@@ -997,24 +1007,25 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             ConfirmReady.Visibility = Visibility.Collapsed;
             ConfirmReadyLabel.Text = ready.Count == 1 ? "Confirm 1 ready line" : $"Confirm {ready.Count} ready lines";
         }
-        TabAll.Content = $"All  {real.Count}";
-        TabDraft.Content = $"\u25CF Draft  {open.Count}";
+        TabAll.Content = $"All  {real.Count + _invoice.ConfirmedLines.Count}";
+        TabDraft.Content = $"\u25CF Fix  {open.Count}";
         TabReady.Content = $"\u25CF Ready  {ready.Count}";
-        TabConfirmed.Content = $"\u2713 Confirmed today  {_confirmedToday.Count}";
+        if (_invoice.FilterStatus == "DRAFT") _invoice.FilterStatus = null;   // no Fix tab any more (Nov 2026)
+        TabConfirmed.Content = $"\u2713 Confirmed  {_invoice.ConfirmedLines.Count}";
 
         if (!_confirmedTab)
-            (_invoice.FilterStatus switch { "READY" => TabReady, "DRAFT" => TabDraft, _ => TabAll }).IsChecked = true;
+            (_invoice.FilterStatus switch { "READY" => TabReady, "DRAFT" => TabDraft, "CONFIRMED" => TabConfirmed, _ => TabAll }).IsChecked = true;
 
         // ONE message, and only when something blocks: the first unfinished line and what it needs.
         var first = open.FirstOrDefault();
         LinesGuide.Visibility = first is null ? Visibility.Collapsed : Visibility.Visible;
-        LinesGuide.SetResourceReference(TextBlock.ForegroundProperty, first?.EntryStatus == "Fix" ? "DangerBrush" : "WarningBrush");
+        LinesGuide.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
         string What(SaleLine l) =>
             $"{l.Grade?.ShortName ?? "No grade"} \u00D7 {(l.Size is { } z ? SizeNames.Short(z.Code) : "no size")}";
         LinesGuide.Text = first is null ? ""
             : $"To finish: {What(first)} \u2014 {first.StatusReason}"
-              + (open.Count > 1 ? $"  (+{open.Count - 1} more under Draft)" : "")
-              + (ready.Count > 0 ? ".  Confirm posts the ready lines; drafts stay here." : ".");
+              + (open.Count > 1 ? $"  (+{open.Count - 1} more under Fix)" : "")
+              + (ready.Count > 0 ? ".  Confirm posts the ready lines; lines to fix stay here." : ".");
     }
 
     /// <summary>
@@ -1035,15 +1046,18 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
     private bool _confirmedTab;
     private List<VInvoice> _confirmedToday = [];
+
+    /// Every confirmed (posted) sale, newest first: the Confirmed tab (Nov 2026).
+    private List<VInvoice> _confirmedAll = [];
     private readonly HashSet<string> _confirmedThisSession = new(StringComparer.Ordinal);
 
     private void EntryTab_Click(object sender, RoutedEventArgs e)
     {
         string tag = (sender as FrameworkElement)?.Tag as string ?? "";
-        _confirmedTab = tag == "CONFIRMED";
-
-        EntryTableFrame.Visibility = _confirmedTab ? Visibility.Collapsed : Visibility.Visible;
-        if (!_confirmedTab) _invoice.FilterStatus = tag.Length == 0 ? null : tag;
+        // Confirmed is the TABLE filtered to confirmed lines (Nov 2026), like Fix and Ready.
+        _confirmedTab = false;
+        EntryTableFrame.Visibility = Visibility.Visible;
+        _invoice.FilterStatus = tag.Length == 0 ? null : tag;
         ShowConfirmedPanel();
         RefreshActionStates();
     }
@@ -1060,6 +1074,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                      && (i.InvoiceDate == today || _confirmedThisSession.Contains(i.InvoiceNo ?? "")))
             .OrderByDescending(i => i.InvoiceId)
             .ToList();
+        _confirmedAll = (_invoices ?? [])
+            .Where(i => i.Status == InvoiceStatus.POSTED)
+            .OrderByDescending(i => i.InvoiceDate).ThenByDescending(i => i.InvoiceId)
+            .ToList();
         ShowConfirmedPanel();
         RefreshActionStates();
     }
@@ -1073,16 +1091,24 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private void ShowConfirmedPanel()
     {
         if (ConfirmedPanel is null) return;
-        int n = _confirmedToday.Count;
-        ConfirmedList.ItemsSource = _confirmedToday;
-        ConfirmedTitle.Text = n == 1 ? "CONFIRMED TODAY  \u00B7  1 sale" : $"CONFIRMED TODAY  \u00B7  {n} sales";
+        // The Confirmed tab lists EVERY confirmed sale; the strip under the table on All stays today's.
+        var shown = _confirmedTab ? _confirmedAll : _confirmedToday;
+        int n = shown.Count;
+        ConfirmedList.ItemsSource = shown;
+        string label = _confirmedTab ? "CONFIRMED" : "CONFIRMED TODAY";
+        ConfirmedTitle.Text = n == 1 ? $"{label}  \u00B7  1 sale" : $"{label}  \u00B7  {n} sales";
+        ConfirmedEmpty.Text = _confirmedTab
+            ? "No confirmed sales yet. Confirmed sales appear here and on the Invoices page."
+            : "No sales confirmed today yet. Confirmed sales appear here and on the Invoices page.";
         ConfirmedEmpty.Visibility = n == 0 ? Visibility.Visible : Visibility.Collapsed;
 
         // All: under the table, when there is something to show. Confirmed today: the whole card.
         bool show = _confirmedTab || (n > 0 && _invoice.FilterStatus is null);
         ConfirmedPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         DockPanel.SetDock(ConfirmedPanel, _confirmedTab ? Dock.Top : Dock.Bottom);
-        ConfirmedScroll.MaxHeight = _confirmedTab ? double.PositiveInfinity : 150;
+        // A real height on the tab, not infinity: a list measured without a limit builds every row.
+        ConfirmedList.MaxHeight = _confirmedTab && ConfirmedPanel.Parent is FrameworkElement card && card.ActualHeight > 0
+            ? Math.Max(240, card.ActualHeight - 140) : 150;
     }
 
     private async void ConfirmedOpen_Click(object sender, RoutedEventArgs e)
@@ -1113,7 +1139,15 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         {
             if (x is not SaleLine a || y is not SaleLine b) return 0;
             int byStatus = a.StatusOrder.CompareTo(b.StatusOrder);
-            return byStatus != 0 ? byStatus : entry.Lines.IndexOf(a).CompareTo(entry.Lines.IndexOf(b));
+            if (byStatus != 0) return byStatus;
+            if (a.IsConfirmedSale) return IndexIn(entry.ConfirmedLines, a).CompareTo(IndexIn(entry.ConfirmedLines, b));
+            return entry.Lines.IndexOf(b).CompareTo(entry.Lines.IndexOf(a));     // newest first (Nov 2026)
+        }
+
+        private static int IndexIn(IReadOnlyList<SaleLine> list, SaleLine line)
+        {
+            for (int i = 0; i < list.Count; i++) if (ReferenceEquals(list[i], line)) return i;
+            return -1;
         }
     }
 
@@ -1121,8 +1155,8 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private static void ApplyGrouping(InvoiceEntry entry)
     {
         if (CollectionViewSource.GetDefaultView(entry.VisibleLines) is not ListCollectionView view) return;
+        // No group headings (Nov 2026, on request): the order alone says it -- New, Fix, Ready, Confirmed.
         view.GroupDescriptions.Clear();
-        view.GroupDescriptions.Add(new PropertyGroupDescription(nameof(SaleLine.StatusGroup)));
         view.CustomSort = new StatusThenTyped(entry);
     }
 
@@ -1141,8 +1175,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     private void RegroupIfStale()
     {
         if (CollectionViewSource.GetDefaultView(_invoice.VisibleLines) is not ListCollectionView view) return;
-        bool stale = view.Groups?.OfType<CollectionViewGroup>()
-            .Any(g => g.Items.OfType<SaleLine>().Any(l => l.StatusGroup != g.Name as string)) == true;
+        // Out of order once a line's status has moved: a later row with a lower status order.
+        var rows = view.OfType<SaleLine>().ToList();
+        bool stale = rows.Zip(rows.Skip(1)).Any(p => p.First.StatusOrder > p.Second.StatusOrder);
         if (!stale) return;
 
         Dispatcher.BeginInvoke(() =>
@@ -1172,13 +1207,17 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             return;
         }
 
+        // View Draft (Nov 2026): only the lines still to fix, as the Fix tab shows them.
+        TabDraft.IsChecked = true;
+        EntryTab_Click(TabDraft, e);
+
         string reason = line.StatusReason ?? "";
-        int column = line.MissingSize ? 2
-                   : line.MissingGrade ? 3
-                   : line.MissingWeight || reason.Contains("Weight") ? 4
-                   : reason.Contains("Selection") || reason.Contains("selection") ? 5
-                   : reason.Contains("Price") ? 7
-                   : 2;
+        int column = Col(line.MissingSize ? "Size"
+                   : line.MissingGrade ? "Grade"
+                   : line.MissingWeight || reason.Contains("Weight") ? "Wt ct"
+                   : reason.Contains("Selection") || reason.Contains("selection") ? "Sel ct"
+                   : reason.Contains("Price") ? "Price/ct"
+                   : "Size");
         if (!_invoice.FilteredLines.Contains(line)) _invoice.ClearFilters();
         int at = _invoice.FilteredLines.ToList().IndexOf(line);
         if (at >= 0) _invoice.Page = at / _invoice.PageSize;
@@ -1187,6 +1226,343 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         Grid.Focus();
         if (Grid.Columns[column] is DataGridTextColumn) Grid.BeginEdit();
     }
+
+    // ── Edit sale, Save as Draft, View Draft, imported sales (Nov 2026) ─────────────────────
+
+    /// Confirmed sale lines for the table (imported and typed here), or null until read.
+    private List<SaleLine>? _importedSales;
+
+    /// Confirmed lines taken off the table with Remove, this session (sales_line ids).
+    private readonly HashSet<long> _hiddenConfirmed = [];
+
+    /// <summary>
+    /// Reads the imported (MIG-) sales and shows them at the end of the Invoice lines table as
+    /// Confirmed, Entry Type "Imported Sale". Display only: they are never on the entry itself.
+    /// </summary>
+    private async Task LoadImportedSalesAsync()
+    {
+        var rows = await Read(Repo.PostedSalesLinesAsync);
+        if (rows is null) return;
+
+        var buyers = _invoice.Buyers.ToDictionary(b => b.Id);
+        var invoices = (_invoices ?? []).ToDictionary(i => i.InvoiceId);
+        var lines = new List<SaleLine>(rows.Count);
+        foreach (var r in rows.Where(r => !_hiddenConfirmed.Contains(r.LineId)))
+        {
+            invoices.TryGetValue(r.InvoiceId, out var inv);
+            var line = new SaleLine
+            {
+                IsPosted = true,
+                IsImported = Repo.IsImported(r.InvoiceNo),
+                SourceInvoiceNo = r.InvoiceNo,
+                SourceLineId = r.LineId,
+                Grade = Catalogue.Grades.FirstOrDefault(g => g.GradeId == r.GradeId),
+                Size = Catalogue.AllSizes.FirstOrDefault(z => z.SizeId == r.SizeId),
+                GrossWeightCt = r.GrossWeightCt,
+                SelectionCt = r.SelectionCt,
+                PricePerCt = r.PricePerCt,
+                ExRate = r.ExRate == 0 ? 1 : r.ExRate,
+                Less1Pct = r.Less1Pct,
+                Less2Pct = r.Less2Pct,
+                Remark = r.Remark,
+                DealBuyer = buyers.GetValueOrDefault(r.BuyerId)
+                            ?? new PartyRef(r.BuyerId, inv?.BuyerName ?? "Imported buyer"),
+                DealBrokerPct = r.BrokerPct,
+                DealDocType = inv?.DocType ?? "BILL",
+            };
+            line.SetInvoiceDate(r.InvoiceDate.ToDateTime(TimeOnly.MinValue));
+            line.UseStoredFigures(r.RejectionCt, r.Amount);
+            lines.Add(line);
+        }
+
+        _importedSales = lines;
+        _invoice.SetConfirmedLines(lines);
+        ApplyGrouping(_invoice);
+        ShowProgressSummary();
+        RefreshActionStates();                // the Print memo count includes them
+    }
+
+    /// <summary>
+    /// Remove on an imported (confirmed) sale: off THIS TABLE only, for this session. The sale is
+    /// not cancelled or deleted -- it stays on Invoices, Receivables and every report, and its stock
+    /// is untouched. Said before it happens.
+    /// </summary>
+    private void HideImported(SaleLine line)
+    {
+        if (!AppDialog.Confirm(this, title: "Remove from this table",
+                headline: $"Remove {line.SourceInvoiceNo} from this table?",
+                subhead: line.DealBuyerName,
+                facts: [("Invoice", line.SourceInvoiceNo ?? "—"), ("Amount", Money.Exact(line.Amount))],
+                emphasis: "The sale stays confirmed. It is not cancelled or deleted, its stock is unchanged, and it is still on Invoices and every report.",
+                listTitle: null, bullets: null,
+                primaryText: "Remove from table", secondaryText: "Keep"))
+            return;
+
+        _importedSales?.Remove(line);
+        _hiddenConfirmed.Add(line.SourceLineId);
+        _invoice.SetConfirmedLines(_importedSales ?? []);
+        ShowProgressSummary();
+        Say($"{line.SourceInvoiceNo} removed from this table — the sale itself is unchanged", ok: true, popup: false);
+    }
+
+    /// An imported row is read-only: no cell of it ever goes into edit.
+    private void Grid_BeginningEdit(object? sender, DataGridBeginningEditEventArgs e)
+    {
+        if (e.Row.Item is SaleLine { IsConfirmedSale: true }) e.Cancel = true;
+    }
+
+    /// <summary>
+    /// Save as Draft, from Add sale or Edit sale: the deal and its lines become a draft memo in the
+    /// database (sales_invoice status DRAFT, the same row Ctrl+S has always saved). No stock moves
+    /// and nothing is held. Returns why it failed, or null.
+    /// </summary>
+    private async Task<string?> SaveDealDraftAsync(SaleLine deal, IReadOnlyList<SaleLine> lines) =>
+        await SaveDealDraftAsync(deal, lines, null);
+
+    /// The same, writing over an existing draft memo when invoiceId is given (Edit draft).
+    private async Task<string?> SaveDealDraftAsync(SaleLine deal, IReadOnlyList<SaleLine> lines, long? invoiceId)
+    {
+        if (Catalogue.BaseCurrencyId == 0) return "No INR row in the currency table — a draft cannot be priced without it.";
+        if (deal.DealBuyer is null) return "Pick a buyer.";
+
+        var draft = new DraftInvoice(
+            invoiceId, Guid.CreateVersion7(), DateOnly.FromDateTime(deal.DealDate),
+            deal.DealBuyer.Id, deal.DealBroker?.Id, deal.DealBrokerPct,
+            Math.Max(deal.DealTermsDays, 0), deal.DealDocType, Catalogue.BaseCurrencyId,
+            lines.Select(l => new DraftLine(
+                l.Grade!.GradeId, l.Size!.SizeId, l.GrossWeightCt, l.SelectionCt,
+                l.PricePerCt, l.ExRate, l.Less1Pct, l.Less2Pct, l.Remark)).ToList());
+        try { await Repo.SaveDraftAsync(draft); }
+        catch (Exception ex) { return ex.Message; }
+        _ = LoadInvoicesAsync();                        // the Invoices page and View Draft see it
+        return null;
+    }
+
+    private void SaidDraftSaved(string buyer)
+    {
+        Say($"Saved as draft for {buyer}", ok: true, popup: false);
+        ShowEntryBanner($"Saved as draft — {buyer}",
+            "It is under View Draft, not in this table, and holds no stock. Open View Draft and press Ready "
+            + "when it should go on the invoice.");
+    }
+
+    /// <summary>
+    /// Edit sale: the Add sale window, pre-filled with the whole deal this line belongs to -- every
+    /// line on the table with the same buyer, broker, terms, type and date. Save writes the changes
+    /// back onto those same lines (so their stock holds are corrected, not dropped and re-taken),
+    /// adds the new rows and removes the ones taken out. Save as Draft moves the deal off the table
+    /// into View Draft.
+    /// </summary>
+    private void EditSale_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not SaleLine line || line.IsConfirmedSale) return;
+        if (line.IsBlank) { AddLine_Click(sender, e); return; }
+        Grid.CommitEdit();
+
+        var deal = _invoice.RealLines.Where(l => l.DealKey == line.DealKey).ToList();
+        var dialog = new AddSaleDialog(_invoice, AddLine, SaveDealDraftAsync, deal) { Owner = this };
+        dialog.ShowDialog();
+
+        if (dialog.SavedAsDraft)
+        {
+            foreach (var l in deal) _invoice.Lines.Remove(l);
+            EnsureTypingRow();
+            TickCountChanged();
+            SaidDraftSaved(dialog.BuyerName);
+            return;
+        }
+        if (dialog.EditResult is not { } result) return;
+
+        foreach (var (edited, source) in result)
+        {
+            if (source is null) { AddLine(edited); continue; }
+            ApplyFigures(edited, source);
+            source.TakeDealFrom(edited);
+        }
+        foreach (var gone in deal.Except(result.Select(r => r.Source).OfType<SaleLine>()))
+            _invoice.Lines.Remove(gone);
+
+        EnsureTypingRow();
+        _invoice.Recalculate();
+        TickCountChanged();
+        RefreshActionStates();
+        RegroupIfStale();
+        Say($"Sale for {dialog.BuyerName} saved · {result.Count} line(s)", ok: true, popup: false);
+        ShowEntryBanner($"Sale saved — {dialog.BuyerName}", $"{result.Count} line(s) updated in the table below.");
+    }
+
+    /// <summary>
+    /// View Draft: the draft memos, and Ready for the chosen ones. Each one's lines are read and
+    /// checked against the catalogue first, the draft is removed from the database, and only then do
+    /// its lines go into the table, where they hold stock like any other line. A draft that cannot
+    /// be read or removed is left exactly where it was, and nothing of it reaches the table.
+    /// </summary>
+    private async void ViewDrafts_Click(object sender, RoutedEventArgs e)
+    {
+        using (Busy(ViewDraft, "Loading…", ViewDraft))
+            await LoadInvoicesAsync();
+        var drafts = (_invoices ?? [])
+            .Where(i => i.Status == InvoiceStatus.DRAFT && i.LineCount > 0 && !Repo.IsImported(i.InvoiceNo))
+            .OrderByDescending(i => i.InvoiceDate).ThenByDescending(i => i.InvoiceId)
+            .ToList();
+
+        var dialog = new ViewDraftDialog(drafts) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+
+        // EDIT: the draft in the Add sale layout. Save as Draft writes over the same draft; the main
+        // button moves it into the table exactly as Ready does. Back to the list afterwards.
+        if (dialog.EditRequested is { } toEdit)
+        {
+            await EditDraftAsync(toEdit);
+            ViewDrafts_Click(sender, e);
+            return;
+        }
+
+        int moved = 0, lines = 0;
+        var refused = new List<string>();
+        using (Busy(ViewDraft, "Moving…", ViewDraft, AddLineButton, Post))
+        {
+            foreach (var inv in dialog.Chosen)
+            {
+                var stored = await Read(() => Repo.LinesAsync(inv.InvoiceId));
+                if (stored is null) { refused.Add($"{inv.BuyerName}: could not be read"); continue; }
+
+                var built = BuildDraft(inv, stored, _invoice.Buyers, _invoice.Brokers,
+                                       Catalogue.Grades, Catalogue.AllSizes, out var unresolved);
+                if (unresolved.Count > 0)
+                {
+                    refused.Add($"{inv.BuyerName}: {unresolved.Count} line(s) name a grade or size the catalogue no longer has");
+                    continue;
+                }
+
+                try { await Repo.DeleteDraftAsync(inv.InvoiceId); }
+                catch (Exception ex) { refused.Add($"{inv.BuyerName}: {ex.Message}"); continue; }
+
+                foreach (var l in built.RealLines)
+                {
+                    var line = new SaleLine();
+                    ApplyFigures(l, line);
+                    line.TakeDealFrom(l);
+                    AddLine(line);
+                    lines++;
+                }
+                moved++;
+            }
+        }
+
+        EnsureTypingRow();
+        TickCountChanged();
+        RegroupIfStale();
+        _ = LoadInvoicesAsync();
+        if (moved > 0)
+            ShowEntryBanner($"{moved} draft(s) marked Ready",
+                $"{lines} line(s) are now in the table below, holding their stock. Press Confirm when the sale is final.");
+        if (refused.Count > 0)
+            AppDialog.Refused(this, title: "View Draft", headline: "Some drafts were not moved",
+                subhead: null, facts: [], listTitle: "Left in View Draft", bullets: refused,
+                note: "Nothing of these drafts was put in the table.");
+    }
+
+    /// <summary>
+    /// One draft memo, opened in the Add sale layout (Nov 2026). Save as Draft updates it in place;
+    /// "Ready — add to invoice" removes the draft and puts the edited lines in the table.
+    /// </summary>
+    private async Task EditDraftAsync(VInvoice inv)
+    {
+        var stored = await Read(() => Repo.LinesAsync(inv.InvoiceId));
+        if (stored is null) return;
+        var built = BuildDraft(inv, stored, _invoice.Buyers, _invoice.Brokers,
+                               Catalogue.Grades, Catalogue.AllSizes, out var unresolved);
+        if (unresolved.Count > 0)
+        {
+            AppDialog.Refused(this, title: "Edit draft", headline: "This draft cannot be opened",
+                subhead: inv.BuyerName, facts: [], listTitle: "Lines naming a grade or size the catalogue no longer has",
+                bullets: unresolved, note: "Restore them on Master data, then open the draft again. Nothing was changed.");
+            return;
+        }
+
+        var editor = new AddSaleDialog(_invoice, AddLine,
+            (deal, lines) => SaveDealDraftAsync(deal, lines, inv.InvoiceId), built.RealLines,
+            title: "Edit draft", primaryText: "Ready \u2014 add to invoice") { Owner = this };
+        editor.ShowDialog();
+
+        if (editor.SavedAsDraft) { Say($"Draft for {editor.BuyerName} saved", ok: true, popup: false); return; }
+        if (editor.EditResult is not { } result) return;
+
+        try { await Repo.DeleteDraftAsync(inv.InvoiceId); }
+        catch (Exception ex)
+        {
+            AppDialog.Refused(this, title: "Edit draft", headline: "The draft was not moved",
+                subhead: inv.BuyerName, facts: [], listTitle: null, bullets: null,
+                note: ex.Message + " Nothing was put in the table.");
+            return;
+        }
+        foreach (var (line, _) in result) AddLine(line);
+        EnsureTypingRow();
+        TickCountChanged();
+        RegroupIfStale();
+        _ = LoadInvoicesAsync();
+        ShowEntryBanner($"Draft marked Ready — {editor.BuyerName}",
+            $"{result.Count} line(s) are now in the table below, holding their stock. Press Confirm when the sale is final.");
+    }
+
+    /// Asks before lines are taken off the entry, in the app's own dialog: its close button works
+    /// (the Windows Yes/No box greys its X out). Nothing is sold; any held stock is released.
+    private bool AskRemove(string headline) =>
+        AppDialog.Confirm(this, title: "Remove line", headline: headline, subhead: null, facts: [],
+            emphasis: "Nothing is sold. Any stock it is holding is released.",
+            listTitle: null, bullets: null, primaryText: "Remove", secondaryText: "Keep");
+
+    /// <summary>
+    /// What the header Print memo prints, and what its label counts: the ticked rows -- typed and
+    /// confirmed alike -- or, with nothing ticked, every Ready line and every Confirmed line.
+    /// </summary>
+    private List<SaleLine> PrintScope()
+    {
+        var ticked = _invoice.SelectedLines.Concat(_invoice.ConfirmedLines.Where(l => l.Selected)).ToList();
+        if (ticked.Count > 0) return ticked;
+        return _invoice.RealLines.Where(l => l.EntryStatus == "Added").Concat(_invoice.ConfirmedLines).ToList();
+    }
+
+    /// The (i) beside a line to fix: what is wrong, and where to change it.
+    private void FixInfo_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not SaleLine line) return;
+        string what = $"{line.Grade?.ShortName ?? "No grade"} \u00D7 {(line.Size is { } z ? SizeNames.Short(z.Code) : "no size")}";
+        AppDialog.Info(this, title: "Fix this line", headline: line.StatusReason ?? "This line is not complete.",
+            subhead: what, facts: [], listTitle: null, bullets: null,
+            note: "Change it in the table, or press Edit on the line. It is confirmed only once it reads Ready.");
+    }
+
+    /// Prints a posted invoice's memo: the same print as Print bill on the Invoices page.
+    private async Task PrintConfirmedAsync(string? invoiceNo)
+    {
+        if (invoiceNo is null) return;
+        if (_invoices.FirstOrDefault(i => i.InvoiceNo == invoiceNo) is not { } inv)
+        {
+            await LoadInvoicesAsync();
+            inv = _invoices.FirstOrDefault(i => i.InvoiceNo == invoiceNo);
+        }
+        if (inv is null) { Refuse($"{invoiceNo} could not be found — press Refresh and try again"); return; }
+        await PrintInvoiceAsync(inv);
+    }
+
+    private async Task PrintInvoiceAsync(VInvoice invoice)
+    {
+        var lines = await Read(() => Repo.LinesAsync(invoice.InvoiceId));
+        if (lines is null) return;
+        Say(Reports.PrintInvoice(invoice, lines) ?? "", ok: true);
+    }
+
+    /// The Print memo icon on an Invoices row.
+    private async void PrintInvoiceRow_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is VInvoice inv) await PrintInvoiceAsync(inv);
+    }
+
+    /// A table column by its heading, so inserting a column never moves where the caret lands.
+    private int Col(string header) =>
+        Math.Max(0, Grid.Columns.ToList().FindIndex(c => c.Header?.ToString() == header));
 
     private void SumReady_Click(object sender, RoutedEventArgs e) => JumpToStatus("Added");
     private void SumDraft_Click(object sender, RoutedEventArgs e) => JumpToStatus("Draft");
@@ -1201,7 +1577,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         int at = _invoice.FilteredLines.ToList().IndexOf(line);
         if (at >= 0) _invoice.Page = at / _invoice.PageSize;
         ShowRow(line);
-        Grid.CurrentCell = new DataGridCellInfo(line, Grid.Columns[2]);
+        Grid.CurrentCell = new DataGridCellInfo(line, Grid.Columns[Col("Size")]);
         Grid.Focus();
     }
 
@@ -1213,21 +1589,27 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         int all = _invoice.RealLines.Count;
         int ticked = _invoice.SelectedLines.Count;
         var shown = all > 0 ? Visibility.Visible : Visibility.Collapsed;
-        SaveDraft.Visibility = shown;
         Post.Visibility = shown;
 
         string rows = ticked > 0 ? (ticked == 1 ? "1 ticked line" : $"{ticked} ticked lines")
                                  : (all == 1 ? "1 line" : $"all {all} lines");
-        SaveDraftLabel.Text = $"Print memo · {rows}";
+
+        // PRINT MEMO (Nov 2026): what it will print. Ticked rows (typed and confirmed), or with none
+        // ticked every Ready and Confirmed line -- the same set PrintScope hands the printer.
+        int printable = PrintScope().Count;
+        int tickedAny = ticked + _invoice.ConfirmedLines.Count(l => l.Selected);
+        SaveDraft.Visibility = printable > 0 || tickedAny > 0 ? Visibility.Visible : Visibility.Collapsed;
+        // A count only once something is ticked (Nov 2026): "Print memo · 2 lines".
+        SaveDraftLabel.Text = tickedAny > 0
+            ? $"Print memo · {tickedAny} {(tickedAny == 1 ? "line" : "lines")}"
+            : "Print memo";
 
         // ONE CONFIRM (Nov 2026). Its label is what it will post: the ticked lines; or every line
         // when all are ready; or, when some are still drafts, just the ready ones -- drafts are never
         // confirmed and stay here. ReadyOnlyScope decides the same thing when it is pressed.
         int ready = _invoice.RealLines.Count(l => l.EntryStatus == "Added");
-        PostLabel.Text =
-            ticked > 0 ? $"Confirm sale · {rows}"
-            : ready == all ? $"Confirm sale · {rows}"
-            : ready > 0 ? (ready == 1 ? "Confirm 1 ready line" : $"Confirm {ready} ready lines")
+        PostLabel.Text = ticked > 0
+            ? $"Confirm sale · {ticked} {(ticked == 1 ? "line" : "lines")}"
             : "Confirm sale";
 
         // ONE MAIN BUTTON AT A TIME. Add sale is the step on an empty screen; once there are lines
@@ -1363,7 +1745,8 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 l.PricePerCt, l.ExRate, l.Less1Pct, l.Less2Pct, l.Remark,
                 // The line's own deal. An entry that wrote two invoices before it was closed has
                 // to come back writing two, or the row that differed silently joins the other.
-                l.DealBuyer?.Id, l.DealBroker?.Id, l.DealBrokerPct, l.DealTermsDays, l.DealDocType))]));
+                l.DealBuyer?.Id, l.DealBroker?.Id, l.DealBrokerPct, l.DealTermsDays, l.DealDocType,
+                l.DealDate))]));
     }
 
     /// <summary>
@@ -1400,6 +1783,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         entry.Broker = stored.Broker;
 
         entry.Lines.Clear();                                   // drop the constructor's opening row
+        var storedDates = new List<(SaleLine Line, DateTime Date)>();
         foreach (var l in stored.Lines)
         {
             // The DEAL is set in the initialiser too, so the line already carries it by the time
@@ -1428,7 +1812,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                 Less2Pct       = l.Less2Pct,
                 Remark         = l.Remark,
             });
+            if (l.DealDate is { } kept) storedDates.Add((entry.Lines[^1], kept));
         }
+        // AFTER the adds: adding a line stamps it with the entry's date, which would undo an edit.
+        foreach (var (line, date) in storedDates) line.SetInvoiceDate(date);
         // NO SPARE ROW ON A RESTORED ENTRY, on request. An entry that comes back with two lines
         // came back with two lines; a third, blank, added by the app read as the app having added
         // a line nobody asked for -- and it is Add line's job to add one. Enter at the end of the
@@ -1697,8 +2084,18 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
     {
         Grid.CommitEdit();
 
-        // THE TICKED ROWS, or the row this icon sits on. Ticking two of four prints those two.
-        var chosen = ActOn(sender);
+        // A CONFIRMED row prints its invoice: number, all its lines, as posted (Nov 2026).
+        if ((sender as FrameworkElement)?.Tag is SaleLine { IsConfirmedSale: true } confirmedRow)
+        {
+            _ = PrintConfirmedAsync(confirmedRow.SourceInvoiceNo);
+            return;
+        }
+
+        // THE ROW this icon sits on, or for the header button and Ctrl+P what its label counts:
+        // the ticked rows, or every Ready and Confirmed line when none is ticked (Nov 2026).
+        IReadOnlyList<SaleLine> chosen = (sender as FrameworkElement)?.Tag is SaleLine
+            ? ActOn(sender)
+            : PrintScope();
         if (chosen.Count == 0)
         {
             // A refusal, never a silent no-op: the button is only on screen once something is
@@ -1721,6 +2118,16 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // invoice is one document per full deal. Two lines to the same buyer through the same
         // broker on different terms are two invoices and ONE sheet -- the goods travel together.
         // See GroupForApproval for what a merged sheet does with terms that disagree.
+        // READY LINES ONLY (Nov 2026): a Draft or Fix line is missing something, so it is not
+        // printed. Said, not silent.
+        int skipped = chosen.Count(l => l.EntryStatus is not ("Added" or "Confirmed"));
+        chosen = chosen.Where(l => l.EntryStatus is "Added" or "Confirmed").ToList();
+        if (chosen.Count == 0)
+        {
+            Refuse("Nothing ready to print. Finish the Draft lines first (Go to missing detail).");
+            return;
+        }
+
         var deals = InvoiceEntry.GroupForApproval(chosen);
         var notes = new List<(VInvoice, List<VSalesLine>)>();
 
@@ -1731,7 +2138,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             var memo = new VInvoice
             {
                 InvoiceNo    = "MEMO",
-                InvoiceDate  = DateOnly.FromDateTime(_invoice.InvoiceDate),
+                InvoiceDate  = DateOnly.FromDateTime(head.DealDate),   // the line's own (edited) date, not the entry's
                 BuyerName    = head.DealBuyerName,
                 BrokerName   = head.DealBroker?.Name,
                 BrokerPct    = head.DealBrokerPct,
@@ -1765,9 +2172,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         string? said = Reports.PrintApprovalNotes(notes);
 
-        Say(deals.Count == 1
+        Say((deals.Count == 1
                 ? $"{said ?? ""} · {chosen.Count} line(s)"
-                : $"{deals.Count} memos printed, one page per deal · {chosen.Count} line(s)", ok: true);
+                : $"{deals.Count} memos printed, one page per deal · {chosen.Count} line(s)")
+            + (skipped > 0 ? $" · {skipped} draft line(s) not printed" : ""), ok: true);
     }
 
     private async void SaveDraft_Click(object sender, RoutedEventArgs e)
@@ -2841,6 +3249,12 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             return;
         }
 
+        // A receipt only means something on a posted invoice that still owes; the amount starts at
+        // what is owed, as on Receivables. Receipt_Click checks all of this again.
+        // Off this page on request (Nov 2026): payments are recorded on Receivables. Receipt_Click
+        // and its controls stay in the tree, hidden.
+        ReceiptPanel.Visibility = Visibility.Collapsed;
+
         var facts = new List<object>
         {
             new { Label = "Amount", Value = Money.Short(inv.AmountTotal) },
@@ -3006,17 +3420,66 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         var draft = new SaleLine();
         draft.TakeDealFrom(line);
+        ApplyFigures(line, draft);                    // the line's own fields too (Nov 2026)
+        draft.Recalculate(draft.DealBrokerPct);
+        draft.PropertyChanged += DraftFigure_Changed;
         DealDatePicker.BlackoutDates.Clear();
         DealDraft = draft;
         BlockPastDates(DealDatePicker, draft.DealDate);
 
-        DealDrawerTitle.Text = $"Line #{_invoice.Lines.IndexOf(line) + 1} — Deal Details";
+        DealDrawerTitle.Text = $"Line #{_invoice.Lines.IndexOf(line) + 1} — Edit line";
         ShowDealProblem(null);
         OpenDealDrawer(true);
 
-        // Keyboard-first: the drawer opens with the caret in the field that is required and most
-        // often the reason it was opened at all.
-        BuyerPicker.Focus();
+        // Keyboard-first: the buyer when the line has none (the usual reason to open it), else the
+        // first field of the line.
+        if (line.DealBuyer is null) BuyerPicker.Focus(); else EditSizePicker.Focus();
+    }
+
+    /// The fields the table shows, from one line to another. Grade before Size: a grade that does
+    /// not use the size clears it, so the other order would lose the size.
+    public static void ApplyFigures(SaleLine from, SaleLine to)
+    {
+        if (from.Grade is { } g) to.Grade = g;
+        if (from.Size is { } z) to.Size = z;
+        to.GrossWeightCt = from.GrossWeightCt;
+        to.SelectionCt = from.SelectionCt;
+        to.PricePerCt = from.PricePerCt;
+        to.ExRate = from.ExRate;
+        to.Less1Pct = from.Less1Pct;
+        to.Less2Pct = from.Less2Pct;
+        to.Remark = from.Remark;
+    }
+
+    private static bool FiguresDiffer(SaleLine a, SaleLine b) =>
+        a.Grade != b.Grade || a.Size != b.Size || a.GrossWeightCt != b.GrossWeightCt
+        || a.SelectionCt != b.SelectionCt || a.PricePerCt != b.PricePerCt || a.ExRate != b.ExRate
+        || a.Less1Pct != b.Less1Pct || a.Less2Pct != b.Less2Pct || (a.Remark ?? "") != (b.Remark ?? "");
+
+    /// Rej ct and Amount in the drawer follow what is typed, worked out exactly as the table does.
+    private void DraftFigure_Changed(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (sender is SaleLine d && e.PropertyName is nameof(SaleLine.GrossWeightCt) or nameof(SaleLine.SelectionCt)
+                or nameof(SaleLine.PricePerCt) or nameof(SaleLine.ExRate) or nameof(SaleLine.Less1Pct)
+                or nameof(SaleLine.Less2Pct) or nameof(SaleLine.DealBrokerPct) or nameof(SaleLine.Grade)
+                or nameof(SaleLine.Size))
+            d.Recalculate(d.DealBrokerPct);
+    }
+
+    /// The Remark icon: Edit sale, or on a confirmed (imported) sale its remark, read-only.
+    private void RemarkIcon_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not SaleLine line) return;
+        string what = $"{line.Grade?.ShortName ?? "No grade"} \u00D7 {(line.Size is { } z ? SizeNames.Short(z.Code) : "no size")}"
+                    + $" \u00B7 {line.GrossWeightCt:N2} ct \u00B7 {line.DealBuyerName}"
+                    + (line.SourceInvoiceNo is { } no ? $" \u00B7 {no}" : "");
+
+        // A confirmed sale's remark is shown, not changed: it is already posted.
+        var dialog = new RemarkDialog(line.Remark, what, readOnly: line.IsConfirmedSale) { Owner = this };
+        if (dialog.ShowDialog() != true || line.IsConfirmedSale) return;
+        if ((line.Remark ?? "") == (dialog.Remark ?? "")) return;
+        line.Remark = dialog.Remark;          // the same property the table and Edit sale write
+        Say(dialog.Remark is null ? "Remark removed" : "Remark saved", ok: true, popup: false);
     }
 
     /// <summary>
@@ -3051,11 +3514,11 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         if (_dealLine is { } line && DealDraft is { } draft)
         {
             int n = _invoice.Lines.IndexOf(line) + 1;
-            bool changed = draft.DealKey != line.DealKey;
+            bool changed = draft.DealKey != line.DealKey || FiguresDiffer(draft, line);
 
             if (AppDialog.Confirm(this,
-                    title: $"Line #{n} — Deal Details",
-                    headline: changed ? "This line's deal has been changed" : "Close without changing this line?",
+                    title: $"Line #{n} — Edit line",
+                    headline: changed ? "This line has been changed" : "Close without changing this line?",
                     subhead: draft.DealBuyerName,
                     facts:
                     [
@@ -3065,10 +3528,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
                         ("Date", draft.DealDate.ToString("dd MMM yyyy")),
                     ],
                     emphasis: changed
-                        ? "Save Details writes these onto the line. Close leaves the line exactly as it was."
+                        ? "Save writes these onto the line. Close leaves the line exactly as it was."
                         : "Nothing has been changed, so both doors leave the line as it is.",
                     listTitle: null, bullets: null,
-                    primaryText: "Save Details",
+                    primaryText: "Save",
                     secondaryText: "Close"))
             {
                 // The SAME save the button runs, so a missing buyer is refused here exactly as it is
@@ -3082,9 +3545,10 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         // The drawer hides BEFORE the draft is dropped. Clearing first blanked every field for one
         // frame while the panel was still on screen, which read as the values having been wiped.
         OpenDealDrawer(false);
+        if (DealDraft is { } dropped) dropped.PropertyChanged -= DraftFigure_Changed;
         _dealLine = null;
         DealDraft = null;
-        Say("Deal details closed — the line is unchanged", neutral: true);
+        Say("Edit closed — the line is unchanged", neutral: true);
         FocusGrid();
     }
 
@@ -3109,6 +3573,21 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
         if (draft.DealBroker?.IsNoBroker == true) draft.DealBroker = null;   // a choice, never stored
         line.TakeDealFrom(draft);
+        // The line's own fields, through the same properties the table cells set, so stock holds and
+        // totals follow exactly as if they had been typed in the row. Only what changed is written.
+        if (FiguresDiffer(draft, line))
+        {
+            if (draft.Grade is { } g && g != line.Grade) line.Grade = g;
+            if (draft.Size is { } z && z != line.Size) line.Size = z;
+            if (line.GrossWeightCt != draft.GrossWeightCt) line.GrossWeightCt = draft.GrossWeightCt;
+            if (line.SelectionCt != draft.SelectionCt) line.SelectionCt = draft.SelectionCt;
+            if (line.PricePerCt != draft.PricePerCt) line.PricePerCt = draft.PricePerCt;
+            if (line.ExRate != draft.ExRate) line.ExRate = draft.ExRate;
+            if (line.Less1Pct != draft.Less1Pct) line.Less1Pct = draft.Less1Pct;
+            if (line.Less2Pct != draft.Less2Pct) line.Less2Pct = draft.Less2Pct;
+            if ((line.Remark ?? "") != (draft.Remark ?? "")) line.Remark = draft.Remark;
+        }
+        draft.PropertyChanged -= DraftFigure_Changed;
 
         // The same deal goes to every line that has NO BUYER YET, on request: several lines typed
         // for one buyer take it from the first save. A line already sold to someone keeps its own
@@ -3134,7 +3613,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         Say($"Line {n} saved · {line.DealBuyerName} · {line.DealTerms}"
             + (alsoFilled > 0 ? $" · also applied to {alsoFilled} line(s) with no buyer" : "")
             + (deals > 1 ? $" — this entry now writes {deals} invoices" : ""), ok: true);
-        ShowEntryBanner($"Deal details saved for line {n} — {line.DealBuyerName}",
+        ShowEntryBanner($"Line {n} saved — {line.DealBuyerName}",
             $"{line.DealSummary}"
             + (alsoFilled > 0 ? $". Also applied to {alsoFilled} line(s) that had no buyer" : "")
             + (deals > 1 ? $". This entry will create {deals} invoices, one per deal" : "") + ".");
@@ -3667,6 +4146,9 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             var mine = _receivables.Where(r => r.BuyerId == row.BuyerId).ToList();
             var oldest = mine.MaxBy(r => r.DaysOverdue);
 
+            PayInvoice.Text = $"Against {row.InvoiceNo} · {Money.Exact(row.Outstanding)} outstanding";
+            PayAmount.Text = row.Outstanding.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+
             ReceivablesDetailName.Text = row.BuyerName;
             ReceivablesDetailTotal.Text = Money.Short(mine.Sum(r => r.Outstanding));
             ReceivablesDetailMeta.Text =
@@ -3691,6 +4173,57 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
         }
 
         ReceivablesSplit_SizeChanged(ReceivablesSplit, null!);
+    }
+
+    /// Why a typed payment cannot be saved, or null. Not posted is filtered out by the view already.
+    public static string? PaymentProblem(string typed, decimal outstanding, string? invoiceNo)
+    {
+        if (!decimal.TryParse(typed, System.Globalization.NumberStyles.Number,
+                              System.Globalization.CultureInfo.InvariantCulture, out var amount) || amount <= 0)
+            return "Enter the amount received (more than 0).";
+        if (outstanding <= 0) return $"{invoiceNo} is already paid. Nothing is outstanding.";
+        if (amount > outstanding)
+            return $"That is more than is owed. {invoiceNo} has {outstanding:N2} outstanding.";
+        return null;
+    }
+
+    /// Record payment on Receivables: the same receipt write as Receipt_Click, asked first because
+    /// the app has no screen to undo a receipt.
+    private async void RecordPayment_Click(object sender, RoutedEventArgs e)
+    {
+        if (ReceivablesGrid.SelectedItem is not VReceivablesAgeing row) { Say("Select an invoice first"); return; }
+
+        if (PaymentProblem(PayAmount.Text.Trim(), row.Outstanding, row.InvoiceNo) is { } problem)
+        {
+            Field(PayAmount, problem);
+            return;
+        }
+        decimal amount = decimal.Parse(PayAmount.Text.Trim(), System.Globalization.NumberStyles.Number,
+                                       System.Globalization.CultureInfo.InvariantCulture);
+        string method = (PayMethod.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "CASH";
+
+        if (!AppDialog.Confirm(this,
+                title: "Record payment",
+                headline: $"Record {Money.Exact(amount)} from {row.BuyerName}?",
+                subhead: row.InvoiceNo,
+                facts: new List<(string, string)>
+                {
+                    ("Invoice", row.InvoiceNo ?? "—"),
+                    ("Outstanding now", Money.Exact(row.Outstanding)),
+                    ("Payment", $"{Money.Exact(amount)} · {method}"),
+                    ("Outstanding after", Money.Exact(row.Outstanding - amount)),
+                },
+                emphasis: null, listTitle: null, bullets: null,
+                primaryText: "Record payment", secondaryText: "Cancel"))
+            return;
+
+        string? failure;
+        using (Busy(RecordPayment, "Recording…", RecordPayment, RefreshCatalogue))
+            failure = await Repo.ReceiptAsync(row.InvoiceId, amount, method);
+        if (failure is not null) { Say(failure); return; }
+
+        Say($"Payment recorded · {row.InvoiceNo} · {Money.Exact(amount)} {method}", ok: true);
+        LoadReceivables_Click(sender, e);
     }
 
     private const double ReceivablesDrawerWidth = 320;
@@ -9053,6 +9586,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
 
     private async void ImportExcel_Click(object sender, RoutedEventArgs e)
     {
+        _importedSales = null;          // the Sales entry reads the imported sales again (Nov 2026)
         var picker = new Microsoft.Win32.OpenFileDialog
         {
             Title = "Choose the sale workbook to import",
@@ -10731,6 +11265,7 @@ public partial class MainWindow : Window, System.ComponentModel.INotifyPropertyC
             case "Sales entry":
                 FocusWhereEntryResumes();
                 _ = LoadConfirmedTodayAsync();
+                if (_importedSales is null) _ = LoadImportedSalesAsync();
                 break;
             case "Invoices": LoadInvoices_Click(this, e); break;
             case "Sales report": _ = LoadSalesReportAsync(); break;

@@ -138,6 +138,34 @@ public static class Repo
             .Filter("invoice_date", Operator.LessThanOrEqual, D(to))
             .Order("line_id", Ordering.Ascending));
 
+    /// Every line of every posted invoice, imported or confirmed in the app, for the Sales entry
+    /// table's Confirmed rows (Nov 2026). Read only.
+    public static async Task<List<VSalesLine>> PostedSalesLinesAsync() =>
+        await AllPagesAsync(() => Db.Client.From<VSalesLine>()
+            .Filter("status", Operator.Equals, InvoiceStatus.POSTED)
+            .Order("line_id", Ordering.Descending));
+
+
+    /// <summary>
+    /// Takes a draft memo away once View Draft has moved its lines onto the entry (Nov 2026). The
+    /// lines go first (whoever created the draft may); the invoice row after, filtered on DRAFT so a
+    /// posted invoice can never be touched. Row-level security lets only a manager or owner delete
+    /// the invoice row itself, so for anyone else an empty draft is left behind -- View Draft lists
+    /// only drafts that still have lines, so it does not come back.
+    /// </summary>
+    public static async Task DeleteDraftAsync(long invoiceId)
+    {
+        await Db.Client.From<SalesLine>().Filter(InvoiceIdColumn, Operator.Equals, invoiceId).Delete();
+        // A refused delete is silent under RLS, so it is checked: lines left behind would come
+        // back as a second copy of what is now on the entry.
+        if ((await LinesAsync(invoiceId)).Count > 0)
+            throw new InvalidOperationException("This draft could not be removed (it belongs to another user).");
+        await Db.Client.From<SalesInvoice>()
+            .Filter(InvoiceIdColumn, Operator.Equals, invoiceId)
+            .Filter("status", Operator.Equals, InvoiceStatus.DRAFT)
+            .Delete();
+    }
+
     public static async Task<List<VSalesLine>> LinesAsync(long invoiceId) =>
         (await Db.Client.From<VSalesLine>().Filter(InvoiceIdColumn, Operator.Equals, invoiceId)
             .Order("line_id", Ordering.Ascending).Get()).Models;

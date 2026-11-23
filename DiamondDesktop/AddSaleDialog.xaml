@@ -51,6 +51,12 @@
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="CancelButton" Content="Cancel" Margin="0,0,10,0" IsCancel="True"
                   Style="{StaticResource SecondaryAction}" Click="Cancel_Click" VerticalAlignment="Center"/>
+          <!-- SAVE AS DRAFT (Nov 2026): kept as a draft memo in the database, listed under View Draft,
+               holding no stock and not in the Invoice lines table until it is marked Ready. -->
+          <Button x:Name="DraftButton" Content="Save as Draft" Margin="0,0,10,0"
+                  Style="{StaticResource SecondaryAction}" Click="SaveDraft_Click" VerticalAlignment="Center"
+                  ToolTip="Keep this sale as a draft. It appears under View Draft and holds no stock."
+                  AutomationProperties.Name="Save as draft"/>
           <Button x:Name="SaveButton" Content="Add to invoice" Style="{StaticResource PrimaryAction}"
                   Click="Save_Click" VerticalAlignment="Center"
                   AutomationProperties.Name="Add these lines to the invoice"/>
@@ -60,7 +66,7 @@
 
     <DockPanel Margin="22,20,22,14">
       <StackPanel DockPanel.Dock="Top">
-        <TextBlock Text="Add sale" Style="{StaticResource CardTitle}"/>
+        <TextBlock x:Name="DialogTitle" Text="Add sale" Style="{StaticResource CardTitle}"/>
         <TextBlock Style="{StaticResource CardSubtitle}" Margin="0,4,0,10" TextWrapping="Wrap">
           <Run Text="1  Deal details" FontWeight="SemiBold"/><Run Text="   &#x203A;   "/>
           <Run Text="2  Lines" FontWeight="SemiBold"/><Run Text="   &#x203A;   "/>
@@ -159,7 +165,8 @@
       <!-- THE LINES, in the same table the Invoice lines card uses -->
       <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
               CornerRadius="{StaticResource RadiusControl}" ClipToBounds="True">
-        <DataGrid x:Name="LinesGrid" IsReadOnly="False"
+        <!-- RowHeight NaN with a floor: a row grows to show a long remark in full (Nov 2026). -->
+        <DataGrid x:Name="LinesGrid" IsReadOnly="False" RowHeight="NaN" MinRowHeight="42"
                   CanUserAddRows="False" CanUserDeleteRows="False" SelectionUnit="Cell"
                   CanUserSortColumns="False" ColumnHeaderHeight="40" AutoGenerateColumns="False"
                   HeadersVisibility="Column" GridLinesVisibility="None"
@@ -207,8 +214,36 @@
             <DataGridTextColumn Header="Amount" Width="110*" MinWidth="92" IsReadOnly="True" HeaderStyle="{StaticResource AppNumericHeader}"
                                 Binding="{Binding Amount, StringFormat=N2, Mode=OneWay}" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"
                                 ElementStyle="{StaticResource Num}"/>
-            <DataGridTextColumn Header="Remark" Width="160*" MinWidth="120"
-                                Binding="{Binding Remark, UpdateSourceTrigger=LostFocus}"/>
+            <!-- REMARK as a box to type into (Nov 2026), with a hint while it is empty. Saved with
+                 the line like every other field. -->
+            <DataGridTemplateColumn Header="Remark" Width="170*" MinWidth="150">
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate>
+                  <Grid Margin="2,0">
+                    <TextBox Text="{Binding Remark, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource CellTextBox}" MinHeight="28" Height="Auto" Margin="0,5"
+                             TextWrapping="Wrap" AcceptsReturn="False" VerticalAlignment="Center"
+                             VerticalContentAlignment="Center" AutomationProperties.Name="Remark"/>
+                    <TextBlock Text="Add a remark" IsHitTestVisible="False" Margin="9,0,0,0" VerticalAlignment="Center"
+                               FontSize="12" Foreground="{DynamicResource TextMutedBrush}">
+                      <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                          <Setter Property="Visibility" Value="Collapsed"/>
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding Remark}" Value="{x:Null}">
+                              <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Remark}" Value="">
+                              <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </TextBlock.Style>
+                    </TextBlock>
+                  </Grid>
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
             <!-- The same remove button the Invoice lines table uses, in a column wide enough to hold
                  it whole: at 44px with the ghost style's padding the icon was clipped. -->
             <DataGridTemplateColumn Header="Action" Width="76" MinWidth="76" CanUserResize="False">

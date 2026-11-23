@@ -1,0 +1,86 @@
+<Window x:Class="DiamondDesktop.ViewDraftDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="View Draft" Width="980" Height="520" MinWidth="700" MinHeight="340"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Icon="{StaticResource AppIcon}"
+        ShowInTaskbar="False" WindowStyle="SingleBorderWindow"
+        Background="{DynamicResource BgBrush}"
+        TextElement.Foreground="{DynamicResource TextBrush}"
+        TextElement.FontFamily="{StaticResource UiFont}"
+        TextElement.FontSize="13.5" TextOptions.TextFormattingMode="Ideal">
+
+  <!-- VIEW DRAFT (Nov 2026): one row per draft with the draft's own details (date, when it was
+       saved, who saved it, buyer, size of it). The Edit icon opens a draft in the Add sale layout,
+       where it can be changed or marked Ready. Ticking drafts shows "Ready" above the list, to move
+       several at once. No buttons along the bottom; the window closes from its title bar. -->
+  <Window.Resources>
+    <Style TargetType="DataGrid" BasedOn="{StaticResource AppDataGrid}"/>
+    <Style TargetType="Button" BasedOn="{StaticResource AppButton}"/>
+    <Style x:Key="Num" TargetType="TextBlock" BasedOn="{StaticResource NumericCellText}">
+      <Setter Property="HorizontalAlignment" Value="Left"/>
+      <Setter Property="TextAlignment" Value="Left"/>
+    </Style>
+  </Window.Resources>
+
+  <DockPanel Margin="22,20,22,20">
+    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+      <Button x:Name="ReadyButton" DockPanel.Dock="Right" Content="Ready" Visibility="Collapsed"
+              Style="{StaticResource PrimaryAction}" Click="Ready_Click" VerticalAlignment="Bottom"
+              ToolTip="Move the ticked drafts into the Invoice lines table"
+              AutomationProperties.Name="Mark the ticked drafts ready"/>
+      <StackPanel>
+        <TextBlock Text="View Draft" Style="{StaticResource CardTitle}"/>
+        <TextBlock x:Name="CountText" Style="{StaticResource CardSubtitle}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+      </StackPanel>
+    </DockPanel>
+    <Grid>
+      <DataGrid x:Name="Drafts" IsReadOnly="True" AutoGenerateColumns="False"
+                SelectionMode="Single" SelectionUnit="FullRow" HeadersVisibility="Column"
+                MouseDoubleClick="Drafts_DoubleClick"
+                AutomationProperties.Name="Drafts">
+        <DataGrid.Columns>
+          <DataGridTemplateColumn Width="40" CanUserResize="False">
+            <DataGridTemplateColumn.HeaderTemplate>
+              <DataTemplate>
+                <CheckBox Click="TickAll_Click" Style="{StaticResource FieldCheckBox}"
+                          HorizontalAlignment="Center" ToolTip="Tick every draft"
+                          AutomationProperties.Name="Tick every draft"/>
+              </DataTemplate>
+            </DataGridTemplateColumn.HeaderTemplate>
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate>
+                <CheckBox IsChecked="{Binding Selected, UpdateSourceTrigger=PropertyChanged}"
+                          Style="{StaticResource FieldCheckBox}"
+                          HorizontalAlignment="Center" VerticalAlignment="Center"
+                          AutomationProperties.Name="Select this draft"/>
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
+          <DataGridTextColumn Header="DATE" Binding="{Binding Draft.InvoiceDate, StringFormat=dd-MM-yyyy}" Width="96"/>
+          <DataGridTextColumn Header="SAVED AT" Binding="{Binding SavedAt, StringFormat=dd-MM-yyyy HH:mm}" Width="130"/>
+          <DataGridTextColumn Header="CREATED BY" Binding="{Binding CreatedBy}" Width="1*"/>
+          <DataGridTextColumn Header="BUYER" Binding="{Binding Draft.BuyerName}" Width="1.6*"/>
+          <DataGridTextColumn Header="LINES" Binding="{Binding Draft.LineCount}" Width="64" ElementStyle="{StaticResource Num}"/>
+          <DataGridTextColumn Header="CARATS" Binding="{Binding Draft.CaratsSold, StringFormat=N2}" Width="80" ElementStyle="{StaticResource Num}"/>
+          <DataGridTextColumn Header="AMOUNT" Binding="{Binding Draft.AmountTotal, StringFormat=N2}" Width="110" ElementStyle="{StaticResource Num}"/>
+          <DataGridTemplateColumn Header="ACTION" Width="70" CanUserResize="False">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate>
+                <Button Click="EditRow_Click" Tag="{Binding}" Style="{StaticResource GhostButton}"
+                        Width="26" Height="26" MinWidth="0" Padding="0" Cursor="Hand" HorizontalAlignment="Left"
+                        Foreground="{DynamicResource AccentBrush}"
+                        ToolTip="Edit this draft" AutomationProperties.Name="Edit this draft">
+                  <Path Style="{StaticResource ActionIcon}" Width="13" Height="13" Data="{StaticResource IconEdit}"/>
+                </Button>
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
+        </DataGrid.Columns>
+      </DataGrid>
+      <TextBlock x:Name="EmptyText" Text="No drafts. Use Save as Draft in Add sale or Edit sale to keep one here."
+                 HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"
+                 Foreground="{DynamicResource TextMutedBrush}"/>
+    </Grid>
+  </DockPanel>
+</Window>

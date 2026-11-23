@@ -52,7 +52,8 @@ public static class EntryStore
         decimal GrossWeightCt, decimal SelectionCt, decimal PricePerCt,
         decimal ExRate, decimal Less1Pct, decimal Less2Pct, string? Remark,
         long? BuyerId = null, long? BrokerId = null, decimal DealBrokerPct = 0m,
-        int DealTermsDays = 0, string? DealDocType = null);
+        int DealTermsDays = 0, string? DealDocType = null,
+        DateTime? DealDate = null);   // the line's own date (Nov 2026); null in an older file
 
     public sealed record StoredEntry(
         Guid ClientRef, DateTime InvoiceDate, string? Buyer, string? Broker,
