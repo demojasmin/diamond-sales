@@ -386,17 +386,58 @@ Check("SALES-001 a complete line has no error", line.Error is null, line.Error);
         typing.Lines[0].StatusGroup == "DRAFT" && typing.Lines[1].StatusGroup == "NEW"
         && line.StatusGroup == "READY" || line.DealBuyer is null,
         $"{typing.Lines[0].StatusGroup} / {typing.Lines[1].StatusGroup} / {line.StatusGroup}");
-    Check("GROUPS - order is Ready, Draft, New",
-        new DiamondDesktop.SaleLine { DealDate = DateTime.Today }.StatusOrder == 2 && typing.Lines[0].StatusOrder == 1);
+    Check("GROUPS - order is New, Fix, Ready, Confirmed",
+        new DiamondDesktop.SaleLine { DealDate = DateTime.Today }.StatusOrder == 0 && typing.Lines[0].StatusOrder == 1
+        && new DiamondDesktop.SaleLine { IsImported = true }.StatusOrder == 3);
     typing.FilterStatus = "READY";
     Check("TABS - Ready shows no draft and no New row", typing.VisibleLines.Count == 0, $"{typing.VisibleLines.Count}");
     typing.FilterStatus = "DRAFT";
-    Check("TABS - Draft shows the draft and the New row to start one", typing.VisibleLines.Count == 2, $"{typing.VisibleLines.Count}");
+    Check("TABS - Fix shows the draft and not the New row", typing.VisibleLines.Count == 1, $"{typing.VisibleLines.Count}");
     typing.ClearFilters();
-    Check("TABS - Clear goes back to All", typing.FilterStatus is null && typing.VisibleLines.Count == 2);
+    Check("TABS - Clear goes back to All (the New row is not shown)", typing.FilterStatus is null && typing.VisibleLines.Count == 1);
     Check("TABS - a tab is not a filter (the filter bar stays shut)", !typing.AnyFilter);
     Check("MISSING - the typed draft is missing size, grade and weight",
         typing.Lines[0].MissingSize && typing.Lines[0].MissingGrade && typing.Lines[0].MissingWeight);
+    // Memo pages (Nov 2026): same buyer and broker on two dates are two pages; same date is one.
+    {
+        var abc = new DiamondDesktop.PartyRef(1, "ABC");
+        DiamondDesktop.SaleLine On(DateTime d) => new() { DealBuyer = abc, DealDate = d };
+        var d21 = new DateTime(2026, 11, 21); var d23 = new DateTime(2026, 11, 23);
+        Check("MEMO - two dates print two pages",
+            DiamondDesktop.InvoiceEntry.GroupForApproval([On(d21), On(d23)]).Count == 2);
+        Check("MEMO - one date prints one page",
+            DiamondDesktop.InvoiceEntry.GroupForApproval([On(d23), On(d23)]).Count == 1);
+        var stored = new DiamondDesktop.Data.EntryStore.StoredLine(Guid.NewGuid(), null, null, 1, 1, 1, 1, 0, 0, null, DealDate: d23);
+        var back = System.Text.Json.JsonSerializer.Deserialize<DiamondDesktop.Data.EntryStore.StoredLine>(
+            System.Text.Json.JsonSerializer.Serialize(stored));
+        Check("MEMO - the line's date survives the saved entry file", back?.DealDate == d23);
+        Check("MEMO - an older file without a date still reads", System.Text.Json.JsonSerializer
+            .Deserialize<DiamondDesktop.Data.EntryStore.StoredLine>("{\"LineKey\":\"" + Guid.NewGuid() + "\",\"GrossWeightCt\":1,\"SelectionCt\":1,\"PricePerCt\":1,\"ExRate\":1,\"Less1Pct\":0,\"Less2Pct\":0}")?.DealDate is null);
+    }
+    // Imported sales (Nov 2026): shown in the table, never part of the entry.
+    {
+        var e = new DiamondDesktop.InvoiceEntry();
+        var mine = new DiamondDesktop.SaleLine { GrossWeightCt = 1, SelectionCt = 1, PricePerCt = 10 };
+        e.Lines.Add(mine);
+        var imp = new DiamondDesktop.SaleLine { IsImported = true, SourceInvoiceNo = "MIG-1", GrossWeightCt = 2, SelectionCt = 2, PricePerCt = 5 };
+        e.SetConfirmedLines([imp]);
+        Check("IMPORTED - reads Confirmed, Imported Sale", imp.EntryStatus == "Confirmed" && imp.EntryType == "Imported Sale" && imp.StatusGroup == "CONFIRMED");
+        Check("IMPORTED - a typed line reads Manually Added Sale", mine.EntryType == "Manually Added Sale");
+        Check("IMPORTED - never in the entry's lines", !e.RealLines.Contains(imp) && !e.Lines.Contains(imp));
+        Check("IMPORTED - shown on All", e.FilteredLines.Contains(imp));
+        e.FilterStatus = "READY";
+        Check("IMPORTED - not on Ready", !e.FilteredLines.Contains(imp));
+        e.FilterStatus = "DRAFT";
+        Check("IMPORTED - not on Fix", !e.FilteredLines.Contains(imp));
+        e.FilterStatus = "CONFIRMED";
+        Check("CONFIRMED - the Confirmed tab shows it, and no typed line", e.FilteredLines.Contains(imp) && !e.FilteredLines.Contains(mine));
+        var posted = new DiamondDesktop.SaleLine { IsPosted = true, SourceInvoiceNo = "INV-2026-00009" };
+        Check("CONFIRMED - a sale confirmed here reads Confirmed, Manually Added Sale",
+            posted.EntryStatus == "Confirmed" && posted.EntryType == "Manually Added Sale" && posted.IsConfirmedSale);
+        e.FilterStatus = null;
+        e.Recalculate();
+        Check("IMPORTED - not in the totals", e.TotalAmount == mine.Amount);
+    }
     // "No broker" (Nov 2026): a choice in the list, never a broker on a saved line.
     Check("NO BROKER - the choice is recognised", DiamondDesktop.PartyRef.NoBroker.IsNoBroker);
     Check("NO BROKER - a real broker is not it", !new DiamondDesktop.PartyRef(7, "AMIT BHAI").IsNoBroker);
@@ -1828,6 +1869,12 @@ foreach (var (name, ok, detail) in DiamondCalc.Tests.DialogProbe.Run())
 
 // ---- Confirm sale - the invoice date is shown, and an old one is flagged ---------------
 {
+    var pay = DiamondDesktop.MainWindow.PaymentProblem;
+    Check("PAYMENT - part and full payment are allowed", pay("500", 1000, "S-1") is null && pay("1000.00", 1000, "S-1") is null);
+    Check("PAYMENT - zero, blank and text are refused", pay("0", 1000, "S-1") is not null && pay("", 1000, "S-1") is not null && pay("abc", 1000, "S-1") is not null);
+    Check("PAYMENT - more than outstanding is refused", pay("1000.01", 1000, "S-1") is not null);
+    Check("PAYMENT - a paid invoice takes nothing", pay("1", 0, "S-1") is not null);
+
     var today = new DiamondDesktop.SaleLine { DealDate = DateTime.Today };
     var old = new DiamondDesktop.SaleLine { DealDate = new DateTime(2026, 9, 3) };
     Check("DATE - a line dated today reads as just the date",

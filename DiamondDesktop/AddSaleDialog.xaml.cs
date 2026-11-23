@@ -23,20 +23,40 @@ public partial class AddSaleDialog : Window
     private readonly SaleLine _deal = new();
     private readonly InvoiceEntry _draft = new();
     private readonly Action<SaleLine> _addLine;
+    private readonly Func<SaleLine, IReadOnlyList<SaleLine>, Task<string?>>? _saveDraft;
+    private readonly Dictionary<SaleLine, SaleLine> _sourceOf = [];   // Edit: row here -> line on the entry
+    private readonly bool _editing;
+    private readonly string _primaryText = "Save";
     private int _added;
 
     public int Added => _added;
     public string BuyerName => _deal.DealBuyerName;
 
-    public AddSaleDialog(InvoiceEntry entry, Action<SaleLine> addLine)
+    /// Save as Draft went through: the sale is a draft memo now, not lines on the entry.
+    public bool SavedAsDraft { get; private set; }
+
+    /// Edit sale, on Save: each row with the entry line it came from (null for a row added here).
+    /// Entry lines of the deal that are not in it were removed in the window.
+    public IReadOnlyList<(SaleLine Line, SaleLine? Source)>? EditResult { get; private set; }
+
+    /// <param name="saveDraft">Save as Draft: the deal and its lines; returns why it failed, or null.</param>
+    /// <param name="editing">Edit sale (Nov 2026): the deal's lines on the entry, shown pre-filled.</param>
+    public AddSaleDialog(InvoiceEntry entry, Action<SaleLine> addLine,
+                         Func<SaleLine, IReadOnlyList<SaleLine>, Task<string?>>? saveDraft = null,
+                         IReadOnlyList<SaleLine>? editing = null,
+                         string? title = null, string? primaryText = null)
     {
         InitializeComponent();
         _addLine = addLine;
+        _saveDraft = saveDraft;
+        _editing = editing is { Count: > 0 };
+        DraftButton.Visibility = saveDraft is null ? Visibility.Collapsed : Visibility.Visible;
         // TODAY, not the entry's date. The entry's date is whatever a restored or reopened entry was
         // typed on (03-09-2026 on Demo), so a new sale opened silently back-dated. A different
         // date is still one click away in the box.
         _deal.SetInvoiceDate(DateTime.Today);
-        MainWindow.BlockPastDates(DealDate, DateTime.Today);    // past days greyed out (Nov 2026)
+        if (_editing) _deal.TakeDealFrom(editing![0]);
+        MainWindow.BlockPastDates(DealDate, _deal.DealDate);    // past days greyed out (Nov 2026)
         DealFields.DataContext = _deal;
 
         // Filled from code, as every picker in this app is: PickerSearch wraps a local ItemsSource.
@@ -44,8 +64,25 @@ public partial class AddSaleDialog : Window
         BrokerBox.ItemsSource = new[] { PartyRef.NoBroker }.Concat(entry.Brokers).ToList();
         TypeBox.ItemsSource = entry.DocTypes;
 
+        // Edit sale: the deal's lines, as copies, so Cancel leaves the entry exactly as it was.
+        if (_editing)
+        {
+            Title = title ?? "Edit sale";
+            DialogTitle.Text = Title;
+            _primaryText = primaryText ?? "Save";
+            _draft.Lines.Clear();
+            foreach (var source in editing!)
+            {
+                var copy = new SaleLine();
+                MainWindow.ApplyFigures(source, copy);
+                _draft.Lines.Add(copy);
+                _sourceOf[copy] = source;
+            }
+        }
+
         // The scratch entry opens with one row to type into, like the Sales entry screen.
         foreach (var line in _draft.Lines) line.TakeDealFrom(_deal);
+        _draft.Recalculate();
         LinesGrid.ItemsSource = _draft.Lines;
         _draft.PropertyChanged += (_, _) => ShowReady();
 
@@ -77,7 +114,8 @@ public partial class AddSaleDialog : Window
         AddedText.Text = ready.Count == 0
             ? "No line ready yet"
             : $"{ready.Count} line(s) ready · {ct:N2} ct · {Money.Exact(amount)}";
-        SaveButton.Content = ready.Count > 0 && ready.Count == lines.Count
+        SaveButton.Content = _editing ? _primaryText
+            : ready.Count > 0 && ready.Count == lines.Count
             ? (ready.Count == 1 ? "Add 1 line to invoice" : $"Add {ready.Count} lines to invoice")
             : "Add to invoice";
 
@@ -89,6 +127,8 @@ public partial class AddSaleDialog : Window
                 ? $"Step 2 — type the first parcel for {_deal.DealBuyerName}: size, grade, weight, selection and price/ct. Add Line gives another row."
             : unfinished is not null
                 ? $"Step 2 — line {_draft.Lines.IndexOf(unfinished) + 1}: {LineIssue(unfinished)}."
+            : _editing
+                ? $"Step 3 — press {_primaryText}. {ready.Count} line(s) for {_deal.DealBuyerName}."
             : $"Step 3 — press Add to invoice. {ready.Count} line(s) for {_deal.DealBuyerName} will appear on the Sales entry, ready to confirm.";
     }
 
@@ -177,8 +217,24 @@ public partial class AddSaleDialog : Window
         ErrorBox.Visibility = problem is null ? Visibility.Collapsed : Visibility.Visible;
         if (problem is not null) return;
 
-        // A fresh line per row, so nothing on the entry is wired to this window's scratch entry.
-        foreach (var l in _draft.RealLines)
+        if (_editing)
+        {
+            EditResult = Fresh().Select(p => (p.Line, _sourceOf.GetValueOrDefault(p.Row))).ToList();
+            DialogResult = true;
+            return;
+        }
+
+        foreach (var (line, _) in Fresh())
+        {
+            _addLine(line);
+            _added++;
+        }
+        DialogResult = true;
+    }
+
+    /// A fresh line per row, carrying the deal, so nothing on the entry is wired to this window.
+    private List<(SaleLine Line, SaleLine Row)> Fresh() =>
+        _draft.RealLines.Select(l =>
         {
             var line = new SaleLine
             {
@@ -189,9 +245,58 @@ public partial class AddSaleDialog : Window
             };
             line.TakeDealFrom(_deal);
             if (line.DealBroker?.IsNoBroker == true) line.DealBroker = null;   // a choice, never stored
-            _addLine(line);
-            _added++;
+            return (line, l);
+        }).ToList();
+
+    /// <summary>
+    /// What stops this sale being kept as a draft, or null. Looser than Add to invoice: a draft may
+    /// still lack weights and prices. It needs what the database needs to hold it at all -- a buyer,
+    /// and on every line a size, a grade and a selection no bigger than the weight.
+    /// </summary>
+    private string? DraftProblem()
+    {
+        if (_deal.DealBuyer is null) { BuyerBox.Focus(); return "Pick a buyer. A draft has to say who it is for."; }
+        if (_deal.DealTermsDays is < 0 or > 365) { TermsBox.Focus(); return "Terms must be between 0 and 365 days."; }
+        if (_deal.DealBrokerPct is < 0 or > 100) { PctBox.Focus(); return "Broker % must be between 0 and 100."; }
+
+        var lines = _draft.RealLines;
+        if (lines.Count == 0) return "Type at least one line in the table.";
+        foreach (var l in lines)
+        {
+            int n = _draft.Lines.IndexOf(l) + 1;
+            if (l.Size is null) return $"Line {n}: pick the size.";
+            if (l.Grade is null) return $"Line {n}: pick the grade.";
+            if (l.GrossWeightCt < 0 || l.SelectionCt < 0 || l.SelectionCt > l.GrossWeightCt)
+                return $"Line {n}: selection must be between 0 and the weight.";
+            if (l.PricePerCt < 0) return $"Line {n}: price per carat cannot be negative.";
         }
+        return null;
+    }
+
+    private async void SaveDraft_Click(object sender, RoutedEventArgs e)
+    {
+        if (_saveDraft is null || SavedAsDraft || _added > 0) return;
+        LinesGrid.CommitEdit(DataGridEditingUnit.Cell, true);
+        LinesGrid.CommitEdit(DataGridEditingUnit.Row, true);
+
+        string? problem = DraftProblem();
+        if (problem is null)
+        {
+            DraftButton.IsEnabled = SaveButton.IsEnabled = false;
+            DraftButton.Content = "Saving…";
+            var deal = new SaleLine();
+            deal.TakeDealFrom(_deal);
+            if (deal.DealBroker?.IsNoBroker == true) deal.DealBroker = null;
+            problem = await _saveDraft(deal, Fresh().Select(p => p.Line).ToList());
+            DraftButton.IsEnabled = SaveButton.IsEnabled = true;
+            DraftButton.Content = "Save as Draft";
+        }
+
+        ErrorText.Text = problem ?? "";
+        ErrorBox.Visibility = problem is null ? Visibility.Collapsed : Visibility.Visible;
+        if (problem is not null) return;
+
+        SavedAsDraft = true;
         DialogResult = true;
     }
 

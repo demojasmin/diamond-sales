@@ -39,6 +39,10 @@
     <Geometry x:Key="IconStock">M 8,1.5 L 8,9 M 4.5,6 L 8,9.5 L 11.5,6 M 1.5,11 L 5,11 L 6,13 L 10,13 L 11,11 L 14.5,11</Geometry>
     <!-- a tick: the sale is confirmed -->
     <Geometry x:Key="IconConfirm">M 2,8.5 L 6.5,13 L 14,3</Geometry>
+    <!-- a pencil: edit this line -->
+    <Geometry x:Key="IconEdit">M 10.5,2.5 L 13.5,5.5 L 5.5,13.5 L 2,14 L 2.5,10.5 Z M 9,4 L 12,7</Geometry>
+    <!-- a speech bubble: a remark -->
+    <Geometry x:Key="IconRemark">M 2,3 L 14,3 L 14,11 L 7,11 L 4,14 L 4,11 L 2,11 Z M 5,6 L 11,6 M 5,8.5 L 9,8.5</Geometry>
     <!-- a circular arrow: start again with an empty screen -->
     <Geometry x:Key="IconClear">M 14,8 A 6,6 0 1 1 11.8,3.4 M 14,1 L 14,4 L 11,4</Geometry>
 

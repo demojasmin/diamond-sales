@@ -790,6 +790,17 @@
                       <TextBlock Text="Add sale" Margin="7,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
                   </Button>
+                  <!-- VIEW DRAFT (Nov 2026): the sales kept with Save as Draft. Ready moves one into
+                       this table. -->
+                  <Button x:Name="ViewDraft" Click="ViewDrafts_Click"
+                          Style="{StaticResource DashButton}" Margin="0,0,8,0"
+                          ToolTip="Sales saved as draft. Select one and press Ready to put it in this table."
+                          AutomationProperties.Name="View draft">
+                    <StackPanel Orientation="Horizontal">
+                      <Path Style="{StaticResource ActionIcon}" Data="{StaticResource IconEdit}"/>
+                      <TextBlock Text="View Draft" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                  </Button>
                   <!-- Only on screen while something is ticked. Its label carries the count,
                        so the text is set in code and only the icon is fixed here. -->
                   <Button x:Name="DeleteLines" Click="DeleteLines_Click" Visibility="Collapsed"
@@ -847,17 +858,9 @@
                   </Button>
                 </WrapPanel>
                 <StackPanel Grid.Row="1" Grid.ColumnSpan="2">
-                  <!-- The one message, and the action that answers it (Nov 2026): "Finish it" takes the
-                       caret to the missing cell, or opens Deal Details when it is the buyer. -->
-                  <DockPanel Margin="0,3,0,0">
-                    <Button x:Name="FinishDraft" DockPanel.Dock="Right" Click="FinishDraft_Click"
-                            Style="{StaticResource GhostButton}" Padding="10,1" Margin="8,0,0,0" FontSize="12"
-                            FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}" Cursor="Hand"
-                            Visibility="{Binding Visibility, ElementName=LinesGuide}"
-                            Content="Go to missing detail &#x2192;" ToolTip="Takes you to the field this line is missing, or opens Deal Details if it needs a buyer"/>
-                    <TextBlock x:Name="LinesGuide" Style="{StaticResource DashSubheading}" VerticalAlignment="Center"
-                               TextWrapping="Wrap" Text="Start with Add sale."/>
-                  </DockPanel>
+                  <!-- The one message (Nov 2026). Its action is the View Draft button above. -->
+                  <TextBlock x:Name="LinesGuide" Style="{StaticResource DashSubheading}" Margin="0,3,0,0"
+                             TextWrapping="Wrap" Text="Start with Add sale."/>
                   <!-- PROGRESS SUMMARY (Nov 2026): the lines counted by Status, each count a link to the first
                        such line. Written by ShowProgressSummary; hidden while there are no lines. -->
                   <WrapPanel x:Name="ProgressSummary" Margin="0,4,0,0" Visibility="Collapsed">
@@ -878,15 +881,17 @@
                     <RadioButton x:Name="TabAll" GroupName="EntryTabs" Style="{StaticResource EntryTab}" Tag=""
                                  IsChecked="True" Click="EntryTab_Click" Content="All"
                                  ToolTip="Every line on this entry"/>
+                    <!-- The Fix tab is gone on request (Nov 2026): a line to fix shows on All, marked Fix. -->
                     <RadioButton x:Name="TabDraft" GroupName="EntryTabs" Style="{StaticResource EntryTab}" Tag="DRAFT"
-                                 Click="EntryTab_Click" Content="Draft"
-                                 ToolTip="Lines still missing a detail (Draft) or whose figures disagree (Fix), and the New row"/>
+                                 Visibility="Collapsed"
+                                 Click="EntryTab_Click" Content="Fix"
+                                 ToolTip="Lines still to fix: a detail is missing or the figures disagree"/>
                     <RadioButton x:Name="TabReady" GroupName="EntryTabs" Style="{StaticResource EntryTab}" Tag="READY"
                                  Click="EntryTab_Click" Content="Ready"
                                  ToolTip="Complete lines on this invoice, waiting for Confirm sale"/>
                     <RadioButton x:Name="TabConfirmed" GroupName="EntryTabs" Style="{StaticResource EntryTab}" Tag="CONFIRMED"
-                                 Click="EntryTab_Click" Content="Confirmed today"
-                                 ToolTip="Sales confirmed today. They have left this entry and are on the Invoices page."/>
+                                 Click="EntryTab_Click" Content="Confirmed"
+                                 ToolTip="Every confirmed sale line: confirmed here or imported. Read-only."/>
                   </WrapPanel>
                 
                 </StackPanel>
@@ -931,8 +936,19 @@
                   <TextBlock x:Name="ConfirmedEmpty" DockPanel.Dock="Top" FontSize="12" Visibility="Collapsed"
                              Foreground="{DynamicResource TextMutedBrush}"
                              Text="No sales confirmed today yet. Confirmed sales appear here and on the Invoices page."/>
-                  <ScrollViewer x:Name="ConfirmedScroll" VerticalScrollBarVisibility="Auto" MaxHeight="150">
-                    <ItemsControl x:Name="ConfirmedList">
+                  <ItemsControl x:Name="ConfirmedList" MaxHeight="150"
+                                VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                                ScrollViewer.CanContentScroll="True">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate><VirtualizingStackPanel/></ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                      <ItemsControl.Template>
+                        <ControlTemplate TargetType="ItemsControl">
+                          <ScrollViewer VerticalScrollBarVisibility="Auto" CanContentScroll="True" Focusable="False">
+                            <ItemsPresenter/>
+                          </ScrollViewer>
+                        </ControlTemplate>
+                      </ItemsControl.Template>
                       <ItemsControl.ItemTemplate>
                         <DataTemplate>
                           <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="0,5">
@@ -954,7 +970,7 @@
                               <TextBlock Grid.Column="4" Text="{Binding CaratsSold, StringFormat='{}{0:N2} ct'}" VerticalAlignment="Center"/>
                               <TextBlock Grid.Column="5" Text="{Binding AmountTotal, Converter={StaticResource Money}}"
                                          FontWeight="SemiBold" VerticalAlignment="Center"/>
-                              <TextBlock Grid.Column="6" Text="{Binding InvoiceDate, StringFormat=dd MMM}" VerticalAlignment="Center"
+                              <TextBlock Grid.Column="6" Text="{Binding InvoiceDate, StringFormat=dd MMM yyyy}" VerticalAlignment="Center"
                                          Foreground="{DynamicResource TextMutedBrush}"/>
                               <Button Grid.Column="7" Content="Open" Tag="{Binding InvoiceNo}" Click="ConfirmedOpen_Click"
                                       Style="{StaticResource GhostButton}" Padding="10,2" FontSize="12"
@@ -963,8 +979,7 @@
                           </Border>
                         </DataTemplate>
                       </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                  </ScrollViewer>
+                  </ItemsControl>
                 </DockPanel>
               </Border>
 
@@ -1141,6 +1156,7 @@
             <!-- VisibleLines, not Lines: the filtered page. The SAME SaleLine objects, so a cell
                  edited here edits the invoice; only which of them are on screen changes. -->
             <DataGrid x:Name="Grid" ItemsSource="{Binding VisibleLines}" IsReadOnly="False" CurrentCellChanged="Grid_CurrentCellChanged"
+                    BeginningEdit="Grid_BeginningEdit"
                     Visibility="{Binding Source={x:Static local:Catalogue.Grades}, Path=Count, Converter={StaticResource Empty}, ConverterParameter=Invert}"
                     CanUserAddRows="False" CanUserDeleteRows="False" SelectionUnit="Cell"
                     CanUserSortColumns="False"
@@ -1153,9 +1169,67 @@
             <!-- A cell takes the first click to become current and only edits on the second, so on
                  a fresh screen the first figure typed goes nowhere. On a keyboard-first entry
                  screen that is a silent data loss, not a nicety. -->
+            <DataGrid.Resources>
+              <Style x:Key="RowIcon" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+                <Setter Property="Width" Value="26"/>
+                <Setter Property="Height" Value="26"/>
+                <Setter Property="MinWidth" Value="0"/>
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="Margin" Value="1,0"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+                <Style.Triggers>
+                  <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.35"/>
+                  </Trigger>
+                </Style.Triggers>
+              </Style>
+              <Style x:Key="RowIconNotNew" TargetType="Button" BasedOn="{StaticResource RowIcon}">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding EntryStatus}" Value="New">
+                    <Setter Property="IsEnabled" Value="False"/>
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+              <!-- Confirm and Print memo: a Ready line only. Anything else is still to fix. -->
+              <Style x:Key="RowIconReadyOnly" TargetType="Button" BasedOn="{StaticResource RowIcon}">
+                <Setter Property="IsEnabled" Value="False"/>
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding EntryStatus}" Value="Added">
+                    <Setter Property="IsEnabled" Value="True"/>
+                    <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+              <!-- Edit: not on an imported (already confirmed) sale. -->
+              <Style x:Key="RowIconNotImported" TargetType="Button" BasedOn="{StaticResource RowIcon}">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding IsConfirmedSale}" Value="True">
+                    <Setter Property="IsEnabled" Value="False"/>
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+              <!-- Print memo: a Ready line, or a confirmed (imported) one. -->
+              <Style x:Key="RowIconPrint" TargetType="Button" BasedOn="{StaticResource RowIconReadyOnly}">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding EntryStatus}" Value="Confirmed">
+                    <Setter Property="IsEnabled" Value="True"/>
+                    <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </DataGrid.Resources>
             <DataGrid.CellStyle>
               <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
                 <EventSetter Event="PreviewMouseLeftButtonDown" Handler="Cell_Down"/>
+                <Style.Triggers>
+                  <!-- An imported sale is already confirmed: its figures cannot be clicked into. The
+                       tick and Action columns have their own cell style, so they stay usable. -->
+                  <DataTrigger Binding="{Binding IsConfirmedSale}" Value="True">
+                    <Setter Property="IsHitTestVisible" Value="False"/>
+                    <Setter Property="Focusable" Value="False"/>
+                  </DataTrigger>
+                </Style.Triggers>
               </Style>
             </DataGrid.CellStyle>
             <DataGrid.RowStyle>
@@ -1176,6 +1250,7 @@
                 <DataTrigger Binding="{Binding EntryStatus}" Value="New">
                   <Setter Property="Opacity" Value="0.55"/>
                 </DataTrigger>
+
                 <Trigger Property="IsKeyboardFocusWithin" Value="True">
                   <Setter Property="Opacity" Value="1"/>
                 </Trigger>
@@ -1206,12 +1281,17 @@
                         <Setter TargetName="GroupLabel" Property="Foreground" Value="{DynamicResource AccentBrush}"/>
                                   </DataTrigger>
                       <DataTrigger Binding="{Binding Name}" Value="DRAFT">
-                        <Setter TargetName="GroupLabel" Property="Text" Value="DRAFT"/>
-                        <Setter TargetName="GroupLabel" Property="Foreground" Value="{DynamicResource WarningBrush}"/>
-                        <Setter TargetName="GroupHint" Property="Text" Value="  ·  not confirmed until complete"/>
+                        <Setter TargetName="GroupLabel" Property="Text" Value="FIX"/>
+                        <Setter TargetName="GroupLabel" Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+                        <Setter TargetName="GroupHint" Property="Text" Value="  ·  not confirmed until fixed"/>
                       </DataTrigger>
                       <DataTrigger Binding="{Binding Name}" Value="NEW">
                         <Setter TargetName="GroupHead" Property="Visibility" Value="Collapsed"/>
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding Name}" Value="CONFIRMED">
+                        <Setter TargetName="GroupLabel" Property="Text" Value="CONFIRMED"/>
+                        <Setter TargetName="GroupLabel" Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+                        <Setter TargetName="GroupHint" Property="Text" Value="  ·  imported sales, read-only"/>
                       </DataTrigger>
                     </DataTemplate.Triggers>
                   </DataTemplate>
@@ -1263,37 +1343,86 @@
                          ticked, blank or not. -->
                     <CheckBox IsChecked="{Binding Selected, UpdateSourceTrigger=PropertyChanged}"
                               Click="TickLine_Click"
-                              Style="{StaticResource FieldCheckBox}"
                               HorizontalAlignment="Center" VerticalAlignment="Center"
-                              AutomationProperties.Name="Select this line"/>
+                              AutomationProperties.Name="Select this line">
+                      <CheckBox.Style>
+                        <Style TargetType="CheckBox" BasedOn="{StaticResource FieldCheckBox}"/>
+                      </CheckBox.Style>
+                    </CheckBox>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <!-- ACTION (Nov 2026): Print memo first, then Remark, Edit, Remove and Confirm for THIS
+                   line. Same handlers as before; Tag is the line. A Confirmed row shows Print memo only
+                   (it prints that invoice). Confirm and Print light up on a Ready line. -->
+              <DataGridTemplateColumn Header="Action" Width="146" MinWidth="146" CanUserResize="False">
+                <DataGridTemplateColumn.CellStyle>
+                  <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
+                    <Setter Property="Padding" Value="2,0"/>
+                  </Style>
+                </DataGridTemplateColumn.CellStyle>
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                      <Button Click="PrintMemo_Click" Tag="{Binding}" ToolTip="Print memo for this line"
+                              AutomationProperties.Name="Print memo for this line" ToolTipService.ShowOnDisabled="True"
+                              Style="{StaticResource RowIconPrint}">
+                        <Path Style="{StaticResource ActionIcon}" Width="13" Height="13" Data="{StaticResource IconMemo}"/>
+                      </Button>
+                      <StackPanel Orientation="Horizontal">
+                        <StackPanel.Style>
+                          <Style TargetType="StackPanel">
+                            <Style.Triggers>
+                              <DataTrigger Binding="{Binding IsConfirmedSale}" Value="True">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                              </DataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </StackPanel.Style>
+                        <Button Click="RemarkIcon_Click" Tag="{Binding}" ToolTipService.ShowOnDisabled="True"
+                                AutomationProperties.Name="Remark">
+                          <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource RowIcon}">
+                              <Setter Property="ToolTip" Value="Add a remark"/>
+                              <Style.Triggers>
+                                <!-- a remark is there: the icon is coloured and the tooltip shows it -->
+                                <DataTrigger Binding="{Binding Remark, Converter={StaticResource Empty}}" Value="Collapsed">
+                                  <Setter Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+                                  <Setter Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
+                                  <Setter Property="ToolTip" Value="{Binding Remark}"/>
+                                </DataTrigger>
+                              </Style.Triggers>
+                            </Style>
+                          </Button.Style>
+                          <Path Style="{StaticResource ActionIcon}" Width="13" Height="13" Data="{StaticResource IconRemark}"/>
+                        </Button>
+                        <Button Click="EditSale_Click" Tag="{Binding}" ToolTip="Edit this sale"
+                                AutomationProperties.Name="Edit this sale" ToolTipService.ShowOnDisabled="True"
+                                Style="{StaticResource RowIconNotImported}">
+                          <Path Style="{StaticResource ActionIcon}" Width="13" Height="13" Data="{StaticResource IconEdit}"/>
+                        </Button>
+                        <Button Click="RemoveLine_Click" Tag="{Binding}" ToolTip="Remove this line"
+                                AutomationProperties.Name="Remove this line" ToolTipService.ShowOnDisabled="True"
+                                Style="{StaticResource RowIconNotNew}"
+                                Foreground="{DynamicResource DangerBrush}">
+                          <Path Style="{StaticResource ActionIcon}" Width="13" Height="13" Data="{StaticResource IconRemove}"/>
+                        </Button>
+                        <Button Click="Post_Click" Tag="{Binding}" ToolTip="Confirm this line"
+                                AutomationProperties.Name="Confirm this line" ToolTipService.ShowOnDisabled="True"
+                                Style="{StaticResource RowIconReadyOnly}">
+                          <Path Style="{StaticResource ActionIcon}" Width="13" Height="13" Data="{StaticResource IconConfirm}"/>
+                        </Button>
+                      </StackPanel>
+                    </StackPanel>
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
               <!-- STATUS (Nov 2026): Draft / Fix / Added, from SaleLine.EntryStatus: the same
                    checks Confirm sale runs, so the badge and the button agree. Display only. -->
-              <DataGridTemplateColumn Header="Status" Width="86" MinWidth="86" CanUserResize="False">
+              <DataGridTemplateColumn Header="Status" Width="104" MinWidth="104" CanUserResize="False">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
                     <StackPanel Orientation="Horizontal">
-                    <!-- The stripe: blue Ready, amber Draft, red Fix, grey New. -->
-                    <Border Width="4" Height="22" CornerRadius="2" Margin="0,0,8,0" VerticalAlignment="Center">
-                      <Border.Style>
-                        <Style TargetType="Border">
-                          <Setter Property="Background" Value="{DynamicResource BorderBrush}"/>
-                          <Style.Triggers>
-                            <DataTrigger Binding="{Binding EntryStatus}" Value="Added">
-                              <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding EntryStatus}" Value="Draft">
-                              <Setter Property="Background" Value="{DynamicResource WarningBrush}"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding EntryStatus}" Value="Fix">
-                              <Setter Property="Background" Value="{DynamicResource DangerBrush}"/>
-                            </DataTrigger>
-                          </Style.Triggers>
-                        </Style>
-                      </Border.Style>
-                    </Border>
                     <Border CornerRadius="9" Padding="7,1" HorizontalAlignment="Left" VerticalAlignment="Center"
                             ToolTip="{Binding EntryStatusTip}">
                       <Border.Style>
@@ -1309,34 +1438,86 @@
                                 <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
                               </DataTrigger>
                               <DataTrigger Binding="{Binding EntryStatus}" Value="Draft">
-                                <Setter Property="Background" Value="{DynamicResource WarningSoftBrush}"/>
+                                <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
                               </DataTrigger>
                               <DataTrigger Binding="{Binding EntryStatus}" Value="Fix">
                                 <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}"/>
                               </DataTrigger>
+                              <DataTrigger Binding="{Binding EntryStatus}" Value="Confirmed">
+                                <Setter Property="Background" Value="{DynamicResource SuccessSoftBrush}"/>
+                              </DataTrigger>
                           </Style.Triggers>
                         </Style>
                       </Border.Style>
-                      <TextBlock Text="{Binding EntryStatus}" FontSize="11" FontWeight="SemiBold">
+                      <!-- Words on screen (Nov 2026): Added reads Ready, and Draft reads Fix; the table
+                           shows New, Fix and Ready only. EntryStatus itself is unchanged. -->
+                      <TextBlock FontSize="11" FontWeight="SemiBold">
                         <TextBlock.Style>
                           <Style TargetType="TextBlock">
+                            <Setter Property="Text" Value="{Binding EntryStatus}"/>
                             <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
                             <Style.Triggers>
                               <DataTrigger Binding="{Binding EntryStatus}" Value="Added">
+                                <Setter Property="Text" Value="Ready"/>
                                 <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
                               </DataTrigger>
                               <DataTrigger Binding="{Binding EntryStatus}" Value="Draft">
-                                <Setter Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+                                <Setter Property="Text" Value="Fix"/>
+                                <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
                               </DataTrigger>
                               <DataTrigger Binding="{Binding EntryStatus}" Value="Fix">
                                 <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+                              </DataTrigger>
+                              <DataTrigger Binding="{Binding EntryStatus}" Value="Confirmed">
+                                <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
                               </DataTrigger>
                             </Style.Triggers>
                           </Style>
                         </TextBlock.Style>
                       </TextBlock>
                     </Border>
+                    <!-- (i) on a line still to fix (Nov 2026): click it for what is wrong and how to fix it. -->
+                    <Button Click="FixInfo_Click" Tag="{Binding}" Margin="4,0,0,0" Width="20" Height="20"
+                            MinWidth="0" Padding="0" Cursor="Hand" VerticalAlignment="Center"
+                            ToolTip="{Binding StatusReason}" AutomationProperties.Name="Why this line needs fixing">
+                      <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource GhostButton}">
+                          <Setter Property="Visibility" Value="Collapsed"/>
+                          <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding StatusGroup}" Value="DRAFT">
+                              <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </Button.Style>
+                      <TextBlock Text="&#x24D8;" FontSize="15" FontWeight="SemiBold" Margin="0,-2,0,0"/>
+                    </Button>
                   </StackPanel>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <!-- ENTRY TYPE (Nov 2026): Imported Sale (MIG-, already confirmed) or Manually Added Sale. -->
+              <DataGridTemplateColumn Header="Entry Type" Width="118" MinWidth="118" CanUserResize="False">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding EntryType}" FontSize="11.5" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" ToolTip="{Binding SourceInvoiceNo}">
+                      <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                          <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsImported}" Value="True">
+                              <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+                              <Setter Property="FontWeight" Value="SemiBold"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding EntryStatus}" Value="New">
+                              <Setter Property="Text" Value=""/>
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </TextBlock.Style>
+                    </TextBlock>
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
@@ -1549,158 +1730,80 @@
                    the row's height with it. 200* and a floor of 150. The star weight only shares
                    out spare width, so it costs no other column anything; the floor adds 70px to
                    the table's total, which the horizontal scrollbar already handles. -->
-              <DataGridTemplateColumn Header="Remark" Width="200*" MinWidth="106">
+
+              <!-- THE DEAL, ONE COLUMN EACH (Nov 2026; was one "Deal Details" summary). Read-only here:
+                   Edit opens the sale to change them. -->
+              <DataGridTemplateColumn Header="Date" Width="92" MinWidth="92" CanUserResize="True">
                 <DataGridTemplateColumn.CellTemplate>
                   <DataTemplate>
-                    <Grid>
-                      <!-- WRAPS, and the row grows with it (see the row style above). A
-                           single-line box can only ever show one column's worth of a remark, so a
-                           long one was cut whichever end you looked at: scrolled to its tail after
-                           typing, and to its head after LostFocus sent it home. Neither is the
-                           value. Wrapping shows all of it, at the cost of a taller row on the lines
-                           that carry one — which is the honest trade, since the alternative is a
-                           field that quietly hides what it holds.
-
-                           AcceptsReturn stays FALSE: Enter belongs to the grid, where it adds the
-                           next line. LostFocus still goes home, which now only matters for a remark
-                           too long even to wrap inside the row. -->
-                      <TextBox Text="{Binding Remark, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center"
-                               Style="{StaticResource CellTextBox}"
-                               TextWrapping="Wrap" AcceptsReturn="False"
-                               Height="Auto" MinHeight="28" VerticalContentAlignment="Center"
-                               LostFocus="RemarkBox_LostFocus"
-                               AutomationProperties.Name="Remark"
-                               ToolTip="{Binding Remark}"/>
-                      <TextBlock Text="Add a remark" Style="{StaticResource CellPlaceholder}" Margin="9,0,0,0"
-                                 Visibility="{Binding Remark, Converter={StaticResource Empty}}"/>
-                    </Grid>
+                    <TextBlock Text="{Binding DealDate, StringFormat=dd-MM-yyyy}" FontSize="12" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"/>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Header="Buyer" Width="150*" MinWidth="150" CanUserResize="True">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding DealBuyerName}" FontSize="12" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" FontWeight="SemiBold" ToolTip="{Binding DealBuyerName}">
+                    <TextBlock.Style>
+                      <Style TargetType="TextBlock">
+                        <Style.Triggers>
+                          <!-- sales_invoice.buyer_id is NOT NULL: a line without one cannot be written. -->
+                          <DataTrigger Binding="{Binding HasBuyer}" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+                          </DataTrigger>
+                          <DataTrigger Binding="{Binding EntryStatus}" Value="New">
+                            <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </TextBlock.Style>
+                  </TextBlock>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Header="Broker" Width="120*" MinWidth="120" CanUserResize="True">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding DealBrokerName}" FontSize="12" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" ToolTip="{Binding DealBrokerName}"/>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Header="Broker %" Width="74" MinWidth="74" CanUserResize="True">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding DealBrokerPct, StringFormat=0.##}" FontSize="12" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"/>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Header="Terms" Width="64" MinWidth="64" CanUserResize="True">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding DealTermsDays, StringFormat={}{0} d}" FontSize="12" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"/>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Header="Type" Width="96" MinWidth="96" CanUserResize="True">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding DealDocType}" FontSize="12" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"/>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Header="Due Date" Width="92" MinWidth="92" CanUserResize="True">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding DealDueDate, StringFormat=dd-MM-yyyy}" FontSize="12" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"/>
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
 
-              <!-- ── DEAL DETAILS ────────────────────────────────────────────────
-                   Who this row is sold to and on what terms, as a summary rather than as six more
-                   columns. Six would have taken 700px off a table that already has eleven, and the
-                   deal is read far more often than it is changed.
-
-                   READ-ONLY HERE, on purpose. Every field is edited in the drawer, so there is one
-                   place the deal can be changed and one place to look when it is wrong — and a
-                   half-typed buyer in a grid cell cannot leave a row sold to nobody.
-
-                   The buyer line turns red and reads "No buyer" when there is none: sales_invoice
-                   .buyer_id is NOT NULL, so that row cannot be written at all, and a blank cell
-                   would have looked merely unfilled rather than blocking. -->
-              <DataGridTemplateColumn Header="Deal Details" Width="132" MinWidth="132"
-                                      CanUserResize="False" SortMemberPath="DealSummary">
-                <DataGridTemplateColumn.CellStyle>
-                  <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
-                    <Setter Property="Padding" Value="8,3"/>
-                  </Style>
-                </DataGridTemplateColumn.CellStyle>
-                <DataGridTemplateColumn.CellTemplate>
-                  <DataTemplate>
-                    <!-- TWO LINES, not three. Buyer on top; broker and terms folded onto one line
-                         under it. Three stacked lines wanted about 48px in a 42px row, so the
-                         third was sliced through the middle and the deal became the one column on
-                         this screen you could not read. The whole of it is still on the tooltip.
-
-                         Every text block trims rather than clips, so a long buyer name ends in an
-                         ellipsis you can hover instead of a letter cut in half. -->
-                    <Grid ToolTip="{Binding DealSummary}">
-                      <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
-                      </Grid.ColumnDefinitions>
-
-                      <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding DealBuyerName}" FontWeight="SemiBold" FontSize="12"
-                                   TextTrimming="CharacterEllipsis" LineHeight="15"
-                                   LineStackingStrategy="BlockLineHeight"
-                                   Foreground="{DynamicResource TextBrush}"
-                                   AutomationProperties.Name="Buyer on this line">
-                          <TextBlock.Style>
-                            <Style TargetType="TextBlock">
-                              <Style.Triggers>
-                                <!-- sales_invoice.buyer_id is NOT NULL, so a row without one
-                                     cannot be written at all. Red, and named, rather than blank. -->
-                                <DataTrigger Binding="{Binding HasBuyer}" Value="False">
-                                  <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
-                                </DataTrigger>
-                                <!-- Not on the empty New row: nothing typed yet is not a missing buyer. Later, so it wins. -->
-                                <DataTrigger Binding="{Binding EntryStatus}" Value="New">
-                                  <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
-                                </DataTrigger>
-                              </Style.Triggers>
-                            </Style>
-                          </TextBlock.Style>
-                        </TextBlock>
-                        <TextBlock Text="{Binding DealLine2}" FontSize="10.5"
-                                   TextTrimming="CharacterEllipsis" LineHeight="14"
-                                   LineStackingStrategy="BlockLineHeight"
-                                   Foreground="{DynamicResource TextMutedBrush}"/>
-                      </StackPanel>
-
-                      <!-- Tag, not CommandParameter: these rows are a plain ObservableCollection
-                           with no command surface, and Tag is what every other row action on this
-                           grid already uses to say which line it belongs to. -->
-                      <Button Grid.Column="1" Tag="{Binding}"
-                              Click="EditDeal_Click" VerticalAlignment="Center" Margin="6,0,0,0"
-                              Padding="8,2" MinWidth="42" FontSize="11"
-                              AutomationProperties.Name="Edit deal details for this line"
-                              ToolTip="Date, buyer, broker, terms and type for THIS line only">
-                        <!-- "Set buyer" where a typed line has none (Nov 2026); "Edit" everywhere else. -->
-                        <Button.Style>
-                          <Style TargetType="Button" BasedOn="{StaticResource GhostButton}">
-                            <Setter Property="Content" Value="Edit"/>
-                            <Style.Triggers>
-                              <MultiDataTrigger>
-                                <MultiDataTrigger.Conditions>
-                                  <Condition Binding="{Binding HasBuyer}" Value="False"/>
-                                  <Condition Binding="{Binding StatusGroup}" Value="DRAFT"/>
-                                </MultiDataTrigger.Conditions>
-                                <Setter Property="Content" Value="Set buyer"/>
-                                <Setter Property="FontWeight" Value="SemiBold"/>
-                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
-                              </MultiDataTrigger>
-                            </Style.Triggers>
-                          </Style>
-                        </Button.Style>
-                      </Button>
-                    </Grid>
-                  </DataTemplate>
-                </DataGridTemplateColumn.CellTemplate>
-              </DataGridTemplateColumn>
-
-              <!-- ACTION, back on request (Nov 2026): Print memo, Confirm and Remove for THIS row,
-                   as compact icons with tooltips. The header buttons stay for the ticked lines (or
-                   all lines). 90px with 26px icons so the table still fits the card. -->
-              <DataGridTemplateColumn Header="" Width="46" MinWidth="46"
-                                      CanUserResize="False">
-                <DataGridTemplateColumn.CellStyle>
-                  <Style TargetType="DataGridCell" BasedOn="{StaticResource AppCell}">
-                    <Setter Property="Padding" Value="0"/>
-                  </Style>
-                </DataGridTemplateColumn.CellStyle>
-                <DataGridTemplateColumn.CellTemplate>
-                  <DataTemplate>
-                    <!-- ONE MENU PER ROW (Nov 2026): Print memo, Confirm and Remove for THIS line, the same
-                         handlers the three icons used (Tag is the line). The header buttons stay. -->
-                    <Button Click="RowMenu_Click" Style="{StaticResource DashButton}" Height="26" Width="34"
-                            MinWidth="0" Padding="0" HorizontalAlignment="Center" VerticalAlignment="Center"
-                            ToolTip="Actions for this line" AutomationProperties.Name="Actions for this line">
-                      <TextBlock Text="&#x22EF;" FontSize="16" FontWeight="Bold" Margin="0,-4,0,0"/>
-                      <Button.ContextMenu>
-                        <ContextMenu>
-                          <MenuItem Header="Print memo for this line" Tag="{Binding}" Click="PrintMemo_Click"/>
-                          <MenuItem Header="Confirm this line" Tag="{Binding}" Click="Post_Click"/>
-                          <Separator/>
-                          <MenuItem Header="Remove this line" Tag="{Binding}" Click="RemoveLine_Click"
-                                    Foreground="{DynamicResource DangerBrush}"/>
-                        </ContextMenu>
-                      </Button.ContextMenu>
-                    </Button>
-                  </DataTemplate>
-                </DataGridTemplateColumn.CellTemplate>
-              </DataGridTemplateColumn>
                           </DataGrid.Columns>
             </DataGrid>
 
@@ -1729,7 +1832,7 @@
             <TextBlock Style="{StaticResource EmptyHint}"
                        VerticalAlignment="Top" Margin="12,96,12,0"
                        Visibility="{Binding EntriesStarted, Converter={StaticResource Empty}}"
-                       Text="Press Add sale to pick the buyer and type the lines — or type straight into the New row above and press Edit to set its buyer.&#10;Enter adds a line · tick lines only to act on some of them · Delete removes a line · Ctrl+P prints a memo"/>
+                       Text="Press Add sale to pick the buyer and type the lines.&#10;Tick lines only to act on some of them · Ctrl+P prints a memo · View Draft holds the sales saved as draft"/>
 
             <!-- With no catalogue the Grade and Size dropdowns open onto nothing, which reads as
                  "this app is broken" rather than "it could not reach the database" — and a line can
@@ -1770,7 +1873,7 @@
                  table keeps its width; the drawer covers Remark / Deal Details / the menu, which are
                  the columns this drawer is editing anyway, and the line's own figures stay in view. -->
             <Border x:Name="DealDrawer" Grid.Column="0" Grid.ColumnSpan="3" HorizontalAlignment="Right"
-                    Width="380" Panel.ZIndex="10" Style="{StaticResource DashCard}"
+                    Width="420" Panel.ZIndex="10" Style="{StaticResource DashCard}"
                     Visibility="Collapsed" DataContext="{Binding DealDraft, RelativeSource={RelativeSource AncestorType=Window}}">
               <Border.Effect>
                 <DropShadowEffect BlurRadius="24" ShadowDepth="4" Direction="270" Opacity="0.22"/>
@@ -1778,9 +1881,9 @@
               <DockPanel>
                 <Grid DockPanel.Dock="Top" Margin="0,0,0,14">
                   <StackPanel>
-                    <TextBlock x:Name="DealDrawerTitle" Text="Deal Details"
+                    <TextBlock x:Name="DealDrawerTitle" Text="Edit line"
                                Style="{StaticResource DashHeading}"/>
-                    <TextBlock Text="Who this line is sold to, and on what terms. Save details writes them onto this line (and onto any line that has no buyer yet). Lines with the same deal become one invoice."
+                    <TextBlock Text="Every field of this line, and who it is sold to. Save writes them onto this line (the deal also goes onto any line that has no buyer yet). Lines with the same deal become one invoice."
                                Style="{StaticResource DashSubheading}" TextWrapping="Wrap" Margin="0,2,0,0"/>
                   </StackPanel>
                   <Button x:Name="DealDrawerClose" Click="CancelDeal_Click"
@@ -1803,7 +1906,7 @@
                     <Button x:Name="DealCancel" Content="Cancel" Click="CancelDeal_Click"
                             MinWidth="92" Margin="0,0,8,0" IsCancel="True"
                             AutomationProperties.HelpText="Closes the drawer and leaves the line as it was"/>
-                    <Button x:Name="DealSave" Content="Save Details" Click="SaveDeal_Click"
+                    <Button x:Name="DealSave" Content="Save" Click="SaveDeal_Click"
                             MinWidth="118" IsDefault="True"
                             Style="{StaticResource AppPrimaryButton}"
                             AutomationProperties.HelpText="Writes these values onto the selected line"/>
@@ -1827,6 +1930,124 @@
                          simply a different invoice — nothing had to change to express it. The
                          header's Date still seeds every new row, so an entry written on one day
                          goes on behaving as one date unless a line is deliberately moved. -->
+                    <!-- THE LINE ITSELF (Nov 2026): every field the table shows, one per box, edited on
+                         the same copy as the deal and written to the line only on Save. Rej ct and
+                         Amount are worked out as you type, the same way the table does it. -->
+                    <TextBlock Text="LINE" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,10"
+                               Foreground="{DynamicResource TextBrush}"/>
+                    <Grid Margin="0,0,0,12">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="*"/>
+                      </Grid.ColumnDefinitions>
+                      <StackPanel Grid.Column="0">
+                        <TextBlock Text="SIZE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                        <ComboBox x:Name="EditSizePicker" Height="34" TabIndex="0"
+                                  ItemsSource="{Binding AllowedSizes}" SelectedItem="{Binding Size}"
+                                  ItemTemplate="{StaticResource SizeCodeTemplate}"
+                                  IsTextSearchEnabled="True" TextSearch.TextPath="ShortName"
+                                  PreviewMouseWheel="NoWheelChange" AutomationProperties.Name="Size"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="2">
+                        <TextBlock Text="GRADE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                        <ComboBox x:Name="EditGradePicker" Height="34" TabIndex="0"
+                                  ItemsSource="{Binding Source={x:Static local:Catalogue.SellableGrades}}"
+                                  SelectedItem="{Binding Grade}"
+                                  ItemTemplate="{StaticResource GradeNameTemplate}"
+                                  IsTextSearchEnabled="True" TextSearch.TextPath="ShortName"
+                                  PreviewMouseWheel="NoWheelChange" AutomationProperties.Name="Grade"/>
+                      </StackPanel>
+                    </Grid>
+                    <Grid Margin="0,0,0,12">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="*"/>
+                      </Grid.ColumnDefinitions>
+                      <StackPanel Grid.Column="0">
+                        <TextBlock Text="WT CT" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                        <TextBox x:Name="EditWeight" Height="34" TabIndex="0"
+                                 Text="{Binding GrossWeightCt, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource AppNumericTextBox}"
+                                 AutomationProperties.Name="WT CT"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="2">
+                        <TextBlock Text="SEL CT" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                        <TextBox x:Name="EditSelection" Height="34" TabIndex="0"
+                                 Text="{Binding SelectionCt, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource AppNumericTextBox}"
+                                 AutomationProperties.Name="SEL CT"/>
+                      </StackPanel>
+                    </Grid>
+                    <Grid Margin="0,0,0,12">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="*"/>
+                      </Grid.ColumnDefinitions>
+                      <StackPanel Grid.Column="0">
+                        <TextBlock Text="REJ CT" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                        <TextBox x:Name="EditRejection" Height="34" IsReadOnly="True" Focusable="False" Background="{DynamicResource Surface2Brush}"
+                                 Text="{Binding RejectionCt, StringFormat=N2, Mode=OneWay}"
+                                 Style="{StaticResource AppNumericTextBox}"
+                                 AutomationProperties.Name="REJ CT"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="2">
+                        <TextBlock Text="PRICE / CT" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                        <TextBox x:Name="EditPrice" Height="34" TabIndex="0"
+                                 Text="{Binding PricePerCt, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource AppNumericTextBox}"
+                                 AutomationProperties.Name="PRICE / CT"/>
+                      </StackPanel>
+                    </Grid>
+                    <Grid Margin="0,0,0,12">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="*"/>
+                      </Grid.ColumnDefinitions>
+                      <StackPanel Grid.Column="0">
+                        <TextBlock Text="EX RATE" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                        <TextBox x:Name="EditEx" Height="34" TabIndex="0"
+                                 Text="{Binding ExRate, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource AppNumericTextBox}"
+                                 AutomationProperties.Name="EX RATE"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="2">
+                        <TextBlock Text="LESS 1 %" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                        <TextBox x:Name="EditLess1" Height="34" TabIndex="0"
+                                 Text="{Binding Less1Pct, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource AppNumericTextBox}"
+                                 AutomationProperties.Name="LESS 1 %"/>
+                      </StackPanel>
+                    </Grid>
+                    <Grid Margin="0,0,0,12">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="*"/>
+                      </Grid.ColumnDefinitions>
+                      <StackPanel Grid.Column="0">
+                        <TextBlock Text="LESS 2 %" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                        <TextBox x:Name="EditLess2" Height="34" TabIndex="0"
+                                 Text="{Binding Less2Pct, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource AppNumericTextBox}"
+                                 AutomationProperties.Name="LESS 2 %"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="2">
+                        <TextBlock Text="AMOUNT" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                        <TextBox x:Name="EditAmount" Height="34" IsReadOnly="True" Focusable="False" Background="{DynamicResource Surface2Brush}"
+                                 Text="{Binding Amount, StringFormat=N2, Mode=OneWay}"
+                                 Style="{StaticResource AppNumericTextBox}"
+                                 AutomationProperties.Name="AMOUNT"/>
+                      </StackPanel>
+                    </Grid>
+                    <TextBlock Text="REMARK" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
+                    <TextBox x:Name="EditRemark" MinHeight="34" Margin="0,0,0,4" TabIndex="0"
+                             Text="{Binding Remark, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource AppTextBox}" TextWrapping="Wrap" AcceptsReturn="False"
+                             AutomationProperties.Name="Remark"/>
+                    <TextBlock x:Name="EditLineProblem" FontSize="11" Margin="0,0,0,4" TextWrapping="Wrap"
+                               Foreground="{DynamicResource DangerBrush}" Text="{Binding Error}"
+                               Visibility="{Binding Error, Converter={StaticResource Empty}, ConverterParameter=Invert}"/>
+                    <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Margin="0,8,0,12"/>
+
                     <TextBlock Text="WHO AND WHEN" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,10"
                                Foreground="{DynamicResource TextBrush}"/>
                     <TextBlock Text="DATE (the invoice date)" Style="{StaticResource KpiLabel}" Margin="0,0,0,5"/>
@@ -2089,6 +2310,8 @@
                            it the star width left a wide empty gutter while long buyer names were
                            clipped. -->
                       <DataGridTextColumn x:Name="ColBuyer" Header="BUYER" Binding="{Binding BuyerName}" Width="*" MinWidth="160"/>
+                      <!-- BROKER beside the buyer (Nov 2026). -->
+                      <DataGridTextColumn Header="BROKER" Binding="{Binding BrokerName, TargetNullValue=No broker}" Width="130" MinWidth="110"/>
                       <!-- ClipboardContentBinding is what CSV export reads. Without it the column
                            is skipped and a CANCELLED invoice exports as though it were POSTED. -->
                       <DataGridTemplateColumn Header="STATUS" Width="110" MinWidth="110" SortMemberPath="Outstanding"
@@ -2103,6 +2326,20 @@
                       <DataGridTextColumn Header="AMOUNT" Binding="{Binding AmountTotal, Converter={StaticResource Money}}" Width="135" MinWidth="135" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
                       <DataGridTextColumn x:Name="ColOutstanding" Header="OUTSTANDING" Binding="{Binding Outstanding, Converter={StaticResource Money}}" Width="135" MinWidth="135" ElementStyle="{StaticResource Num}" HeaderStyle="{StaticResource AppNumericHeader}"/>
                       <DataGridTextColumn x:Name="ColDue" Header="DUE" Binding="{Binding DueDate, StringFormat=dd-MM-yyyy}" Width="95" MinWidth="95"/>
+                      <!-- BROKER and ACTION (Nov 2026). Action prints this invoice's memo, the same
+                           print as Print bill in the drawer. -->
+                      <DataGridTemplateColumn Header="ACTION" Width="70" MinWidth="70" CanUserResize="False">
+                        <DataGridTemplateColumn.CellTemplate>
+                          <DataTemplate>
+                            <Button Click="PrintInvoiceRow_Click" Tag="{Binding}" Style="{StaticResource GhostButton}"
+                                    Width="26" Height="26" MinWidth="0" Padding="0" Cursor="Hand"
+                                    HorizontalAlignment="Left" Foreground="{DynamicResource AccentBrush}"
+                                    ToolTip="Print memo for this invoice" AutomationProperties.Name="Print memo for this invoice">
+                              <Path Style="{StaticResource ActionIcon}" Width="13" Height="13" Data="{StaticResource IconMemo}"/>
+                            </Button>
+                          </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                      </DataGridTemplateColumn>
                     </DataGrid.Columns>
                   </DataGrid>
 
@@ -2260,56 +2497,52 @@
                 <ItemsControl x:Name="InvoiceFacts" ItemTemplate="{StaticResource DetailFactRow}"
                               Margin="0,0,0,12"/>
 
-                <!-- COLLAPSED, card and all. Hiding only the contents left the card itself
-                     drawing: a Surface2 panel with a border, 24px of padding and nothing in it,
-                     sitting under the facts as an empty box. A container whose every child is
-                     hidden must go with them. -->
-                <Border Visibility="Collapsed"
-                        Background="{DynamicResource Surface2Brush}"
+                <!-- ACTIONS ON THE SELECTED INVOICE (Nov 2026): back on request. The handlers never
+                     changed: Receipt_Click, EditDraft_Click (memo opens in Sales entry, a posted
+                     sale in its own Update modal), PrintInvoice_Click and CancelInvoice_Click
+                     (manager or owner, ApplyRolePermissions). -->
+                <!-- Hidden on request (Nov 2026): Update invoice and Print bill are off this drawer
+                     (the Print memo icon on each row prints). Handlers intact. -->
+                <Border Visibility="Collapsed" Background="{DynamicResource Surface2Brush}"
                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                        CornerRadius="10" Padding="12" Margin="0,0,0,0">
+                        CornerRadius="10" Padding="12" Margin="0,0,0,12">
                   <StackPanel>
-                    <!-- RECORD A RECEIPT WAS HERE, and is gone on request.
-                         Its controls stay in the tree, collapsed and out of the tab order, because
-                         they are the only route in this app for booking cash against an invoice —
-                         Receipt_Click, the receipt table, the Received and Outstanding figures on
-                         every screen and the whole Receivables page all hang off them. Deleting the
-                         controls would have meant deleting that path; hiding them takes the card off
-                         this drawer and leaves the receipt to be given a home of its own.
-                         Height 0 as well as Collapsed, so nothing here can claim layout. -->
-                    <Grid Visibility="Collapsed" Height="0">
-                      <TextBox x:Name="ReceiptAmount" IsTabStop="False"
-                               AutomationProperties.Name="Receipt amount"/>
-                      <ComboBox x:Name="ReceiptMethod" SelectedIndex="0" IsTabStop="False"
-                                AutomationProperties.Name="Receipt method">
-                        <ComboBoxItem>CASH</ComboBoxItem><ComboBoxItem>RTGS</ComboBoxItem><ComboBoxItem>CHEQUE</ComboBoxItem>
-                      </ComboBox>
-                      <Button x:Name="RecordReceipt" Content="Record receipt" Click="Receipt_Click"
-                              IsTabStop="False"/>
-                    </Grid>
+                    <StackPanel x:Name="ReceiptPanel">
+                      <TextBlock Text="RECORD RECEIPT" Style="{StaticResource KpiLabel}" Margin="0,0,0,6"/>
+                      <Grid Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/>
+                          <ColumnDefinition Width="96"/><ColumnDefinition Width="8"/>
+                          <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="ReceiptAmount" Grid.Column="0" Height="34"
+                                 Style="{StaticResource AppNumericTextBox}"
+                                 ToolTip="The amount received. Not more than the outstanding."
+                                 AutomationProperties.Name="Receipt amount"/>
+                        <ComboBox x:Name="ReceiptMethod" Grid.Column="2" Height="34" SelectedIndex="0"
+                                  Style="{StaticResource AppComboBox}" PreviewMouseWheel="NoWheelChange"
+                                  AutomationProperties.Name="Receipt method">
+                          <ComboBoxItem>CASH</ComboBoxItem><ComboBoxItem>RTGS</ComboBoxItem><ComboBoxItem>CHEQUE</ComboBoxItem>
+                        </ComboBox>
+                        <Button x:Name="RecordReceipt" Grid.Column="4" Content="Record receipt" Click="Receipt_Click"
+                                Style="{StaticResource DashGoldButton}" Height="34"/>
+                      </Grid>
+                    </StackPanel>
 
-                    <!-- A WrapPanel, not a horizontal StackPanel. The drawer's width is shared with
-                         the invoice list and changes as the window does, and a StackPanel answers
-                         "we do not fit" by running off the edge — which is how Cancel invoice lost
-                         its right-hand half the moment a third button joined the row. Wrapping puts
-                         the overflow on a second line instead. The bottom margin is on the buttons
-                         rather than the panel so a wrapped row does not sit against the one above.
-                         Same reasoning as the Sales entry header (docs/12). -->
-<!-- UPDATE INVOICE, PRINT BILL and CANCEL INVOICE are off this drawer on request,
-                         along with the receipt card above. The drawer is a read-only summary now:
-                         who, when, what it came to, and the lines on it.
-
-                         Kept in the tree, collapsed and untabbable, because their handlers are the
-                         only routes to correcting a posted invoice, printing a bill and reversing
-                         a sale's stock — and every Busy() scope on this page names all three. The
-                         buttons are gone; the paths are intact and can be given a home. -->
-                    <WrapPanel Visibility="Collapsed" Height="0">
+                    <!-- A WrapPanel so a narrow drawer puts a button on a second line instead of
+                         cutting it off. -->
+                    <WrapPanel>
                       <Button x:Name="EditDraftButton" Content="Edit memo" Click="EditDraft_Click"
-                              IsEnabled="False" IsTabStop="False"/>
+                              Style="{StaticResource DashButton}" Margin="0,0,8,6" IsEnabled="False"/>
                       <Button x:Name="PrintBill" Content="Print bill" Click="PrintInvoice_Click"
-                              IsTabStop="False"/>
-                      <Button x:Name="CancelInvoiceButton" Content="Cancel invoice"
-                              Click="CancelInvoice_Click" IsTabStop="False"/>
+                              Style="{StaticResource DashButton}" Margin="0,0,8,6"
+                              ToolTip="Print this invoice on the approval note form"/>
+                      <!-- Hidden for now, on request (Nov 2026). Code intact: remove Visibility to bring it back. -->
+                      <Button x:Name="CancelInvoiceButton" Content="Cancel invoice" Click="CancelInvoice_Click"
+                              Visibility="Collapsed" IsTabStop="False"
+                              Style="{StaticResource DashButton}" Margin="0,0,8,6"
+                              Foreground="{DynamicResource DangerBrush}"
+                              ToolTip="Cancel this invoice and return its carats to stock"/>
                     </WrapPanel>
                   </StackPanel>
                 </Border>
@@ -2857,6 +3090,40 @@
                       <TextBlock x:Name="ReceivablesDetailTotal" Style="{StaticResource KpiValue}" Margin="0"/>
                     </Viewbox>
                     <TextBlock x:Name="ReceivablesDetailMeta" Style="{StaticResource KpiCaption}"/>
+                  </StackPanel>
+                </Border>
+
+                <!-- RECORD PAYMENT (Nov 2026): against the invoice selected in the table. The same
+                     write the hidden Record receipt on Invoices used (Repo.ReceiptAsync), so
+                     Received, Outstanding and Paid/Pending update on every page. -->
+                <Border DockPanel.Dock="Top" Background="{DynamicResource Surface2Brush}"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                        CornerRadius="10" Padding="12,10" Margin="0,0,0,12">
+                  <StackPanel>
+                    <TextBlock Text="RECORD PAYMENT" Style="{StaticResource KpiLabel}"/>
+                    <TextBlock x:Name="PayInvoice" Style="{StaticResource KpiCaption}" Margin="0,2,0,8"
+                               TextWrapping="Wrap"/>
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="100"/>
+                      </Grid.ColumnDefinitions>
+                      <StackPanel Grid.Column="0">
+                        <TextBlock Text="AMOUNT" Style="{StaticResource KpiLabel}" Margin="0,0,0,4"/>
+                        <TextBox x:Name="PayAmount" Height="34" Style="{StaticResource AppNumericTextBox}"
+                                 ToolTip="The amount received. Not more than the outstanding."
+                                 AutomationProperties.Name="Payment amount"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="2">
+                        <TextBlock Text="METHOD" Style="{StaticResource KpiLabel}" Margin="0,0,0,4"/>
+                        <ComboBox x:Name="PayMethod" Height="34" SelectedIndex="0" Style="{StaticResource AppComboBox}"
+                                  PreviewMouseWheel="NoWheelChange" AutomationProperties.Name="Payment method">
+                          <ComboBoxItem>CASH</ComboBoxItem><ComboBoxItem>RTGS</ComboBoxItem><ComboBoxItem>CHEQUE</ComboBoxItem>
+                        </ComboBox>
+                      </StackPanel>
+                    </Grid>
+                    <Button x:Name="RecordPayment" Content="Record payment" Click="RecordPayment_Click"
+                            Style="{StaticResource DashGoldButton}" Margin="0,10,0,0" HorizontalAlignment="Stretch"
+                            AutomationProperties.Name="Record payment"/>
                   </StackPanel>
                 </Border>
 

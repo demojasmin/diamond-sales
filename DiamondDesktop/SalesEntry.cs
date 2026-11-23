@@ -710,17 +710,47 @@ public sealed class SaleLine : Notifier
     // "Confirmed" is never a line on this screen: Confirm sale moves the line to Invoices.
     // Computed from the same Error / IsIncomplete / DealProblem the Confirm check reads, so the
     // badge and the button can never disagree. Nothing saves or groups on it.
+    /// <summary>
+    /// An imported sale (Nov 2026), shown in the Invoice lines table for reference. It is already a
+    /// posted invoice (MIG-), so it is never part of the entry: not in Lines, no hold, no total, no
+    /// Confirm, no print. Read-only on screen.
+    /// </summary>
+    public bool IsImported { get; init; }
+
+    /// A line of ANY posted invoice -- imported or confirmed from this screen (Nov 2026). Read-only.
+    public bool IsPosted { get; init; }
+
+    /// Confirmed and read-only on this screen: posted, or imported (which is always posted).
+    public bool IsConfirmedSale => IsPosted || IsImported;
+
+    /// The invoice a confirmed line belongs to (MIG-... or INV-...).
+    public string? SourceInvoiceNo { get; init; }
+
+    /// The sales_line row it was read from, so a line taken off the table stays off after a reload.
+    public long SourceLineId { get; init; }
+
+    /// The Entry Type column.
+    public string EntryType => IsImported ? "Imported Sale" : "Manually Added Sale";
+
+    /// An imported line's stored figures, as the database worked them out.
+    internal void UseStoredFigures(decimal rejectionCt, decimal amount)
+    {
+        RejectionCt = rejectionCt;
+        Amount = amount;
+    }
+
     public string EntryStatus =>
-        IsBlank ? "New"
+        IsConfirmedSale ? "Confirmed"
+        : IsBlank ? "New"
         : HasConflict ? "Fix"
         : _error is not null || DealProblem is not null ? "Draft"
         : "Added";
 
     /// The table's group for this line (Nov 2026): READY, DRAFT (Draft and Fix) or NEW. Display only.
-    public string StatusGroup => EntryStatus switch { "Added" => "READY", "New" => "NEW", _ => "DRAFT" };
+    public string StatusGroup => EntryStatus switch { "Added" => "READY", "New" => "NEW", "Confirmed" => "CONFIRMED", _ => "DRAFT" };
 
     /// Group order in the table: ready first, then drafts, the New row last.
-    public int StatusOrder => EntryStatus switch { "Added" => 0, "New" => 2, _ => 1 };
+    public int StatusOrder => EntryStatus switch { "New" => 0, "Added" => 2, "Confirmed" => 3, _ => 1 };   // New, Fix, Ready, Confirmed (Nov 2026)
 
     /// The required cell that is still empty, so the table can outline exactly that cell.
     public bool MissingSize => !IsBlank && _size is null;
@@ -733,8 +763,9 @@ public sealed class SaleLine : Notifier
     public string EntryStatusTip => EntryStatus switch
     {
         "Fix"   => "Fix this line: " + _error,
-        "Draft" => "Draft — not finished: " + (_error ?? DealProblem),
-        "Added" => "Added to this invoice and holding its stock. Pending confirmation — press Confirm sale.",
+        "Draft" => "Fix — not finished: " + (_error ?? DealProblem),
+        "Added" => "Ready: on this invoice and holding its stock. Pending confirmation — press Confirm.",
+        "Confirmed" => $"{SourceInvoiceNo}: already confirmed. Shown for reference only.",
         _       => "New line: type size, grade, weight and price here, then press Edit to set the buyer. Or use Add sale.",
     };
 
@@ -1069,6 +1100,18 @@ public sealed class InvoiceEntry : Notifier
 
     public IReadOnlyList<SaleLine> RealLines => Lines.Where(l => !l.IsBlank).ToList();
 
+    /// <summary>
+    /// Confirmed sales, imported and typed here (Nov 2026): DISPLAY ONLY. Deliberately not in Lines,
+    /// so totals, holds, Confirm and the saved entry never see them. On All and on Confirmed.
+    /// </summary>
+    public IReadOnlyList<SaleLine> ConfirmedLines { get; private set; } = [];
+
+    public void SetConfirmedLines(IReadOnlyList<SaleLine> confirmed)
+    {
+        ConfirmedLines = confirmed;
+        Repage();
+    }
+
     // ── what the grid shows: the same lines, narrowed and paged ────────────
     //
     // THE SAME OBJECTS, and that is the whole safety story. VisibleLines holds references to the
@@ -1136,14 +1179,16 @@ public sealed class InvoiceEntry : Notifier
 
     /// <summary>Every line the filters admit, in the order it was typed.</summary>
     public IReadOnlyList<SaleLine> FilteredLines =>
-        Lines.Where(l =>
+        // NEWEST FIRST (Nov 2026): a line just added is at the top, not the bottom.
+        (_filterStatus switch { null => Lines.Reverse().Concat(ConfirmedLines), "CONFIRMED" => ConfirmedLines, _ => Lines.Reverse() }).Where(l =>
+                 !l.IsBlank       // the New row is not shown (Nov 2026); Add sale is where a line starts
+              &&
                  (_filterDate is not { } d || l.DealDate.Date == d.Date)
               && (_filterBuyer is not { } b || l.DealBuyer?.Id == b.Id)
               && (_filterBroker is not { } r || l.DealBroker?.Id == r.Id)
               && (string.IsNullOrWhiteSpace(_filterType)
                   || string.Equals(l.DealDocType, _filterType, StringComparison.OrdinalIgnoreCase))
-              && (_filterStatus is null
-                  || (_filterStatus == "READY" ? l.StatusGroup == "READY" : l.StatusGroup != "READY")))
+              && (_filterStatus is null || l.StatusGroup == _filterStatus))
              .ToList();
 
     public int PageCount => Math.Max(1, (FilteredLines.Count + PageSize - 1) / PageSize);
@@ -1193,9 +1238,9 @@ public sealed class InvoiceEntry : Notifier
     /// invoice that has lost rows -- which is exactly the fright a hidden filter gives.
     /// </summary>
     public string ShowingLabel =>
-        Lines.Count == FilteredLines.Count
-            ? $"{Lines.Count} row{(Lines.Count == 1 ? "" : "s")}"
-            : $"{FilteredLines.Count} of {Lines.Count} rows shown · filtered";
+        RealLines.Count + ConfirmedLines.Count == FilteredLines.Count
+            ? $"{FilteredLines.Count} row{(FilteredLines.Count == 1 ? "" : "s")}"
+            : $"{FilteredLines.Count} of {RealLines.Count + ConfirmedLines.Count} rows shown · filtered";
 
     /// <summary>
     /// Rebuilds the page in place.
@@ -1363,7 +1408,8 @@ public sealed class InvoiceEntry : Notifier
     /// are not affected.
     /// </summary>
     public static IReadOnlyList<IReadOnlyList<SaleLine>> GroupForApproval(IEnumerable<SaleLine> lines) =>
-        lines.GroupBy(l => (Buyer: l.DealBuyer?.Id, Broker: l.DealBroker?.Id))
+        // The date too (Nov 2026): a page prints one date, so two dates are two pages.
+        lines.GroupBy(l => (Buyer: l.DealBuyer?.Id, Broker: l.DealBroker?.Id, Date: l.DealDate.Date))
              .Select(g => (IReadOnlyList<SaleLine>)g.ToList())
              .ToList();
 
